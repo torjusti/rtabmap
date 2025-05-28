@@ -328,144 +328,132 @@ class RTABMap {
                    let depthMap = sceneDepth.depthMap,
                    let confidenceMap = sceneDepth.confidenceMap {
                     
-                    let width = CVPixelBufferGetWidth(depthMap)
-                    let height = CVPixelBufferGetHeight(depthMap)
-                    
-                    // Create medium and low confidence buffers
-                    var depthMediumBuffer: CVPixelBuffer?
-                    var depthLowBuffer: CVPixelBuffer? 
-                    let depthPixelFormat = kCVPixelFormatType_DepthFloat32
-                    
-                    CVPixelBufferCreate(kCFAllocatorDefault, width, height, depthPixelFormat, nil, &depthMediumBuffer)
-                    CVPixelBufferCreate(kCFAllocatorDefault, width, height, depthPixelFormat, nil, &depthLowBuffer)
-                    
-                    if let mediumBuffer = depthMediumBuffer,
-                       let lowBuffer = depthLowBuffer,
-                       let confidenceMap = confidenceMap {
+                        let width = CVPixelBufferGetWidth(depthMap)
+                        let height = CVPixelBufferGetHeight(depthMap)
                         
-                        // Lock all buffers
-                        CVPixelBufferLockBaseAddress(depthMap, .readOnly)
-                        CVPixelBufferLockBaseAddress(confidenceMap, .readOnly)
+                        // Create medium and low confidence buffers
+                        var depthMediumBuffer: CVPixelBuffer?
+                        var depthLowBuffer: CVPixelBuffer? 
+                        let depthPixelFormat = kCVPixelFormatType_DepthFloat32
                         
-                        depthBytesPerRow = Int32(CVPixelBufferGetBytesPerRow(depthMap))
-                        CVPixelBufferLockBaseAddress(mediumBuffer, [])
-                        CVPixelBufferLockBaseAddress(lowBuffer, [])
+                        CVPixelBufferCreate(kCFAllocatorDefault, width, height, depthPixelFormat, nil, &depthMediumBuffer)
+                        CVPixelBufferCreate(kCFAllocatorDefault, width, height, depthPixelFormat, nil, &depthLowBuffer)
                         
-                        // Get pointers and properties
-                        let depthData = CVPixelBufferGetBaseAddress(depthMap)!
-                        let confidenceData = CVPixelBufferGetBaseAddress(confidenceMap)!
-                        let mediumData = CVPixelBufferGetBaseAddress(mediumBuffer)!
-                        let lowData = CVPixelBufferGetBaseAddress(lowBuffer)!
-                        
-                        let depthBytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
-                        let confidenceBytesPerRow = CVPixelBufferGetBytesPerRow(confidenceMap)
-                        let mediumBytesPerRow = CVPixelBufferGetBytesPerRow(mediumBuffer)
-                        let lowBytesPerRow = CVPixelBufferGetBytesPerRow(lowBuffer)
-                        
-                        // Split depth by confidence
-                        for y in 0..<height {
-                            let depthRow = depthData.advanced(by: y * depthBytesPerRow)
-                            let confRow = confidenceData.advanced(by: y * confidenceBytesPerRow)
-                            let mediumRow = mediumData.advanced(by: y * mediumBytesPerRow)
-                            let lowRow = lowData.advanced(by: y * lowBytesPerRow)
+                        if let mediumBuffer = depthMediumBuffer,
+                           let lowBuffer = depthLowBuffer {
                             
-                            for x in 0..<width {
-                                let confidence = confRow.load(fromByteOffset: x, as: UInt8.self)
-                                let depth = depthRow.load(fromByteOffset: x * 4, as: Float32.self)
+                            // Lock all buffers
+                            CVPixelBufferLockBaseAddress(depthMap, .readOnly)
+                            CVPixelBufferLockBaseAddress(confidenceMap, .readOnly)
+                            CVPixelBufferLockBaseAddress(mediumBuffer, [])
+                            CVPixelBufferLockBaseAddress(lowBuffer, [])
+                            
+                            // Get pointers and properties
+                            let depthData = CVPixelBufferGetBaseAddress(depthMap)!
+                            let confidenceData = CVPixelBufferGetBaseAddress(confidenceMap)!
+                            let mediumData = CVPixelBufferGetBaseAddress(mediumBuffer)!
+                            let lowData = CVPixelBufferGetBaseAddress(lowBuffer)!
+                            
+                            let depthBytesPerRow = CVPixelBufferGetBytesPerRow(depthMap)
+                            let confidenceBytesPerRow = CVPixelBufferGetBytesPerRow(confidenceMap)
+                            let mediumBytesPerRow = CVPixelBufferGetBytesPerRow(mediumBuffer)
+                            let lowBytesPerRow = CVPixelBufferGetBytesPerRow(lowBuffer)
+                            
+                            // Split depth by confidence
+                            for y in 0..<height {
+                                let depthRow = depthData.advanced(by: y * depthBytesPerRow)
+                                let confRow = confidenceData.advanced(by: y * confidenceBytesPerRow)
+                                let mediumRow = mediumData.advanced(by: y * mediumBytesPerRow)
+                                let lowRow = lowData.advanced(by: y * lowBytesPerRow)
                                 
-                                if confidence == 1 {
-                                    mediumRow.storeBytes(of: depth, toByteOffset: x * 4, as: Float32.self)
-                                } else if confidence == 0 {
-                                    lowRow.storeBytes(of: depth, toByteOffset: x * 4, as: Float32.self)
+                                for x in 0..<width {
+                                    let confidence = confRow.load(fromByteOffset: x, as: UInt8.self)
+                                    let depth = depthRow.load(fromByteOffset: x * 4, as: Float32.self)
+                                    
+                                    if confidence == 1 {
+                                        mediumRow.storeBytes(of: depth, toByteOffset: x * 4, as: Float32.self)
+                                    } else if confidence == 0 {
+                                        lowRow.storeBytes(of: depth, toByteOffset: x * 4, as: Float32.self)
+                                    }
                                 }
                             }
+                            
+                            // Setup depth parameters for native call
+                            depthDataPtr = CVPixelBufferGetBaseAddress(depthMap)
+                            depthSize = Int32(CVPixelBufferGetDataSize(depthMap))
+                            depthWidth = Int32(width)
+                            depthHeight = Int32(height)
+                            depthFormat = Int32(CVPixelBufferGetPixelFormatType(depthMap))
+                            depthBytesPerRow = Int32(CVPixelBufferGetBytesPerRow(depthMap))
+                            
+                            // Setup medium confidence parameters
+                            depthMedium = CVPixelBufferGetBaseAddress(mediumBuffer)
+                            depthMediumBytesPerRow = Int32(CVPixelBufferGetBytesPerRow(mediumBuffer))
+                            
+                            // Setup low confidence parameters  
+                            depthLow = CVPixelBufferGetBaseAddress(lowBuffer)
+                            depthLowBytesPerRow = Int32(CVPixelBufferGetBytesPerRow(lowBuffer))
+                            
+                            // Setup confidence parameters
+                            let confDataPtr = CVPixelBufferGetBaseAddress(confidenceMap)!
+                            let confSize = Int32(CVPixelBufferGetDataSize(confidenceMap))
+                            let confWidth = Int32(CVPixelBufferGetWidth(confidenceMap))
+                            let confHeight = Int32(CVPixelBufferGetHeight(confidenceMap))
+                            let confFormat = Int32(CVPixelBufferGetPixelFormatType(confidenceMap))
+                            let confidenceBytesPerRow = Int32(CVPixelBufferGetBytesPerRow(confidenceMap))
+                            
+                            if(frame.lightEstimate != nil) {
+                                addEnvSensor(type: 4, value: Float(frame.lightEstimate!.ambientIntensity))
+                            }
+                            
+                            var lost = false
+                            switch frame.camera.trackingState {
+                            case .normal:
+                                lost = false
+                            case .limited(.excessiveMotion):
+                                lost = false
+                            case .limited(.insufficientFeatures):
+                                lost = false
+                            default:
+                                lost = true
+                            }
+                            
+                            // Pass data to native code
+                            postOdometryEventNative(native_rtabmap,
+                                            !lost ? pose[3,0]:0, !lost ? pose[3,1]:0, !lost ? pose[3,2]:0,
+                                            !lost ? quat.x:0, !lost ? quat.y:0, !lost ? quat.z:0,
+                                            frame.camera.intrinsics[0,0], // fx
+                                            frame.camera.intrinsics[1,1], // fy
+                                            frame.camera.intrinsics[2,0], // cx
+                                            frame.camera.intrinsics[2,1], // cy
+                                            Int32(CVPixelBufferGetWidth(frame.capturedImage)),  // width
+                                            Int32(CVPixelBufferGetHeight(frame.capturedImage)), // height
+                                            frame.timestamp,
+                                            CVPixelBufferGetBaseAddressOfPlane(frame.capturedImage, 0), // y plane
+                                            Int32(CVPixelBufferGetBytesPerRowOfPlane(frame.capturedImage, 0)),
+                                            CVPixelBufferGetBaseAddressOfPlane(frame.capturedImage, 1), // v plane
+                                            Int32(CVPixelBufferGetBytesPerRowOfPlane(frame.capturedImage, 1)),
+                                            depthDataPtr,    // High confidence depth
+                                            Int32(depthBytesPerRow),
+                                            depthMedium,     // Medium confidence depth
+                                            depthMediumBytesPerRow,
+                                            depthLow,        // Low confidence depth
+                                            depthLowBytesPerRow,
+                                            confDataPtr,     // Confidence map
+                                            Int32(confidenceBytesPerRow),
+                                            bufferPoints.baseAddress, Int32(frame.rawFeaturePoints!.points.count), 4,
+                                            v[3,0], v[3,1], v[3,2], quatv.x, quatv.y, quatv.z, quatv.w,
+                                            p[0,0], p[1,1], p[2,0], p[2,1], p[2,2], p[2,3], p[3,2],
+                                            texCoord[0],texCoord[1],texCoord[2],texCoord[3],texCoord[4],texCoord[5],texCoord[6],texCoord[7])
+                            
+                            // Clean up - unlock all buffers
+                            CVPixelBufferUnlockBaseAddress(mediumBuffer, [])
+                            CVPixelBufferUnlockBaseAddress(lowBuffer, [])
+                            CVPixelBufferUnlockBaseAddress(depthMap, CVPixelBufferLockFlags.readOnly)
+                            CVPixelBufferUnlockBaseAddress(confidenceMap, CVPixelBufferLockFlags.readOnly)
                         }
-                        
-                        // Setup depth parameters for native call
-                        depthDataPtr = CVPixelBufferGetBaseAddress(depthMap)
-                        depthSize = Int32(CVPixelBufferGetDataSize(depthMap))
-                        depthWidth = Int32(width)
-                        depthHeight = Int32(height)
-                        depthFormat = Int32(CVPixelBufferGetPixelFormatType(depthMap))
-                        
-                        // Setup medium confidence parameters
-                        depthMedium = CVPixelBufferGetBaseAddress(mediumBuffer)
-                        depthMediumBytesPerRow = Int32(CVPixelBufferGetBytesPerRow(mediumBuffer))
-                        
-                        // Setup low confidence parameters  
-                        depthLow = CVPixelBufferGetBaseAddress(lowBuffer)
-                        depthLowBytesPerRow = Int32(CVPixelBufferGetBytesPerRow(lowBuffer))
-                        
-                        // Unlock buffers
-                        CVPixelBufferUnlockBaseAddress(mediumBuffer, [])
-                        CVPixelBufferUnlockBaseAddress(lowBuffer, [])
-                        
-                        // Release the buffer references
-                        depthMediumBuffer = nil
-                        depthLowBuffer = nil
                     }
                 }
-                
-                var confDataPtr: UnsafeMutableRawPointer?
-                var confSize: Int32 = 0
-                var confWidth: Int32 = 0
-                var confHeight: Int32 = 0
-                var confFormat: Int32 = 0
-                if confMap != nil {
-                    CVPixelBufferLockBaseAddress(confMap!, CVPixelBufferLockFlags.readOnly)
-                    confDataPtr = CVPixelBufferGetBaseAddress(confMap!)!
-                    confSize = Int32(CVPixelBufferGetDataSize(confMap!))
-                    confWidth = Int32(CVPixelBufferGetWidth(confMap!))
-                    confHeight = Int32(CVPixelBufferGetHeight(confMap!))
-                    confFormat = Int32(CVPixelBufferGetPixelFormatType(confMap!))
-                }
-                
-                if(frame.lightEstimate != nil) {
-                    addEnvSensor(type: 4, value: Float(frame.lightEstimate!.ambientIntensity))
-                }
-                
-                var lost = false
-                switch frame.camera.trackingState {
-                case .normal:
-                    lost = false
-                case .limited(.excessiveMotion):
-                    lost = false
-                case .limited(.insufficientFeatures):
-                    lost = false
-                default:
-                    lost = true
-                }
-                // Notify lost with pose=null
-
-                postOdometryEventNative(native_rtabmap,
-                                        !lost ? pose[3,0]:0, !lost ? pose[3,1]:0, !lost ? pose[3,2]:0,
-                                        !lost ? quat.x:0, !lost ? quat.y:0, !lost ? quat.z:0,
-                                        frame.camera.intrinsics[0,0], // fx
-                                        frame.camera.intrinsics[1,1], // fy
-                                        frame.camera.intrinsics[2,0], // cx
-                                        frame.camera.intrinsics[2,1], // cy
-                                        Int32(CVPixelBufferGetWidth(frame.capturedImage)),  // width
-                                        Int32(CVPixelBufferGetHeight(frame.capturedImage)), // height
-                                        frame.timestamp,
-                                        CVPixelBufferGetBaseAddressOfPlane(frame.capturedImage, 0), // y plane
-                                        Int32(CVPixelBufferGetBytesPerRowOfPlane(frame.capturedImage, 0)),
-                                        CVPixelBufferGetBaseAddressOfPlane(frame.capturedImage, 1), // v plane
-                                        Int32(CVPixelBufferGetBytesPerRowOfPlane(frame.capturedImage, 1)),
-                                        depthDataPtr,    // High confidence depth
-                                        Int32(depthBytesPerRow),
-                                        depthMedium,     // Medium confidence depth
-                                        depthMediumBytesPerRow,
-                                        depthLow,        // Low confidence depth
-                                        depthLowBytesPerRow,
-                                        confDataPtr,     // Confidence map
-                                        Int32(confidenceBytesPerRow),
-                                        bufferPoints.baseAddress, Int32(frame.rawFeaturePoints!.points.count), 4,
-                                        v[3,0], v[3,1], v[3,2], quatv.x, quatv.y, quatv.z, quatv.w,
-                                        p[0,0], p[1,1], p[2,0], p[2,1], p[2,2], p[2,3], p[3,2],
-                                        texCoord[0],texCoord[1],texCoord[2],texCoord[3],texCoord[4],texCoord[5],texCoord[6],texCoord[7])
-                        // Clean up - unlock all buffers
-                        CVPixelBufferUnlockBaseAddress(depthMap, CVPixelBufferLockFlags.readOnly)
-                        CVPixelBufferUnlockBaseAddress(confidenceMap, CVPixelBufferLockFlags.readOnly)
                 CVPixelBufferUnlockBaseAddress(frame.capturedImage, CVPixelBufferLockFlags.readOnly)
             }
         }
