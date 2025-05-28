@@ -4,3 +4,8 @@
 
 #include "NativeWrapper.hpp"
 #import <sqlite3.h>
+
+#ifdef __cplusplus 
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
+#endif

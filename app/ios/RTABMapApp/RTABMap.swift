@@ -8,6 +8,29 @@
 import Foundation
 import ARKit
 
+// Helper for aligned memory buffer allocation
+struct AlignedBuffer<T> {
+    let buffer: UnsafeMutableBufferPointer<T>
+    
+    init(count: Int) {
+        buffer = UnsafeMutableBufferPointer<T>.allocate(capacity: count)
+        buffer.initialize(repeating: T.self as! T)
+    }
+    
+    func deallocate() {
+        buffer.deallocate()
+    }
+    
+    var baseAddress: UnsafeMutableRawPointer? {
+        return UnsafeMutableRawPointer(buffer.baseAddress)
+    }
+    
+    subscript(x: Int, y: Int, width: Int) -> T {
+        get { return buffer[y * width + x] }
+        set { buffer[y * width + x] = newValue }
+    }
+}
+
 class RTABMap {
     var native_rtabmap: UnsafeMutableRawPointer
     
@@ -353,16 +376,32 @@ class RTABMap {
                 }
 
                 // Create three depth maps for different confidence levels
-                var outputDepthHigh = depthMap != nil ? cv::Mat(depthHeight, depthWidth, CV_32FC1, depthDataPtr!) : cv::Mat() 
-                var outputDepthMedium = cv::Mat(depthHeight, depthWidth, CV_32FC1)
-                var outputDepthLow = cv::Mat(depthHeight, depthWidth, CV_32FC1)
-                var depthConfidence = cv::Mat(depthHeight, depthWidth, CV_8UC1)
+                let bufferSize = Int(depthWidth * depthHeight)
+                
+                // Use aligned memory for better performance
+                let highBuffer = UnsafeMutableBufferPointer<Float>.allocate(capacity: bufferSize)
+                let mediumBuffer = UnsafeMutableBufferPointer<Float>.allocate(capacity: bufferSize)
+                let lowBuffer = UnsafeMutableBufferPointer<Float>.allocate(capacity: bufferSize)
+                let confidenceBuffer = UnsafeMutableBufferPointer<UInt8>.allocate(capacity: bufferSize)
+                
+                // Initialize to zeros
+                highBuffer.initialize(repeating: 0.0)
+                mediumBuffer.initialize(repeating: 0.0)
+                lowBuffer.initialize(repeating: 0.0)
+                confidenceBuffer.initialize(repeating: 0)
 
                 if depthMap != nil && confMap != nil {
                     let confPtr = UnsafePointer<UInt8>(OpaquePointer(confDataPtr!))
                     let depthFloatPtr = UnsafePointer<Float>(OpaquePointer(depthDataPtr!))
                     
-                    // Split depths by confidence into separate maps
+                    // Create buffers for different confidence levels
+                    let bufferSize = Int(depthWidth * depthHeight)
+                    let highBuffer = AlignedBuffer<Float>(count: bufferSize)
+                    let mediumBuffer = AlignedBuffer<Float>(count: bufferSize)
+                    let lowBuffer = AlignedBuffer<Float>(count: bufferSize)
+                    let confidenceBuffer = AlignedBuffer<UInt8>(count: bufferSize)
+                    
+                    // Split depths by confidence into separate buffers
                     for y in 0..<Int(depthHeight) {
                         for x in 0..<Int(depthWidth) {
                             let idx = y * Int(depthWidth) + x
@@ -370,33 +409,32 @@ class RTABMap {
                             let depth = depthFloatPtr[idx]
                             
                             // Store confidence value
-                            depthConfidence.at<UInt8>(y,x) = conf
+                            confidenceBuffer[x, y, Int(depthWidth)] = conf
                             
-                            // Store depth in appropriate confidence map
+                            // Store depth in appropriate confidence buffer
                             switch conf {
                             case 2: // High confidence
-                                outputDepthHigh.at<Float32>(y,x) = depth
-                                outputDepthMedium.at<Float32>(y,x) = 0
-                                outputDepthLow.at<Float32>(y,x) = 0
-                            case 1: // Medium confidence  
-                                outputDepthHigh.at<Float32>(y,x) = 0
-                                outputDepthMedium.at<Float32>(y,x) = depth
-                                outputDepthLow.at<Float32>(y,x) = 0
+                                highBuffer[x, y, Int(depthWidth)] = depth
+                                mediumBuffer[x, y, Int(depthWidth)] = 0.0
+                                lowBuffer[x, y, Int(depthWidth)] = 0.0
+                            case 1: // Medium confidence
+                                highBuffer[x, y, Int(depthWidth)] = 0.0
+                                mediumBuffer[x, y, Int(depthWidth)] = depth
+                                lowBuffer[x, y, Int(depthWidth)] = 0.0
                             case 0: // Low confidence
-                                outputDepthHigh.at<Float32>(y,x) = 0
-                                outputDepthMedium.at<Float32>(y,x) = 0
-                                outputDepthLow.at<Float32>(y,x) = depth
+                                highBuffer[x, y, Int(depthWidth)] = 0.0
+                                mediumBuffer[x, y, Int(depthWidth)] = 0.0
+                                lowBuffer[x, y, Int(depthWidth)] = depth
                             default:
-                                outputDepthHigh.at<Float32>(y,x) = 0
-                                outputDepthMedium.at<Float32>(y,x) = 0 
-                                outputDepthLow.at<Float32>(y,x) = 0
+                                highBuffer[x, y, Int(depthWidth)] = 0.0
+                                mediumBuffer[x, y, Int(depthWidth)] = 0.0
+                                lowBuffer[x, y, Int(depthWidth)] = 0.0
                             }
                         }
                     }
-                }
 
-                // Pass all depth maps to core processing
-                postOdometryEventNative(native_rtabmap,
+                    // Pass buffer data to native code
+                    postOdometryEventNative(native_rtabmap,
                                         !lost ? pose[3,0]:0, !lost ? pose[3,1]:0, !lost ? pose[3,2]:0, !lost ? quat.x:0, !lost ? quat.y:0, !lost ? quat.z:0, !lost ? quat.w:0,
                                         frame.camera.intrinsics[0,0], // fx
                                         frame.camera.intrinsics[1,1], // fy
@@ -410,17 +448,17 @@ class RTABMap {
                                         Int32(CVPixelBufferGetWidth(frame.capturedImage)),           // rgb width
                                         Int32(CVPixelBufferGetHeight(frame.capturedImage)),          // rgb height
                                         Int32(CVPixelBufferGetPixelFormatType(frame.capturedImage)), // rgb format
-                                        outputDepthHigh.data, // high confidence depth pointer
-                                        Int32(outputDepthHigh.total() * outputDepthHigh.elemSize()),    // depth size
-                                        Int32(outputDepthHigh.cols),   // depth width
-                                        Int32(outputDepthHigh.rows),  // depth height
+                                        highBuffer.baseAddress, // high confidence depth pointer
+                                        Int32(bufferSize * MemoryLayout<Float>.stride),    // depth size
+                                        Int32(depthWidth),   // depth width
+                                        Int32(depthHeight),  // depth height
                                         depthFormat,  // depth format 
-                                        outputDepthMedium.data, // medium confidence depth pointer
-                                        Int32(outputDepthMedium.total() * outputDepthMedium.elemSize()),    // depth medium size
-                                        outputDepthLow.data, // low confidence depth pointer
-                                        Int32(outputDepthLow.total() * outputDepthLow.elemSize()),    // depth low size
-                                        depthConfidence.data, // confidence pointer
-                                        Int32(depthConfidence.total() * depthConfidence.elemSize()),    // confidence size
+                                        mediumBuffer.baseAddress, // medium confidence depth pointer
+                                        Int32(bufferSize * MemoryLayout<Float>.stride),    // depth medium size
+                                        lowBuffer.baseAddress, // low confidence depth pointer
+                                        Int32(bufferSize * MemoryLayout<Float>.stride),    // depth low size
+                                        confidenceBuffer.baseAddress, // confidence pointer
+                                        Int32(bufferSize * MemoryLayout<UInt8>.stride),    // confidence size
                                         confWidth,   // conf width  
                                         confHeight,  // conf height
                                         confFormat,  // conf format
@@ -428,6 +466,14 @@ class RTABMap {
                                         v[3,0], v[3,1], v[3,2], quatv.x, quatv.y, quatv.z, quatv.w,
                                         p[0,0], p[1,1], p[2,0], p[2,1], p[2,2], p[2,3], p[3,2],
                                         texCoord[0],texCoord[1],texCoord[2],texCoord[3],texCoord[4],texCoord[5],texCoord[6],texCoord[7])
+                                        
+                    // Clean up buffers
+                    highBuffer.deallocate()
+                    mediumBuffer.deallocate()
+                    lowBuffer.deallocate()
+                    confidenceBuffer.deallocate()
+                }
+                
                 if depthMap != nil {
                     CVPixelBufferUnlockBaseAddress(depthMap!, CVPixelBufferLockFlags.readOnly)
                 }
