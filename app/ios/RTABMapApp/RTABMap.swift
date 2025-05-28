@@ -313,6 +313,16 @@ class RTABMap {
                 var depthWidth: Int32 = 0
                 var depthHeight: Int32 = 0
                 var depthFormat: Int32 = 0
+                var depthBytesPerRow: Int32 = 0
+                
+                // Variables for medium confidence depth
+                var depthMedium: UnsafeMutableRawPointer?
+                var depthMediumBytesPerRow: Int32 = 0
+                
+                // Variables for low confidence depth
+                var depthLow: UnsafeMutableRawPointer?
+                var depthLowBytesPerRow: Int32 = 0
+                
                 // Create depth buffers for different confidence levels
                 if let sceneDepth = frame.sceneDepth,
                    let depthMap = sceneDepth.depthMap,
@@ -336,6 +346,8 @@ class RTABMap {
                         // Lock all buffers
                         CVPixelBufferLockBaseAddress(depthMap, .readOnly)
                         CVPixelBufferLockBaseAddress(confidenceMap, .readOnly)
+                        
+                        depthBytesPerRow = Int32(CVPixelBufferGetBytesPerRow(depthMap))
                         CVPixelBufferLockBaseAddress(mediumBuffer, [])
                         CVPixelBufferLockBaseAddress(lowBuffer, [])
                         
@@ -387,6 +399,10 @@ class RTABMap {
                         // Unlock buffers
                         CVPixelBufferUnlockBaseAddress(mediumBuffer, [])
                         CVPixelBufferUnlockBaseAddress(lowBuffer, [])
+                        
+                        // Release the buffer references
+                        depthMediumBuffer = nil
+                        depthLowBuffer = nil
                     }
                 }
                 
