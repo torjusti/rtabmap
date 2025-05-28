@@ -184,6 +184,15 @@ public:
 	const cv::Mat & depthOrRightRaw() const {return _depthOrRightRaw;}
 	const LaserScan & laserScanRaw() const {return _laserScanRaw;}
 
+	// Medium and low confidence depth getters/setters
+	const cv::Mat & depthMediumCompressed() const {return _depthMediumCompressed;}
+	const cv::Mat & depthLowCompressed() const {return _depthLowCompressed;}
+	const cv::Mat & depthConfidenceCompressed() const {return _depthConfidenceCompressed;}
+	
+	const cv::Mat & depthMediumRaw() const {return _depthMediumRaw;}
+	const cv::Mat & depthLowRaw() const {return _depthLowRaw;}
+	const cv::Mat & depthConfidenceRaw() const {return _depthConfidenceRaw;}
+
 	/**
 	 * Set image data. Detect automatically if raw or compressed.
 	 * A matrix of type CV_8UC1 with 1 row is considered as compressed.
@@ -220,6 +229,17 @@ public:
 	RTABMAP_DEPRECATED void setUserDataRaw(const cv::Mat & data);
 
 	void uncompressData();
+	void uncompressData(
+			cv::Mat * imageRaw,
+			cv::Mat * depthOrRightRaw,
+			cv::Mat * depthMediumRaw,
+			cv::Mat * depthLowRaw, 
+			cv::Mat * depthConfidenceRaw,
+			LaserScan * laserScanRaw,
+			cv::Mat * userDataRaw,
+			cv::Mat * groundCellsRaw,
+			cv::Mat * obstacleCellsRaw,
+			cv::Mat * emptyCellsRaw);
 	void uncompressData(
 			cv::Mat * imageRaw,
 			cv::Mat * depthOrRightRaw,
@@ -321,6 +341,22 @@ public:
 	void setDepthOrRightRawGpu(const cv::cuda::GpuMat & image) {_depthOrRightRawGpu = image;}
 #endif
 
+	/**
+	 * Set all depth maps with different confidence levels and confidence map.
+	 * Detect automatically if raw or compressed.
+	 * @param depth The main depth map (high confidence)
+	 * @param depthMedium The medium confidence depth map
+	 * @param depthLow The low confidence depth map 
+	 * @param depthConfidence The confidence map (CV_8UC1)
+	 * @param clearPreviousData clear previous raw and compressed depth maps before setting the new ones
+	 */
+	void setDepthMaps(
+        const cv::Mat & depth,
+        const cv::Mat & depthMedium, 
+        const cv::Mat & depthLow,
+        const cv::Mat & depthConfidence,
+        bool clearPreviousData = true);
+
 private:
 	int _id;
 	double _stamp;
@@ -372,6 +408,15 @@ private:
 	GPS gps_;
 
 	IMU imu_;
+
+	// Medium and low confidence depth maps
+	cv::Mat _depthMediumCompressed;    // compressed medium confidence depth map
+	cv::Mat _depthLowCompressed;       // compressed low confidence depth map  
+	cv::Mat _depthConfidenceCompressed; // compressed confidence map
+	
+	cv::Mat _depthMediumRaw;           // medium confidence depth map (CV_16UC1 or CV_32FC1)
+	cv::Mat _depthLowRaw;              // low confidence depth map (CV_16UC1 or CV_32FC1)
+	cv::Mat _depthConfidenceRaw;        // confidence map (CV_8UC1)
 
 #ifdef HAVE_OPENCV_CUDEV
 	// Temporary buffers used for some optimizations,

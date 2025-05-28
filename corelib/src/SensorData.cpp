@@ -528,15 +528,80 @@ void SensorData::setOccupancyGrid(
 
 void SensorData::uncompressData()
 {
-	cv::Mat tmpA, tmpB, tmpD, tmpE, tmpF, tmpG;
-	LaserScan tmpC;
-	uncompressData(_imageCompressed.empty()?0:&tmpA,
-				_depthOrRightCompressed.empty()?0:&tmpB,
-				_laserScanCompressed.isEmpty()?0:&tmpC,
-				_userDataCompressed.empty()?0:&tmpD,
-				_groundCellsCompressed.empty()?0:&tmpE,
-				_obstacleCellsCompressed.empty()?0:&tmpF,
-				_emptyCellsCompressed.empty()?0:&tmpG);
+    uncompressData(&_imageRaw,
+                  &_depthOrRightRaw,
+                  &_laserScanRaw,
+                  &_userDataRaw,
+                  &_groundCellsRaw,
+                  &_obstacleCellsRaw,
+                  &_emptyCellsRaw);
+    
+    if(!_depthMediumCompressed.empty())
+    {
+        _depthMediumRaw = uncompressImage(_depthMediumCompressed);
+    }
+    if(!_depthLowCompressed.empty())
+    {
+        _depthLowRaw = uncompressImage(_depthLowCompressed);
+    }
+    if(!_depthConfidenceCompressed.empty())
+    {
+        _depthConfidenceRaw = uncompressImage(_depthConfidenceCompressed);
+    }
+}
+
+void SensorData::uncompressData(
+        cv::Mat * imageRaw,
+        cv::Mat * depthOrRightRaw,
+        cv::Mat * depthMediumRaw,
+        cv::Mat * depthLowRaw, 
+        cv::Mat * depthConfidenceRaw,
+        LaserScan * laserScanRaw,
+        cv::Mat * userDataRaw,
+        cv::Mat * groundCellsRaw,
+        cv::Mat * obstacleCellsRaw,
+        cv::Mat * emptyCellsRaw)
+{
+    if(imageRaw && !_imageCompressed.empty())
+    {
+        *imageRaw = uncompressImage(_imageCompressed);
+    }
+    if(depthOrRightRaw && !_depthOrRightCompressed.empty())
+    {
+        *depthOrRightRaw = uncompressImage(_depthOrRightCompressed);
+    }
+    if(depthMediumRaw && !_depthMediumCompressed.empty())
+    {
+        *depthMediumRaw = uncompressImage(_depthMediumCompressed);
+    }
+    if(depthLowRaw && !_depthLowCompressed.empty())
+    {
+        *depthLowRaw = uncompressImage(_depthLowCompressed);
+    }
+    if(depthConfidenceRaw && !_depthConfidenceCompressed.empty())
+    {
+        *depthConfidenceRaw = uncompressImage(_depthConfidenceCompressed);
+    }
+    if(laserScanRaw && !_laserScanCompressed.isEmpty())
+    {
+        *laserScanRaw = LaserScan(_laserScanCompressed.data(), _laserScanCompressed.maxPoints(), _laserScanCompressed.rangeMax(), _laserScanRaw.format(), _laserScanCompressed.localTransform());
+    }
+    if(userDataRaw && !_userDataCompressed.empty())
+    {
+        *userDataRaw = rtabmap::uncompressData(_userDataCompressed);
+    }
+    if(groundCellsRaw && !_groundCellsCompressed.empty())
+    {
+        *groundCellsRaw = rtabmap::uncompressData(_groundCellsCompressed);
+    }
+    if(obstacleCellsRaw && !_obstacleCellsCompressed.empty())
+    {
+        *obstacleCellsRaw = rtabmap::uncompressData(_obstacleCellsCompressed);
+    }
+    if(emptyCellsRaw && !_emptyCellsCompressed.empty())
+    {
+        *emptyCellsRaw = rtabmap::uncompressData(_emptyCellsCompressed);
+    }
 }
 
 void SensorData::uncompressData(
@@ -832,86 +897,136 @@ unsigned long SensorData::getMemoryUsed() const // Return memory usage in Bytes
 
 void SensorData::clearCompressedData(bool images, bool scan, bool userData)
 {
-	if(images)
-	{
-		_imageCompressed=cv::Mat();
-		_depthOrRightCompressed=cv::Mat();
-	}
-	if(scan)
-	{
-		_laserScanCompressed.clear();
-	}
-	if(userData)
-	{
-		_userDataCompressed=cv::Mat();
-	}
+    if(images)
+    {
+        _imageCompressed = cv::Mat();
+        _depthOrRightCompressed = cv::Mat();
+        _depthMediumCompressed = cv::Mat();
+        _depthLowCompressed = cv::Mat();
+        _depthConfidenceCompressed = cv::Mat();
+    }
+    if(scan)
+    {
+        _laserScanCompressed.clear();
+    }
+    if(userData)
+    {
+        _userDataCompressed = cv::Mat();
+    }
 }
-void SensorData::clearRawData(bool images, bool scan, bool userData)
+void SensorData::clearRawData(bool images, bool scan, bool userData) 
 {
-	if(images)
-	{
-		_imageRaw=cv::Mat();
-		_depthOrRightRaw=cv::Mat();
-	}
-	if(scan)
-	{
-		_laserScanRaw.clear();
-	}
-	if(userData)
-	{
-		_userDataRaw=cv::Mat();
-	}
+    if(images)
+    {
+        _imageRaw = cv::Mat();
+        _depthOrRightRaw = cv::Mat(); 
+        _depthMediumRaw = cv::Mat();
+        _depthLowRaw = cv::Mat();
+        _depthConfidenceRaw = cv::Mat();
+    }
+    if(scan)
+    {
+        _laserScanRaw.clear();
+    }
+    if(userData)
+    {
+        _userDataRaw = cv::Mat();
+    }
 }
 
-
-bool SensorData::isPointVisibleFromCameras(const cv::Point3f & pt) const
+void SensorData::setDepthMaps(
+    const cv::Mat & depth,
+    const cv::Mat & depthMedium, 
+    const cv::Mat & depthLow,
+    const cv::Mat & depthConfidence,
+    bool clearPreviousData)
 {
-	if(_cameraModels.size() >= 1)
-	{
-		for(unsigned int i=0; i<_cameraModels.size(); ++i)
-		{
-			if(_cameraModels[i].isValidForProjection() && !_cameraModels[i].localTransform().isNull())
-			{
-				cv::Point3f ptInCameraFrame = util3d::transformPoint(pt, _cameraModels[i].localTransform().inverse());
-				if(ptInCameraFrame.z > 0.0f)
-				{
-					int borderWidth = int(float(_cameraModels[i].imageWidth())* 0.2);
-					int u, v;
-					_cameraModels[i].reproject(ptInCameraFrame.x, ptInCameraFrame.y, ptInCameraFrame.z, u, v);
-					if(uIsInBounds(u, borderWidth, _cameraModels[i].imageWidth()-2*borderWidth) &&
-					   uIsInBounds(v, borderWidth, _cameraModels[i].imageHeight()-2*borderWidth))
-					{
-						return true;
-					}
-				}
-			}
-		}
-	}
-	else if(_stereoCameraModels.size() >= 1)
-	{
-		for(unsigned int i=0; i<_stereoCameraModels.size(); ++i)
-		{
-			if(_stereoCameraModels[i].isValidForProjection() && !_stereoCameraModels[i].localTransform().isNull())
-			{
-				cv::Point3f ptInCameraFrame = util3d::transformPoint(pt, _stereoCameraModels[i].localTransform().inverse());
-				if(ptInCameraFrame.z > 0.0f)
-				{
-					int u, v;
-					_stereoCameraModels[i].left().reproject(ptInCameraFrame.x, ptInCameraFrame.y, ptInCameraFrame.z, u, v);
-					if(uIsInBounds(u, 0, _stereoCameraModels[i].left().imageWidth()) &&
-					   uIsInBounds(v, 0, _stereoCameraModels[i].left().imageHeight()))
-					{
-						return true;
-					}
-				}
-			}
-		}
-	}
-	else
-	{
-		UERROR("no valid camera model!");
-	}
-	return false;
+    if(clearPreviousData)
+    {
+        // Clear both raw and compressed
+        _depthOrRightRaw = cv::Mat();
+        _depthOrRightCompressed = cv::Mat();
+        _depthMediumRaw = cv::Mat();
+        _depthMediumCompressed = cv::Mat();
+        _depthLowRaw = cv::Mat();
+        _depthLowCompressed = cv::Mat();
+        _depthConfidenceRaw = cv::Mat();
+        _depthConfidenceCompressed = cv::Mat();
+    }
+
+    // Set raw or compressed based on format
+    // A matrix of type CV_8UC1 with 1 row is considered as compressed
+    if(!depth.empty() && (depth.type() == CV_16UC1 || depth.type() == CV_32FC1))
+    {
+        _depthOrRightRaw = depth;
+        if(clearPreviousData)
+        {
+            std::vector<unsigned char> compressed = compressImage(depth);
+            _depthOrRightCompressed = cv::Mat(1, compressed.size(), CV_8UC1, compressed.data());
+        }
+    }
+    else if(!depth.empty())
+    {
+        _depthOrRightCompressed = depth;
+        if(clearPreviousData)
+        {
+            _depthOrRightRaw = uncompressImage(depth);
+        }
+    }
+
+    if(!depthMedium.empty() && (depthMedium.type() == CV_16UC1 || depthMedium.type() == CV_32FC1))
+    {
+        _depthMediumRaw = depthMedium;
+        if(clearPreviousData)
+        {
+            std::vector<unsigned char> compressed = compressImage(depthMedium);
+            _depthMediumCompressed = cv::Mat(1, compressed.size(), CV_8UC1, compressed.data());
+        }
+    }
+    else if(!depthMedium.empty())
+    {
+        _depthMediumCompressed = depthMedium;
+        if(clearPreviousData)
+        {
+            _depthMediumRaw = uncompressImage(depthMedium);
+        }
+    }
+
+    if(!depthLow.empty() && (depthLow.type() == CV_16UC1 || depthLow.type() == CV_32FC1))
+    {
+        _depthLowRaw = depthLow;
+        if(clearPreviousData)
+        {
+            std::vector<unsigned char> compressed = compressImage(depthLow);
+            _depthLowCompressed = cv::Mat(1, compressed.size(), CV_8UC1, compressed.data());
+        }
+    }
+    else if(!depthLow.empty())
+    {
+        _depthLowCompressed = depthLow;
+        if(clearPreviousData)
+        {
+            _depthLowRaw = uncompressImage(depthLow);
+        }
+    }
+
+    if(!depthConfidence.empty() && depthConfidence.type() == CV_8UC1)
+    {
+        _depthConfidenceRaw = depthConfidence;
+        if(clearPreviousData)
+        {
+            std::vector<unsigned char> compressed = compressImage(depthConfidence);
+            _depthConfidenceCompressed = cv::Mat(1, compressed.size(), CV_8UC1, compressed.data());
+        }
+    }
+    else if(!depthConfidence.empty())
+    {
+        _depthConfidenceCompressed = depthConfidence;
+        if(clearPreviousData)
+        {
+            _depthConfidenceRaw = uncompressImage(depthConfidence);
+        }
+    }
 }
 
 } // namespace rtabmap

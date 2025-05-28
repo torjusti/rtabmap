@@ -290,7 +290,10 @@ void postOdometryEventNative(const void *object,
         float fx, float fy, float cx, float cy,
         double stamp,
         const void * yPlane,  const void * uPlane,  const void * vPlane, int yPlaneLen, int rgbWidth, int rgbHeight, int rgbFormat,
-        const void * depth, int depthLen, int depthWidth, int depthHeight, int depthFormat,
+        const void * depthHigh, int depthHighLen,
+        const void * depthMedium, int depthMediumLen,
+        const void * depthLow, int depthLowLen,
+        int depthWidth, int depthHeight, int depthFormat,
         const void * conf, int confLen, int confWidth, int confHeight, int confFormat,
         const void * points, int pointsLen, int pointsChannels,
         float vx, float vy, float vz, float vqx, float vqy, float vqz, float vqw,
@@ -305,7 +308,10 @@ void postOdometryEventNative(const void *object,
                 rtabmap::Transform(), rtabmap::Transform(),
                 stamp, 0,
                 yPlane, uPlane, vPlane, yPlaneLen, rgbWidth, rgbHeight, rgbFormat,
-                depth, depthLen, depthWidth, depthHeight, depthFormat,
+                depthHigh, depthHighLen,
+                depthMedium, depthMediumLen,
+                depthLow, depthLowLen,
+                depthWidth, depthHeight, depthFormat,
                 conf, confLen, confWidth, confHeight, confFormat,
                 (const float *)points, pointsLen, pointsChannels,
                 rtabmap::Transform(vx, vy, vz, vqx, vqy, vqz, vqw),
@@ -315,7 +321,6 @@ void postOdometryEventNative(const void *object,
     else
     {
         UERROR("object is null!");
-        return;
     }
 }
 

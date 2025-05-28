@@ -351,8 +351,51 @@ class RTABMap {
                 default:
                     lost = true
                 }
-                // Notify lost with pose=null
 
+                // Create three depth maps for different confidence levels
+                var outputDepthHigh = depthMap != nil ? cv::Mat(depthHeight, depthWidth, CV_32FC1, depthDataPtr!) : cv::Mat() 
+                var outputDepthMedium = cv::Mat(depthHeight, depthWidth, CV_32FC1)
+                var outputDepthLow = cv::Mat(depthHeight, depthWidth, CV_32FC1)
+                var depthConfidence = cv::Mat(depthHeight, depthWidth, CV_8UC1)
+
+                if depthMap != nil && confMap != nil {
+                    let confPtr = UnsafePointer<UInt8>(OpaquePointer(confDataPtr!))
+                    let depthFloatPtr = UnsafePointer<Float>(OpaquePointer(depthDataPtr!))
+                    
+                    // Split depths by confidence into separate maps
+                    for y in 0..<Int(depthHeight) {
+                        for x in 0..<Int(depthWidth) {
+                            let idx = y * Int(depthWidth) + x
+                            let conf = confPtr[idx]
+                            let depth = depthFloatPtr[idx]
+                            
+                            // Store confidence value
+                            depthConfidence.at<UInt8>(y,x) = conf
+                            
+                            // Store depth in appropriate confidence map
+                            switch conf {
+                            case 2: // High confidence
+                                outputDepthHigh.at<Float32>(y,x) = depth
+                                outputDepthMedium.at<Float32>(y,x) = 0
+                                outputDepthLow.at<Float32>(y,x) = 0
+                            case 1: // Medium confidence  
+                                outputDepthHigh.at<Float32>(y,x) = 0
+                                outputDepthMedium.at<Float32>(y,x) = depth
+                                outputDepthLow.at<Float32>(y,x) = 0
+                            case 0: // Low confidence
+                                outputDepthHigh.at<Float32>(y,x) = 0
+                                outputDepthMedium.at<Float32>(y,x) = 0
+                                outputDepthLow.at<Float32>(y,x) = depth
+                            default:
+                                outputDepthHigh.at<Float32>(y,x) = 0
+                                outputDepthMedium.at<Float32>(y,x) = 0 
+                                outputDepthLow.at<Float32>(y,x) = 0
+                            }
+                        }
+                    }
+                }
+
+                // Pass all depth maps to core processing
                 postOdometryEventNative(native_rtabmap,
                                         !lost ? pose[3,0]:0, !lost ? pose[3,1]:0, !lost ? pose[3,2]:0, !lost ? quat.x:0, !lost ? quat.y:0, !lost ? quat.z:0, !lost ? quat.w:0,
                                         frame.camera.intrinsics[0,0], // fx
@@ -367,14 +410,18 @@ class RTABMap {
                                         Int32(CVPixelBufferGetWidth(frame.capturedImage)),           // rgb width
                                         Int32(CVPixelBufferGetHeight(frame.capturedImage)),          // rgb height
                                         Int32(CVPixelBufferGetPixelFormatType(frame.capturedImage)), // rgb format
-                                        depthDataPtr, // depth pointer
-                                        depthSize,    // depth size
-                                        depthWidth,   // depth width
-                                        depthHeight,  // depth height
-                                        depthFormat,  // depth format
-                                        confDataPtr, // conf pointer
-                                        confSize,    // conf size
-                                        confWidth,   // conf width
+                                        outputDepthHigh.data, // high confidence depth pointer
+                                        Int32(outputDepthHigh.total() * outputDepthHigh.elemSize()),    // depth size
+                                        Int32(outputDepthHigh.cols),   // depth width
+                                        Int32(outputDepthHigh.rows),  // depth height
+                                        depthFormat,  // depth format 
+                                        outputDepthMedium.data, // medium confidence depth pointer
+                                        Int32(outputDepthMedium.total() * outputDepthMedium.elemSize()),    // depth medium size
+                                        outputDepthLow.data, // low confidence depth pointer
+                                        Int32(outputDepthLow.total() * outputDepthLow.elemSize()),    // depth low size
+                                        depthConfidence.data, // confidence pointer
+                                        Int32(depthConfidence.total() * depthConfidence.elemSize()),    // confidence size
+                                        confWidth,   // conf width  
                                         confHeight,  // conf height
                                         confFormat,  // conf format
                                         bufferPoints.baseAddress, Int32(frame.rawFeaturePoints!.points.count), 4,

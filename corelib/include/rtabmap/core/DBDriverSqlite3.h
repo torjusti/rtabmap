@@ -106,6 +106,14 @@ protected:
 			const cv::Mat & image,
 			const std::string & format) const;
 
+	virtual void updateDepthImagesQuery(
+			int nodeId,
+			const cv::Mat & depthHigh,
+			const cv::Mat & depthMedium,
+			const cv::Mat & depthLow,
+			const cv::Mat & confidence,
+			const std::string & format) const;
+
 	void updateLaserScanQuery(
 			int nodeId,
 			const LaserScan & scan) const;
@@ -162,6 +170,7 @@ private:
 	std::string queryStepDepth() const;
 	std::string queryStepCalibrationUpdate() const;
 	std::string queryStepDepthUpdate() const;
+	std::string queryStepDepthMultiUpdate() const; // New declaration
 	std::string queryStepScanUpdate() const;
 	std::string queryStepSensorData() const;
 	std::string queryStepLinkUpdate() const;
@@ -188,6 +197,14 @@ private:
 			const cv::Mat & empty,
 			float cellSize,
 			const cv::Point3f & viewpoint) const;
+	void stepDepthMultiUpdate(
+        sqlite3_stmt * ppStmt,
+        int id,
+        const cv::Mat & depthHigh,
+        const cv::Mat & depthMedium,
+        const cv::Mat & depthLow,
+        const cv::Mat & confidence,
+        const std::string & format) const;  // New
 
 private:
 	void loadLinksQuery(std::list<Signature *> & signatures) const;

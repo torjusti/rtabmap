@@ -4754,6 +4754,153 @@ void DBDriverSqlite3::updateDepthImageQuery(
 	}
 }
 
+void DBDriverSqlite3::stepDepthMultiUpdate(
+		sqlite3_stmt * ppStmt, 
+		int nodeId,
+		const cv::Mat & depthHigh,
+		const cv::Mat & depthMedium,
+		const cv::Mat & depthLow,
+		const cv::Mat & confidence,
+		const std::string & format) const
+{
+	if(!ppStmt)
+	{
+		UFATAL("");
+	}
+
+	int rc = SQLITE_OK;
+	int index = 1;
+
+	// Bind high confidence depth
+	cv::Mat imageCompressed;
+	if(!depthHigh.empty() && (depthHigh.type()!=CV_8UC1 || depthHigh.rows > 1))
+	{
+		imageCompressed = compressImage2(depthHigh, format);
+	}
+	else
+	{
+		imageCompressed = depthHigh;
+	}
+	if(!imageCompressed.empty())
+	{
+		rc = sqlite3_bind_blob(ppStmt, index++, imageCompressed.data, (int)imageCompressed.cols, SQLITE_STATIC);
+	}
+	else
+	{
+		rc = sqlite3_bind_zeroblob(ppStmt, index++, 4);
+	}
+	UASSERT_MSG(rc == SQLITE_OK, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
+
+	// Bind medium confidence depth
+	if(!depthMedium.empty() && (depthMedium.type()!=CV_8UC1 || depthMedium.rows > 1))
+	{
+		imageCompressed = compressImage2(depthMedium, format);
+	}
+	else
+	{
+		imageCompressed = depthMedium;
+	}
+	if(!imageCompressed.empty())
+	{
+		rc = sqlite3_bind_blob(ppStmt, index++, imageCompressed.data, (int)imageCompressed.cols, SQLITE_STATIC);
+	}
+	else
+	{
+		rc = sqlite3_bind_zeroblob(ppStmt, index++, 4);
+	}
+	UASSERT_MSG(rc == SQLITE_OK, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
+
+	// Bind low confidence depth
+	if(!depthLow.empty() && (depthLow.type()!=CV_8UC1 || depthLow.rows > 1))
+	{
+		imageCompressed = compressImage2(depthLow, format);
+	}
+	else
+	{
+		imageCompressed = depthLow;
+	}
+	if(!imageCompressed.empty())
+	{
+		rc = sqlite3_bind_blob(ppStmt, index++, imageCompressed.data, (int)imageCompressed.cols, SQLITE_STATIC);
+	}
+	else
+	{
+		rc = sqlite3_bind_zeroblob(ppStmt, index++, 4);
+	}
+	UASSERT_MSG(rc == SQLITE_OK, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
+
+	// Bind confidence map
+	if(!confidence.empty() && (confidence.type()!=CV_8UC1 || confidence.rows > 1))
+	{
+		imageCompressed = compressImage2(confidence, format);
+	}
+	else
+	{
+		imageCompressed = confidence;
+	}
+	if(!imageCompressed.empty())
+	{
+		rc = sqlite3_bind_blob(ppStmt, index++, imageCompressed.data, (int)imageCompressed.cols, SQLITE_STATIC);
+	}
+	else
+	{
+		rc = sqlite3_bind_zeroblob(ppStmt, index++, 4);
+	}
+	UASSERT_MSG(rc == SQLITE_OK, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
+
+	rc = sqlite3_bind_int(ppStmt, index++, nodeId);
+	UASSERT_MSG(rc == SQLITE_OK, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
+
+	rc = sqlite3_step(ppStmt);
+	UASSERT_MSG(rc == SQLITE_DONE, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
+
+	rc = sqlite3_reset(ppStmt);
+	UASSERT_MSG(rc == SQLITE_OK, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
+}
+
+void DBDriverSqlite3::updateDepthImagesQuery(
+    int nodeId,
+    const cv::Mat & depthHigh,
+    const cv::Mat & depthMedium,
+    const cv::Mat & depthLow,
+    const cv::Mat & confidence,
+    const std::string & format) const
+{
+	UDEBUG("");
+	if(_ppDb)
+	{
+		std::string type;
+		UTimer timer;
+		timer.start();
+		int rc = SQLITE_OK;
+		sqlite3_stmt * ppStmt = 0;
+
+		// Create query
+		std::string query = queryStepDepthMultiUpdate();
+		rc = sqlite3_prepare_v2(_ppDb, query.c_str(), -1, &ppStmt, 0);
+		UASSERT_MSG(rc == SQLITE_OK, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
+
+		// Save depth
+		stepDepthMultiUpdate(ppStmt,
+				nodeId,
+				depthHigh,
+				depthMedium,
+				depthLow,
+				confidence,
+				format);
+		UASSERT_MSG(rc == SQLITE_OK, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
+
+		UDEBUG("Time=%fs", timer.ticks());
+	}
+}
+
+std::string DBDriverSqlite3::queryStepDepthMultiUpdate() const
+{
+	return "UPDATE Node SET "
+		   "depth = ?, depth_medium = ?, depth_low = ?, depth_confidence = ?"
+		   " WHERE id = ?;";
+}
+
 void DBDriverSqlite3::updateLaserScanQuery(
 		int nodeId,
 		const LaserScan & scan) const
@@ -6765,12 +6912,12 @@ void DBDriverSqlite3::stepKeypoint(sqlite3_stmt * ppStmt,
 	UASSERT_MSG(rc == SQLITE_OK, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
 }
 
-std::string DBDriverSqlite3::queryStepGlobalDescriptor() const
+std::string rtabmap::DBDriverSqlite3::queryStepGlobalDescriptor() const
 {
 	UASSERT(uStrNumCmp(_version, "0.20.0") >= 0);
 	return "INSERT INTO GlobalDescriptor(node_id, type, info, data) VALUES(?,?,?,?);";
 }
-void DBDriverSqlite3::stepGlobalDescriptor(sqlite3_stmt * ppStmt,
+void rtabmap::DBDriverSqlite3::stepGlobalDescriptor(sqlite3_stmt * ppStmt,
 		int nodeId,
 		const GlobalDescriptor & descriptor) const
 {
@@ -6820,7 +6967,7 @@ void DBDriverSqlite3::stepGlobalDescriptor(sqlite3_stmt * ppStmt,
 	UASSERT_MSG(rc == SQLITE_OK, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
 }
 
-std::string DBDriverSqlite3::queryStepOccupancyGridUpdate() const
+std::string rtabmap::DBDriverSqlite3::queryStepOccupancyGridUpdate() const
 {
 	UASSERT(uStrNumCmp(_version, "0.11.10") >= 0);
 	if(uStrNumCmp(_version, "0.16.0") >= 0)
@@ -6829,7 +6976,7 @@ std::string DBDriverSqlite3::queryStepOccupancyGridUpdate() const
 	}
 	return "UPDATE Data SET ground_cells=?, obstacle_cells=?, cell_size=?, view_point_x=?, view_point_y=?, view_point_z=? WHERE id=?;";
 }
-void DBDriverSqlite3::stepOccupancyGridUpdate(sqlite3_stmt * ppStmt,
+void rtabmap::DBDriverSqlite3::stepOccupancyGridUpdate(sqlite3_stmt * ppStmt,
 		int nodeId,
 		const cv::Mat & ground,
 		const cv::Mat & obstacles,

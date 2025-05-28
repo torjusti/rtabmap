@@ -101,6 +101,13 @@ public:
 		const std::vector<CameraModel> & models,
 		const std::vector<StereoCameraModel> & stereoModels);
 	void updateDepthImage(int nodeId, const cv::Mat & image, const std::string & format);
+	void updateDepthImages(
+		int nodeId, 
+		const cv::Mat & depthHigh,
+		const cv::Mat & depthMedium, 
+		const cv::Mat & depthLow,
+		const cv::Mat & confidence,
+		const std::string & format);
 	void updateLaserScan(int nodeId, const LaserScan & scan);
 
 public:
@@ -244,6 +251,14 @@ protected:
 	virtual void updateDepthImageQuery(
 			int nodeId,
 			const cv::Mat & image,
+			const std::string & format) const = 0;
+
+	virtual void updateDepthImagesQuery(  // New method for multiple depth maps
+			int nodeId,
+			const cv::Mat & depthHigh, 
+			const cv::Mat & depthMedium,
+			const cv::Mat & depthLow,
+			const cv::Mat & confidence,
 			const std::string & format) const = 0;
 
 	virtual void updateLaserScanQuery(
