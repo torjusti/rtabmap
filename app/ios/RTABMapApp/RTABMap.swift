@@ -260,16 +260,18 @@ class RTABMap {
 
     func postOdometryEvent(frame: ARFrame, orientation: UIInterfaceOrientation, viewport: CGSize) {
         let pose = frame.camera.transform   // ViewMatrix
-        let rotation = GLKMatrix3(
-            m: (pose[0,0], pose[0,1], pose[0,2],
-                pose[1,0], pose[1,1], pose[1,2],
-                pose[2,0], pose[2,1], pose[2,2]))
         
-        // The ViewMatrix is the inverse of the camera pose matrix
-        let position = -GLKVector3(v: (
-            x: rotation.m00 * pose[3,0] + rotation.m10 * pose[3,1] + rotation.m20 * pose[3,2],
-            y: rotation.m01 * pose[3,0] + rotation.m11 * pose[3,1] + rotation.m21 * pose[3,2],
-            z: rotation.m02 * pose[3,0] + rotation.m12 * pose[3,1] + rotation.m22 * pose[3,2]))
+        // Convert camera transform to SIMD rotation matrix and position
+        let rotation = simd_float3x3(
+            SIMD3<Float>(pose[0,0], pose[0,1], pose[0,2]),
+            SIMD3<Float>(pose[1,0], pose[1,1], pose[1,2]),
+            SIMD3<Float>(pose[2,0], pose[2,1], pose[2,2])
+        )
+        let translation = SIMD3<Float>(pose[3,0], pose[3,1], pose[3,2])
+        
+        // Calculate position by applying inverse transform 
+        // position = -(R^T * t) where R^T is transpose of rotation matrix
+        let position = -(rotation.transpose * translation)
         
         var pixelBuffer: CVPixelBuffer?
         var cameraIntrinsics = frame.camera.intrinsics
