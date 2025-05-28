@@ -180,9 +180,19 @@ public:
 	const cv::Mat & depthOrRightCompressed() const {return _depthOrRightCompressed;}
 	const LaserScan & laserScanCompressed() const {return _laserScanCompressed;}
 
+	// Additional depth maps compressed accessors
+	const cv::Mat & depthMediumCompressed() const {return _depthMediumCompressed;}
+	const cv::Mat & depthLowCompressed() const {return _depthLowCompressed;}
+	const cv::Mat & confidenceMapCompressed() const {return _confidenceMapCompressed;}
+
 	const cv::Mat & imageRaw() const {return _imageRaw;}
 	const cv::Mat & depthOrRightRaw() const {return _depthOrRightRaw;}
 	const LaserScan & laserScanRaw() const {return _laserScanRaw;}
+
+	// Additional depth confidence levels
+	cv::Mat depthMediumRaw() const {return !(_depthMediumRaw.type()==CV_8UC1 || _depthMediumRaw.type()==CV_8UC3) ? _depthMediumRaw : cv::Mat();}
+	cv::Mat depthLowRaw() const {return !(_depthLowRaw.type()==CV_8UC1 || _depthLowRaw.type()==CV_8UC3) ? _depthLowRaw : cv::Mat();}
+	cv::Mat confidenceMapRaw() const {return !(_confidenceMapRaw.type()==CV_8UC1 || _confidenceMapRaw.type()==CV_8UC3) ? _confidenceMapRaw : cv::Mat();}
 
 	/**
 	 * Set image data. Detect automatically if raw or compressed.
@@ -227,7 +237,10 @@ public:
 			cv::Mat * userDataRaw = 0,
 			cv::Mat * groundCellsRaw = 0,
 			cv::Mat * obstacleCellsRaw = 0,
-			cv::Mat * emptyCellsRaw = 0);
+			cv::Mat * emptyCellsRaw = 0,
+			cv::Mat * depthMediumRaw = 0,
+			cv::Mat * depthLowRaw = 0,
+			cv::Mat * confidenceMapRaw = 0);
 	void uncompressDataConst(
 			cv::Mat * imageRaw,
 			cv::Mat * depthOrRightRaw,
@@ -235,7 +248,10 @@ public:
 			cv::Mat * userDataRaw = 0,
 			cv::Mat * groundCellsRaw = 0,
 			cv::Mat * obstacleCellsRaw = 0,
-			cv::Mat * emptyCellsRaw = 0) const;
+			cv::Mat * emptyCellsRaw = 0,
+			cv::Mat * depthMediumRaw = 0, 
+			cv::Mat * depthLowRaw = 0,
+			cv::Mat * confidenceMapRaw = 0) const;
 
 	const std::vector<CameraModel> & cameraModels() const {return _cameraModels;}
 	const std::vector<StereoCameraModel> & stereoCameraModels() const {return _stereoCameraModels;}
@@ -251,6 +267,9 @@ public:
 	void setUserData(const cv::Mat & userData, bool clearPreviousData = true);
 	const cv::Mat & userDataRaw() const {return _userDataRaw;}
 	const cv::Mat & userDataCompressed() const {return _userDataCompressed;}
+	
+	// Additional depth maps
+	void setDepthMaps(const cv::Mat & depthMedium, const cv::Mat & depthLow, const cv::Mat & confidenceMap);
 
 	// detect automatically if raw or compressed. If raw, the data will be compressed.
 	void setOccupancyGrid(
@@ -372,6 +391,14 @@ private:
 	GPS gps_;
 
 	IMU imu_;
+
+	// Additional depth maps and confidence data
+	cv::Mat _depthMediumCompressed;    // compressed medium confidence depth
+	cv::Mat _depthLowCompressed;       // compressed low confidence depth 
+	cv::Mat _confidenceMapCompressed;   // compressed confidence values
+	cv::Mat _depthMediumRaw;          // depth CV_16UC1 or CV_32FC1
+	cv::Mat _depthLowRaw;             // depth CV_16UC1 or CV_32FC1 
+	cv::Mat _confidenceMapRaw;         // confidence CV_8UC1
 
 #ifdef HAVE_OPENCV_CUDEV
 	// Temporary buffers used for some optimizations,

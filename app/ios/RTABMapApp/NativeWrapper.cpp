@@ -286,31 +286,95 @@ void setCameraNative(const void *object, int type) {
 }
 
 void postOdometryEventNative(const void *object,
-        float x, float y, float z, float qx, float qy, float qz, float qw,
-        float fx, float fy, float cx, float cy,
-        double stamp,
-        const void * yPlane,  const void * uPlane,  const void * vPlane, int yPlaneLen, int rgbWidth, int rgbHeight, int rgbFormat,
-        const void * depth, int depthLen, int depthWidth, int depthHeight, int depthFormat,
-        const void * conf, int confLen, int confWidth, int confHeight, int confFormat,
-        const void * points, int pointsLen, int pointsChannels,
-        float vx, float vy, float vz, float vqx, float vqy, float vqz, float vqw,
-        float p00, float p11, float p02, float p12, float p22, float p32, float p23,
-        float t0, float t1, float t2, float t3, float t4, float t5, float t6, float t7)
+                       float x, float y, float z,
+                       float qx, float qy, float qz,
+                       float fx, float fy, float cx, float cy,
+                       int width, int height,
+                       double stamp,
+                       const void * yPlane, int yPlaneBytesPerRow,
+                       const void * vPlane, int vPlaneBytesPerRow,
+                       const void * depth, int depthBytesPerRow,
+                       const void * depthMedium, int depthMediumBytesPerRow,
+                       const void * depthLow, int depthLowBytesPerRow,
+                       const void * confidence, int confidenceBytesPerRow,
+                       int orientation)
 {
     if(object)
     {
-        native(object)->postOdometryEvent(
-                (qx==0.0f && qy==0.0f && qz==0.0f && qw==0.0f)?rtabmap::Transform():rtabmap::Transform(x,y,z,qx,qy,qz,qw),
-                fx,fy,cx,cy, 0,0,0,0,
-                rtabmap::Transform(), rtabmap::Transform(),
-                stamp, 0,
-                yPlane, uPlane, vPlane, yPlaneLen, rgbWidth, rgbHeight, rgbFormat,
-                depth, depthLen, depthWidth, depthHeight, depthFormat,
-                conf, confLen, confWidth, confHeight, confFormat,
-                (const float *)points, pointsLen, pointsChannels,
-                rtabmap::Transform(vx, vy, vz, vqx, vqy, vqz, vqw),
-                p00, p11, p02, p12, p22, p32, p23,
-                t0, t1, t2, t3, t4, t5, t6, t7);
+        rtabmap::Transform pose;
+        if(!(x==0.0f && y==0.0f && z==0.0f && qx==0.0f && qy==0.0f && qz==0.0f))
+        {
+            // Create pose from position and quaternion
+            Eigen::Matrix3f R;
+            R = Eigen::Quaternionf(qx, qy, qz).toRotationMatrix();
+            pose = rtabmap::Transform(
+                x, y, z,
+                R(0,0), R(0,1), R(0,2),
+                R(1,0), R(1,1), R(1,2),
+                R(2,0), R(2,1), R(2,2));
+        }
+        
+        cv::Mat rgbMat;
+        if(yPlane != 0 && vPlane != 0)
+        {
+            // Convert YUV to RGB
+            cv::Mat yMat(height, width, CV_8UC1, (void*)yPlane, yPlaneBytesPerRow);
+            cv::Mat uvMat(height/2, width/2, CV_8UC2, (void*)vPlane, vPlaneBytesPerRow);
+            cv::cvtColor(yMat, rgbMat, cv::COLOR_YUV2BGR_NV21);
+        }
+        
+        cv::Mat depthMat;
+        if(depth != 0)
+        {
+            depthMat = cv::Mat(height, width, CV_32FC1, (void*)depth, depthBytesPerRow);
+        }
+        
+        cv::Mat depthMediumMat;
+        if(depthMedium != 0)
+        {
+            depthMediumMat = cv::Mat(height, width, CV_32FC1, (void*)depthMedium, depthMediumBytesPerRow);
+        }
+        
+        cv::Mat depthLowMat;
+        if(depthLow != 0)
+        {
+            depthLowMat = cv::Mat(height, width, CV_32FC1, (void*)depthLow, depthLowBytesPerRow);
+        }
+        
+        cv::Mat confidenceMat;
+        if(confidence != 0)
+        {
+            confidenceMat = cv::Mat(height, width, CV_8UC1, (void*)confidence, confidenceBytesPerRow);
+        }
+        
+        rtabmap::CameraModel model(
+            fx, fy, cx, cy,
+            pose,
+            0,
+            cv::Size(width, height));
+        
+        rtabmap::SensorData data(
+            rgbMat,
+            depthMat,
+            model,
+            0,
+            stamp);
+            
+        // Add the additional depth maps and confidence
+        if(!depthMediumMat.empty())
+        {
+            data.setDepthMedium(depthMediumMat);
+        }
+        if(!depthLowMat.empty())
+        {
+            data.setDepthLow(depthLowMat);
+        }
+        if(!confidenceMat.empty())
+        {
+            data.setConfidenceMap(confidenceMat);
+        }
+        
+        native(object)->postOdometryEvent(data);
     }
     else
     {

@@ -69,16 +69,18 @@ bool startCameraNative(const void *object);
 void stopCameraNative(const void *object);
 void setCameraNative(const void *object, int type);
 void postOdometryEventNative(const void *object,
-                       float x, float y, float z, float qx, float qy, float qz, float qw,
+                       float x, float y, float z,
+                       float qx, float qy, float qz,
                        float fx, float fy, float cx, float cy,
+                       int width, int height,
                        double stamp,
-                       const void * yPlane,  const void * uPlane,  const void * vPlane, int yPlaneLen, int rgbWidth, int rgbHeight, int rgbFormat,
-                       const void * depth, int depthLen, int depthWidth, int depthHeight, int depthFormat,
-                       const void * conf, int confLen, int confWidth, int confHeight, int confFormat,
-                       const void * points, int pointsLen, int pointsChannels,
-                       float vx, float vy, float vz, float vqx, float vqy, float vqz, float vqw,
-                       float p00, float p11, float p02, float p12, float p22, float p32, float p23,
-                       float t0, float t1, float t2, float t3, float t4, float t5, float t6, float t7);
+                       const void * yPlane, int yPlaneBytesPerRow,
+                       const void * vPlane, int vPlaneBytesPerRow,
+                       const void * depth, int depthBytesPerRow,
+                       const void * depthMedium, int depthMediumBytesPerRow,
+                       const void * depthLow, int depthLowBytesPerRow,
+                       const void * confidence, int confidenceBytesPerRow,
+                       int orientation);
 
 void setOnlineBlendingNative(const void *object, bool enabled);
 void setMapCloudShownNative(const void *object, bool shown);

@@ -88,6 +88,9 @@ protected:
 	virtual void addLinkQuery(const Link & link) const;
 	virtual void updateLinkQuery(const Link & link) const;
 
+	// Protected method to add multiple links to a specified table
+	void addLinkQuery(const std::list<Link> & links, const std::string & tableName) const;
+
 	virtual void updateOccupancyGridQuery(
 			int nodeId,
 			const cv::Mat & ground,
@@ -104,6 +107,14 @@ protected:
 	virtual void updateDepthImageQuery(
 			int nodeId,
 			const cv::Mat & image,
+			const std::string & format) const;
+
+	virtual void updateDepthMapsQuery(
+			int nodeId,
+			const cv::Mat & depthHigh,
+			const cv::Mat & depthMedium,
+			const cv::Mat & depthLow,
+			const cv::Mat & confidenceMap,
 			const std::string & format) const;
 
 	void updateLaserScanQuery(
@@ -162,6 +173,7 @@ private:
 	std::string queryStepDepth() const;
 	std::string queryStepCalibrationUpdate() const;
 	std::string queryStepDepthUpdate() const;
+	std::string queryStepDepthMapsUpdate() const;
 	std::string queryStepScanUpdate() const;
 	std::string queryStepSensorData() const;
 	std::string queryStepLinkUpdate() const;
@@ -175,6 +187,7 @@ private:
 	void stepDepth(sqlite3_stmt * ppStmt, const SensorData & sensorData) const;
 	void stepCalibrationUpdate(sqlite3_stmt * ppStmt, int nodeId, const std::vector<CameraModel> & models, const std::vector<StereoCameraModel> & stereoModels) const;
 	void stepDepthUpdate(sqlite3_stmt * ppStmt, int nodeId, const cv::Mat & image, const std::string & format) const;
+	void stepDepthMapsUpdate(sqlite3_stmt * ppStmt, int nodeId, const cv::Mat & depthHigh, const cv::Mat & depthMedium, const cv::Mat & depthLow, const cv::Mat & confidenceMap, const std::string & format) const;
 	void stepScanUpdate(sqlite3_stmt * ppStmt, int nodeId, const LaserScan & image) const;
 	void stepSensorData(sqlite3_stmt * ppStmt, const SensorData & sensorData) const;
 	void stepLink(sqlite3_stmt * ppStmt, const Link & link) const;
