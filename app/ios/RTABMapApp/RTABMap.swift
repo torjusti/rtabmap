@@ -441,20 +441,34 @@ class RTABMap {
                                         Int32(CVPixelBufferGetWidth(frame.capturedImage)),           // rgb width
                                         Int32(CVPixelBufferGetHeight(frame.capturedImage)),          // rgb height
                                         Int32(CVPixelBufferGetPixelFormatType(frame.capturedImage)), // rgb format
-                                        UnsafeMutableRawPointer(highBuffer.baseAddress), // high confidence depth pointer
-                                        Int32(bufferSize * MemoryLayout<Float>.stride),    // depth size
-                                        depthWidth,   // depth width is already Int32
-                                        depthHeight,  // depth height is already Int32
-                                        depthFormat,  // depth format is already Int32
-                                        UnsafeMutableRawPointer(mediumBuffer.baseAddress), // medium confidence depth pointer
+                                        
+                                        highBuffer.baseAddress,
+                                        Int32(bufferSize * MemoryLayout<Float>.stride),
+        
+                                        mediumBuffer.baseAddress, // medium confidence depth pointer
                                         Int32(bufferSize * MemoryLayout<Float>.stride),    // depth medium size
-                                        UnsafeMutableRawPointer(lowBuffer.baseAddress), // low confidence depth pointer
+                                        
+                                        lowBuffer.baseAddress, // low confidence depth pointer
                                         Int32(bufferSize * MemoryLayout<Float>.stride),    // depth low size
+                                            
+                                        depthWidth,
+                                        depthHeight,
+                                        depthFormat,
+                                            
                                         UnsafeMutableRawPointer(confidenceBuffer.baseAddress), // confidence pointer
                                         Int32(bufferSize * MemoryLayout<UInt8>.stride),    // confidence size
                                         confWidth,   // conf width is already Int32
                                         confHeight,  // conf height is already Int32
-                                        confFormat   // conf format is already Int32
+                                        confFormat,   // conf format is already Int32,
+                                            bufferPoints.baseAddress,
+                                            Int32(frame.rawFeaturePoints!.points.count),
+                                        4,
+                                        v[3, 0], v[3, 1], v[3, 2],
+                                        quatv.x, quatv.y, quatv.z, quatv.w,
+                                        p[0, 0], p[1, 1], p[2, 0], p[2, 1], p[2, 2], p[2, 3], p[3, 2],
+                                            texCoord[0], texCoord[1], texCoord[2], texCoord[3], texCoord[4], texCoord[5],
+                                            texCoord[6], texCoord[7]
+                    )
                 }
                 
                 if depthMap != nil {
