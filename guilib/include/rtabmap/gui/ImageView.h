@@ -121,12 +121,14 @@ public:
 
 Q_SIGNALS:
 	void configChanged();
+	void imageClicked(float x, float y, float depth, const cv::Point3f & pt3d);
 
 protected:
 	virtual void paintEvent(QPaintEvent *event);
 	virtual void resizeEvent(QResizeEvent* event);
 	virtual void contextMenuEvent(QContextMenuEvent * e);
 	virtual void mouseMoveEvent(QMouseEvent * event);
+	virtual void mousePressEvent(QMouseEvent * event);
 
 private Q_SLOTS:
 	void sceneRectChanged(const QRectF &rect);

@@ -142,7 +142,7 @@ private Q_SLOTS:
 	void sliderNeighborValueChanged(int);
 	void sliderLoopValueChanged(int);
 	void sliderIterationsValueChanged(int);
-	void editConstraint();
+	void editConstraint(int imageIndex = 0, float x = 0.0f, float y = 0.0f, float z = 0.0f);
 	void updateGrid();
 	void updateOctomapView();
 	void updateGraphRotation();
@@ -157,6 +157,9 @@ private Q_SLOTS:
 	void notifyParametersChanged(const QStringList &);
 	void setupMainLayout(bool vertical);
 	void updateConstraintButtons();
+	void handleImageClicked(int imageIndex, float x, float y, float depth, const cv::Point3f & pt3d);
+	void handleImageAClicked(float x, float y, float depth, const cv::Point3f & pt3d);
+	void handleImageBClicked(float x, float y, float depth, const cv::Point3f & pt3d);
 
 private:
 	QString getIniFilePath() const;

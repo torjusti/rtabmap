@@ -59,6 +59,7 @@ SET(SRC_FILES
 	./AboutDialog.cpp
 	./ConsoleWidget.cpp
 	./DatabaseViewer.cpp
+	./DatabaseViewerPosePriors.cpp
 	./utilite/UPlot.cpp
 	./CloudViewer.cpp
 	./CloudViewerCellPicker.cpp

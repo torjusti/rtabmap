@@ -1208,6 +1208,66 @@ void ImageView::mouseMoveEvent(QMouseEvent * event)
 	QWidget::mouseMoveEvent(event);
 }
 
+void ImageView::mousePressEvent(QMouseEvent * event)
+{
+	if(!_graphicsView->scene()->sceneRect().isNull() &&
+		!_image.isNull() &&
+		!_imageDepthCv.empty() &&(_imageDepthCv.type() == CV_16UC1 || _imageDepthCv.type() == CV_32FC1))
+	{
+		float scale, offsetX, offsetY;
+		computeScaleOffsets(this->rect(), scale, offsetX, offsetY);
+		float u = (event->pos().x() - offsetX) / scale;
+		float v = (event->pos().y() - offsetY) / scale;
+		float depthScale = 1;
+		if(_image.width() > _imageDepthCv.cols)
+		{
+			depthScale = float(_imageDepthCv.cols) / float(_image.width());
+		}
+		int ud = int(u*depthScale);
+		int vd = int(v*depthScale);
+		if(ud>=0 && vd>=0 && ud < _imageDepthCv.cols && vd < _imageDepthCv.rows)
+		{
+			float depth = 0;
+			if(_imageDepthCv.type() == CV_32FC1)
+			{
+				depth = _imageDepthCv.at<float>(vd, ud);
+			}
+			else
+			{
+				depth = float(_imageDepthCv.at<unsigned short>(vd, ud)) / 1000.0f;
+			}
+
+			cv::Point3f pt(0,0,0);
+			if(depth>0 && !_models.empty() && !_pose.isNull())
+			{
+				int subImageWidth = _imageDepthCv.cols / _models.size();
+				int subImageIndex = ud / subImageWidth;
+				UASSERT(subImageIndex < (int)_models.size());
+				float x,y,z;
+				_models[subImageIndex].project(u, v, depth, x, y, z);
+				pt = cv::Point3f(x,y,z);
+				pt = util3d::transformPoint(pt, _pose*_models[subImageIndex].localTransform());
+				
+				UINFO("ImageView: Emitting imageClicked signal with u=%f, v=%f, depth=%f, pt=(%f,%f,%f)",
+					u, v, depth, pt.x, pt.y, pt.z);
+				std::cout << "ImageView: Emitting imageClicked signal with coordinates: (" 
+					<< pt.x << "," << pt.y << "," << pt.z << ")" << std::endl;
+					
+				Q_EMIT imageClicked(u, v, depth, pt);
+			}
+			else
+			{
+				UWARN("ImageView: Not emitting imageClicked signal because: depth=%f, models_empty=%s, pose_null=%s",
+					depth, _models.empty()?"true":"false", _pose.isNull()?"true":"false");
+				std::cout << "ImageView: Not emitting imageClicked signal because: depth=" << depth 
+					<< ", models_empty=" << (_models.empty()?"true":"false") 
+					<< ", pose_null=" << (_pose.isNull()?"true":"false") << std::endl;
+			}
+		}
+	}
+	QWidget::mousePressEvent(event);
+}
+
 void ImageView::updateOpacity()
 {
 	if(_imageItem && (_imageDepthItem || _imageDepthConfidenceItem))

@@ -166,6 +166,11 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	editMapDialog_->setLayout(vLayout);
 	editMapDialog_->setWindowTitle(tr("Edit Optimized Map"));
 
+	connect(ui_->graphicsView_A, SIGNAL(imageClicked(float, float, float, const cv::Point3f &)), 
+		this, SLOT(handleImageAClicked(float, float, float, const cv::Point3f &)));
+	connect(ui_->graphicsView_B, SIGNAL(imageClicked(float, float, float, const cv::Point3f &)), 
+		this, SLOT(handleImageBClicked(float, float, float, const cv::Point3f &)));
+
 	QString title("RTAB-Map Database Viewer[*]");
 	this->setWindowTitle(title);
 
@@ -6199,13 +6204,20 @@ void DatabaseViewer::sliderLoopValueChanged(int value)
 	}
 }
 
-void DatabaseViewer::editConstraint()
+void DatabaseViewer::editConstraint(int imageIndex, float x, float y, float z)
 {
 	if(ids_.size())
 	{
 		Link link(0,0,Link::kUndef, Transform::getIdentity());
 		int priorId = sender() == ui_->toolButton_edit_priorA?ids_.at(ui_->horizontalSlider_A->value()):
 					  sender() == ui_->toolButton_edit_priorB?ids_.at(ui_->horizontalSlider_B->value()):0;
+
+		bool hasCoordinates = (x != 0.0f || y != 0.0f || z != 0.0f);
+		if(hasCoordinates) {
+			UINFO("editConstraint called with coordinates (%f,%f,%f)", x, y, z);
+			priorId = imageIndex == 0 ? ids_.at(ui_->horizontalSlider_A->value()) :
+					  imageIndex == 1 ? ids_.at(ui_->horizontalSlider_B->value()) : 0;
+		}
 		if(priorId>0)
 		{
 			// Prior
@@ -6242,12 +6254,37 @@ void DatabaseViewer::editConstraint()
 		bool updated = false;
 		if(link.isValid())
 		{
+			UINFO("Found existing link, editing it");
+
 			cv::Mat covBefore = link.infMatrix().inv();
-			EditConstraintDialog dialog(link.transform(), covBefore);
+			Transform defaultTransform = link.transform();
+			if(hasCoordinates) 
+			{
+				float roll, pitch, yaw;
+				defaultTransform.getEulerAngles(roll, pitch, yaw);
+				defaultTransform = Transform(x, y, z, roll, pitch, yaw);
+				UINFO("Using coordinates (%f,%f,%f) for the constraint dialog", x, y, z);
+			}
+
+			EditConstraintDialog dialog(defaultTransform, covBefore);
 			if(dialog.exec() == QDialog::Accepted)
 			{
 				cv::Mat covariance = dialog.getCovariance();
-				Link newLink(link.from(), link.to(), link.type(), dialog.getTransform(), covariance.inv());
+
+				Transform transform = dialog.getTransform();
+				if (hasCoordinates) {
+					Transform odomPose = odomPoses_.at(priorId);
+					float roll, pitch, yaw;
+					transform.getEulerAngles(roll, pitch, yaw);
+					transform = Transform(odomPose.x() + (transform.x() - x),
+										  odomPose.y() + (transform.y() - y),
+										  odomPose.z() + (transform.z() - z),
+										  roll,
+										  pitch,
+										  yaw);
+				}
+
+				Link newLink(link.from(), link.to(), link.type(), transform, covariance.inv());
 				std::multimap<int, Link>::iterator iter = linksRefined_.find(link.from());
 				while(iter != linksRefined_.end() && iter->first == link.from())
 				{
@@ -6271,11 +6308,30 @@ void DatabaseViewer::editConstraint()
 					updateConstraintView();
 				}
 			}
-		}
-		else
-		{
+		} else {
+			UINFO("No link found to edit, creating a new one...");
+
+			Transform defaultTransform = link.transform();
+			if(hasCoordinates) 
+			{
+				float roll, pitch, yaw;
+				defaultTransform.getEulerAngles(roll, pitch, yaw);
+				defaultTransform = Transform(x, y, z, roll, pitch, yaw);
+				UINFO("Using coordinates (%f,%f,%f) for the constraint dialog", x, y, z);
+			}
+
 			EditConstraintDialog dialog(
-				link.transform(), cv::Mat::eye(6,6,CV_64FC1) * (priorId>0?0.00001:1));
+				defaultTransform, cv::Mat::eye(6,6,CV_64FC1) * (priorId>0?0.00001:1));
+
+			Transform transform = dialog.getTransform();
+			if (hasCoordinates) {
+				Transform odomPose = odomPoses_.at(priorId);
+				float roll, pitch, yaw;
+				transform.getEulerAngles(roll, pitch, yaw);
+				transform = Transform(odomPose.x() + (transform.x() - x), odomPose.y() + (transform.y() - y),
+					odomPose.z() + (transform.z() - z), roll, pitch, yaw);
+			}
+
 			if(dialog.exec() == QDialog::Accepted)
 			{
 				cv::Mat covariance = dialog.getCovariance();
@@ -6285,7 +6341,7 @@ void DatabaseViewer::editConstraint()
 						from,
 						to,
 						priorId>0?Link::kPosePrior:Link::kUserClosure,
-						dialog.getTransform(),
+						transform,
 						covariance.inv());
 				if(newLink.from() < newLink.to())
 				{
