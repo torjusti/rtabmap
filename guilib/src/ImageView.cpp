@@ -41,7 +41,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QPrinter>
 #include <QGraphicsRectItem>
 #include <QToolTip>
+#include <QMessageBox>
 #include "rtabmap/utilite/ULogger.h"
+#include "rtabmap/utilite/UMath.h"
 #include "rtabmap/gui/KeypointItem.h"
 #include "rtabmap/core/util2d.h"
 #include "rtabmap/core/util3d_transforms.h"
@@ -281,6 +283,9 @@ ImageView::ImageView(QWidget * parent) :
 	_mouseTracking->setChecked(false);
 	_saveImage = _menu->addAction(tr("Save picture..."));
 	_saveImage->setEnabled(false);
+	_addAnchorPoint = new QAction(tr("Add anchor point here..."), this);
+	_addAnchorPoint->setVisible(false);
+	_menu->insertAction(_showImage, _addAnchorPoint);
 
 	setMouseTracking(true);
 
@@ -928,7 +933,21 @@ void ImageView::contextMenuEvent(QContextMenuEvent * e)
 	_setMatchingLineColor->setIconVisibleInMenu(true);
 
 	QAction * action = _menu->exec(e->globalPos());
-	if(action == _saveImage)
+	if(action == _addAnchorPoint)
+	{
+		cv::Point3f pt;
+		if(projectPixelTo3D(e->pos(), pt))
+		{
+			Q_EMIT pointPicked(pt.x, pt.y, pt.z);
+		}
+		else
+		{
+			QMessageBox::information(this, tr("Add anchor point"),
+					tr("No 3D position under the cursor (missing depth value or camera calibration). "
+					   "Right-click directly on a pixel with valid depth."));
+		}
+	}
+	else if(action == _saveImage)
 	{
 		if(!_graphicsView->scene()->sceneRect().isNull())
 		{
@@ -1134,6 +1153,77 @@ void ImageView::contextMenuEvent(QContextMenuEvent * e)
 		this->updateOpacity();
 		Q_EMIT configChanged();
 	}
+}
+
+void ImageView::setAnchorPointActionEnabled(bool enabled)
+{
+	_addAnchorPoint->setVisible(enabled);
+}
+
+bool ImageView::isAnchorPointActionEnabled() const
+{
+	return _addAnchorPoint->isVisible();
+}
+
+bool ImageView::projectPixelTo3D(const QPoint & pos, cv::Point3f & pt) const
+{
+	if(_graphicsView->scene()->sceneRect().isNull() ||
+	   _imageDepthCv.empty() ||
+	   !(_imageDepthCv.type() == CV_16UC1 || _imageDepthCv.type() == CV_32FC1) ||
+	   _models.empty())
+	{
+		return false;
+	}
+
+	// widget position -> image coordinates
+	float u, v;
+	if(_graphicsView->isVisible())
+	{
+		QPointF scenePos = _graphicsView->mapToScene(_graphicsView->mapFrom(const_cast<ImageView*>(this), pos));
+		u = scenePos.x();
+		v = scenePos.y();
+	}
+	else
+	{
+		float scale, offsetX, offsetY;
+		computeScaleOffsets(this->rect(), scale, offsetX, offsetY);
+		u = (pos.x() - offsetX) / scale;
+		v = (pos.y() - offsetY) / scale;
+	}
+
+	// the depth image can be smaller than the RGB image
+	float depthScale = 1.0f;
+	if(_image.width() && _image.width() != _imageDepthCv.cols)
+	{
+		depthScale = float(_imageDepthCv.cols) / float(_image.width());
+	}
+	int ud = int(u*depthScale);
+	int vd = int(v*depthScale);
+	if(ud < 0 || vd < 0 || ud >= _imageDepthCv.cols || vd >= _imageDepthCv.rows)
+	{
+		return false;
+	}
+
+	float depth = _imageDepthCv.type() == CV_32FC1?
+			_imageDepthCv.at<float>(vd, ud):
+			float(_imageDepthCv.at<unsigned short>(vd, ud)) / 1000.0f;
+	if(!(depth > 0.0f) || !uIsFinite(depth))
+	{
+		return false;
+	}
+
+	int subImageWidth = _imageDepthCv.cols / _models.size();
+	int subImageIndex = ud / subImageWidth;
+	if(subImageIndex >= (int)_models.size() || !_models[subImageIndex].isValidForProjection())
+	{
+		return false;
+	}
+
+	float x, y, z;
+	_models[subImageIndex].project(u, v, depth, x, y, z);
+	// return in the node's base frame (not the map frame)
+	pt = util3d::transformPoint(cv::Point3f(x, y, z), _models[subImageIndex].localTransform());
+	return uIsFinite(pt.x) && uIsFinite(pt.y) && uIsFinite(pt.z);
 }
 
 void ImageView::mouseMoveEvent(QMouseEvent * event)

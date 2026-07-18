@@ -175,6 +175,8 @@ private Q_SLOTS:
 	void sliderIterationsValueChanged(int);
 	void updateGraphViewRootId();
 	void editConstraint();
+	void anchorPointPicked(float x, float y, float z);
+	void anchorPointPickedFromImage(float x, float y, float z);
 	void updateGrid();
 	void updateOctomapView();
 	void updateGraphRotation();
@@ -245,6 +247,7 @@ private:
 	void refineLinks(const QList<Link> & links);
 	void refineConstraint(int from, int to, Registration * reg, RegistrationIcp * regIcp, bool silent);
 	bool addConstraint(int from, int to, Registration * reg, bool silent, bool silentlyUseOptimizedGraphAsGuess = false, Optimizer * optimizer = 0);
+	void addAnchorPoint(int nodeId, const Transform & tLocal);
 	void exportPoses(int format);
 	void exportGPS(int format);
 
@@ -292,6 +295,15 @@ private:
 	EditMapArea * editMapArea_;
 	LinkRefiningDialog * linkRefiningDialog_;
 	ExportDialog * exportDataDialog_;
+
+	// Node id and pose used to render the cloud in the 3D View, so that a
+	// point picked in that view can be expressed in the node's frame.
+	int cloudViewer3dNodeId_;
+	Transform cloudViewer3dPose_;
+	// Local origin subtracted from anchor point world coordinates (e.g. EPSG
+	// easting/northing) to keep values within float precision.
+	cv::Point3d anchorOrigin_;
+	bool anchorOriginSet_;
 
 	bool savedMaximized_;
 	bool firstCall_;
