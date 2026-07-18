@@ -53,6 +53,7 @@ using PCLQVTKWidget = QVTKWidget;
 
 #include <QtCore/QMap>
 #include <QtCore/QSet>
+#include <QtCore/QPoint>
 #include <QtCore/qnamespace.h>
 #include <QtCore/QSettings>
 
@@ -411,6 +412,11 @@ public:
 	void setCloudColorRangeInverted(bool enabled);
 	void buildPickingLocator(bool enable);
 	const std::map<std::string, vtkSmartPointer<vtkOBBTree> > & getLocators() const {return _locators;}
+	// Shows an "Add anchor point here..." entry in the context menu; when
+	// triggered, the point under the right-click position is picked and
+	// emitted through the pointPicked() signal.
+	void setAnchorPointActionEnabled(bool enabled);
+	bool isAnchorPointActionEnabled() const;
 
 public Q_SLOTS:
 	void setDefaultBackgroundColor(const QColor & color);
@@ -423,6 +429,7 @@ public Q_SLOTS:
 
 Q_SIGNALS:
 	void configChanged();
+	void pointPicked(float x, float y, float z);
 
 protected:
 	virtual void keyReleaseEvent(QKeyEvent * event);
@@ -477,6 +484,8 @@ private:
 	QAction * _aSetScalarVisibility;
     QAction * _aBackfaceCulling;
     QAction * _aPolygonPicking;
+    QAction * _aAddAnchorPoint;
+    QPoint _lastContextMenuPos;
     QMenu * _menu;
     std::set<std::string> _graphes;
     std::set<std::string> _coordinates;
