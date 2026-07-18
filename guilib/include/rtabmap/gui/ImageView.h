@@ -122,10 +122,17 @@ public:
 	void clearFeatures();
 	void clear();
 
+	// Shows an "Add anchor point here..." entry in the context menu; when
+	// triggered, the right-clicked pixel is projected through the depth image
+	// and emitted (in the node's base frame) through the pointPicked() signal.
+	void setAnchorPointActionEnabled(bool enabled);
+	bool isAnchorPointActionEnabled() const;
+
 	virtual QSize sizeHint() const;
 
 Q_SIGNALS:
 	void configChanged();
+	void pointPicked(float x, float y, float z); // in the node's base frame
 
 protected:
 	virtual void paintEvent(QPaintEvent *event);
@@ -139,6 +146,7 @@ private Q_SLOTS:
 private:
 	void updateOpacity();
 	void computeScaleOffsets(const QRect & targetRect, float & scale, float & offsetX, float & offsetY) const;
+	bool projectPixelTo3D(const QPoint & pos, cv::Point3f & pt) const;
 	QIcon createIcon(const QColor & color);
 
 private:
@@ -178,6 +186,7 @@ private:
 	QAction * _colorMapMinRange;
 	QAction * _colorMapMaxRange;
 	QAction * _mouseTracking;
+	QAction * _addAnchorPoint;
 	QMenu * _featureMenu;
 	QMenu * _scaleMenu;
 

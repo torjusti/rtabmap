@@ -48,6 +48,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QtGui/QWheelEvent>
 #include <QtGui/QKeyEvent>
 #include <QColorDialog>
+#include <QMessageBox>
 #include <QtGui/QVector3D>
 #include <QMainWindow>
 #include <set>
@@ -134,6 +135,7 @@ CloudViewer::CloudViewer(QWidget *parent, CloudViewerInteractorStyle * style) :
 		_aSetEdgeVisibility(0),
 		_aSetScalarVisibility(0),
 		_aBackfaceCulling(0),
+		_aAddAnchorPoint(0),
 		_menu(0),
 		_trajectory(new pcl::PointCloud<pcl::PointXYZ>),
 		_maxTrajectorySize(100),
@@ -373,6 +375,8 @@ void CloudViewer::createMenu()
 	_aPolygonPicking = new QAction("Polygon picking", this);
 	_aPolygonPicking->setCheckable(true);
 	_aPolygonPicking->setChecked(false);
+	_aAddAnchorPoint = new QAction("Add anchor point here...", this);
+	_aAddAnchorPoint->setVisible(false);
 
 	QMenu * cameraMenu = new QMenu("Camera", this);
 	cameraMenu->addAction(_aLockCamera);
@@ -420,6 +424,7 @@ void CloudViewer::createMenu()
 
 	//menus
 	_menu = new QMenu(this);
+	_menu->addAction(_aAddAnchorPoint);
 	_menu->addMenu(cameraMenu);
 	_menu->addMenu(trajectoryMenu);
 	_menu->addAction(_aShowCameraAxis);
@@ -2706,6 +2711,16 @@ void CloudViewer::setPolygonPicking(bool enabled)
 
 
 
+void CloudViewer::setAnchorPointActionEnabled(bool enabled)
+{
+	_aAddAnchorPoint->setVisible(enabled);
+}
+
+bool CloudViewer::isAnchorPointActionEnabled() const
+{
+	return _aAddAnchorPoint->isVisible();
+}
+
 void CloudViewer::setRenderingRate(double rate)
 {
 	_renderingRate = rate;
@@ -3798,6 +3813,7 @@ void CloudViewer::wheelEvent(QWheelEvent * event)
 
 void CloudViewer::contextMenuEvent(QContextMenuEvent * event)
 {
+	_lastContextMenuPos = event->pos();
 	QAction * a = _menu->exec(event->globalPos());
 	if(a)
 	{
@@ -3858,6 +3874,40 @@ void CloudViewer::handleAction(QAction * a)
 	else if(a == _aResetCamera)
 	{
 		this->resetCamera();
+	}
+	else if(a == _aAddAnchorPoint)
+	{
+		// Pick the 3D point under the position where the context menu was opened
+		vtkRenderer * renderer = _visualizer->getInteractorStyle()->GetDefaultRenderer(); // layer 1 (clouds)
+#if VTK_MAJOR_VERSION > 8
+		vtkAbstractPicker * picker = this->interactor()->GetPicker();
+		double dpr = this->devicePixelRatioF();
+#else
+		vtkAbstractPicker * picker = this->GetInteractor()->GetPicker();
+		double dpr = 1.0;
+#endif
+		bool picked = false;
+		double pickedPt[3] = {0.0, 0.0, 0.0};
+		if(picker && renderer)
+		{
+			int * winSize = _visualizer->getRenderWindow()->GetSize();
+			int x = (int)(_lastContextMenuPos.x()*dpr);
+			int y = winSize[1] - 1 - (int)(_lastContextMenuPos.y()*dpr);
+			if(picker->Pick(x, y, 0, renderer))
+			{
+				picker->GetPickPosition(pickedPt);
+				picked = true;
+			}
+		}
+		if(picked)
+		{
+			UDEBUG("Anchor point picked: %f %f %f", pickedPt[0], pickedPt[1], pickedPt[2]);
+			Q_EMIT pointPicked((float)pickedPt[0], (float)pickedPt[1], (float)pickedPt[2]);
+		}
+		else
+		{
+			QMessageBox::information(this, tr("Add anchor point"), tr("No 3D point found under the cursor. Right-click directly on the point cloud."));
+		}
 	}
 	else if(a == _aShowGrid)
 	{
