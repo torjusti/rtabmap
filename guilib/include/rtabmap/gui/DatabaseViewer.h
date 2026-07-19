@@ -154,6 +154,7 @@ private Q_SLOTS:
 	void regenerateLocalMaps();
 	void regenerateCurrentLocalMaps();
 	void view3DMap();
+	void view3DMapFromFile();
 	void generate3DMap();
 	void detectMoreLoopClosures();
 	void mergeComponents();
