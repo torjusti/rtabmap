@@ -957,7 +957,6 @@
     <addaction name="separator"/>
     <addaction name="actionMerge_components_using_selected_nodes"/>
     <addaction name="actionDetect_more_loop_closures"/>
-    <addaction name="actionAnchor_points"/>
     <addaction name="actionRefine_links"/>
     <addaction name="actionUpdate_all_neighbor_covariances"/>
     <addaction name="actionUpdate_all_loop_closure_covariances"/>
@@ -3560,6 +3559,116 @@
     </layout>
    </widget>
   </widget>
+  <widget class="QDockWidget" name="dockWidget_anchorPoints">
+   <property name="windowTitle">
+    <string>Anchor Points</string>
+   </property>
+   <attribute name="dockWidgetArea">
+    <number>2</number>
+   </attribute>
+   <widget class="QWidget" name="dockWidgetContents_anchorPoints">
+    <layout class="QVBoxLayout" name="verticalLayout_anchorPoints">
+     <item>
+      <widget class="QTableWidget" name="tableWidget_anchors">
+       <property name="selectionMode">
+        <enum>QAbstractItemView::SingleSelection</enum>
+       </property>
+       <property name="selectionBehavior">
+        <enum>QAbstractItemView::SelectRows</enum>
+       </property>
+       <property name="editTriggers">
+        <set>QAbstractItemView::NoEditTriggers</set>
+       </property>
+       <column>
+        <property name="text">
+         <string>ID</string>
+        </property>
+       </column>
+       <column>
+        <property name="text">
+         <string>Node(s)</string>
+        </property>
+       </column>
+       <column>
+        <property name="text">
+         <string>X</string>
+        </property>
+       </column>
+       <column>
+        <property name="text">
+         <string>Y</string>
+        </property>
+       </column>
+       <column>
+        <property name="text">
+         <string>Z</string>
+        </property>
+       </column>
+       <column>
+        <property name="text">
+         <string>σ X/Y</string>
+        </property>
+       </column>
+       <column>
+        <property name="text">
+         <string>σ Z</string>
+        </property>
+       </column>
+      </widget>
+     </item>
+     <item>
+      <layout class="QHBoxLayout" name="horizontalLayout_anchorButtons">
+       <item>
+        <widget class="QPushButton" name="pushButton_anchorEdit">
+         <property name="enabled">
+          <bool>false</bool>
+         </property>
+         <property name="text">
+          <string>Edit...</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="pushButton_anchorRemove">
+         <property name="enabled">
+          <bool>false</bool>
+         </property>
+         <property name="text">
+          <string>Remove</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="pushButton_anchorShow">
+         <property name="enabled">
+          <bool>false</bool>
+         </property>
+         <property name="toolTip">
+          <string>Show the first observing node in the other views</string>
+         </property>
+         <property name="text">
+          <string>Show node</string>
+         </property>
+        </widget>
+       </item>
+       <item>
+        <spacer name="horizontalSpacer_anchorButtons">
+         <property name="orientation">
+          <enum>Qt::Horizontal</enum>
+         </property>
+         <property name="sizeHint" stdset="0">
+          <size>
+           <width>40</width>
+           <height>20</height>
+          </size>
+         </property>
+        </spacer>
+       </item>
+      </layout>
+     </item>
+    </layout>
+   </widget>
+  </widget>
   <action name="actionOpen_database">
    <property name="text">
     <string>Open database</string>
@@ -3611,14 +3720,6 @@
   <action name="actionDetect_more_loop_closures">
    <property name="text">
     <string>Detect more loop closures...</string>
-   </property>
-  </action>
-  <action name="actionAnchor_points">
-   <property name="text">
-    <string>Anchor points...</string>
-   </property>
-   <property name="toolTip">
-    <string>List, edit and remove anchor points (landmarks with known world coordinates)</string>
    </property>
   </action>
   <action name="actionSave_config">

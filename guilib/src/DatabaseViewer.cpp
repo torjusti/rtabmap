@@ -196,6 +196,7 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	ui_->dockWidget_stereoView->setVisible(false);
 	ui_->dockWidget_view3d->setVisible(false);
 	ui_->dockWidget_statistics->setVisible(false);
+	ui_->dockWidget_anchorPoints->setVisible(false);
 
 	// Create cloud viewers
 	constraintsViewer_ = new CloudViewer(ui_->dockWidgetContents);
@@ -225,6 +226,11 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	connect(occupancyGridViewer_, SIGNAL(pointPicked(float,float,float)), this, SLOT(anchorPointPickedFromMap(float,float,float)));
 	exportDialog_->setAnchorPointActionEnabled(true);
 	connect(exportDialog_, SIGNAL(pointPicked(float,float,float)), this, SLOT(anchorPointPickedFromMap(float,float,float)));
+
+	ui_->tableWidget_anchors->horizontalHeader()->setStretchLastSection(true);
+	connect(ui_->pushButton_anchorEdit, SIGNAL(clicked()), this, SLOT(editSelectedAnchorPoint()));
+	connect(ui_->pushButton_anchorRemove, SIGNAL(clicked()), this, SLOT(removeSelectedAnchorPoint()));
+	connect(ui_->pushButton_anchorShow, SIGNAL(clicked()), this, SLOT(showSelectedAnchorPoint()));
 
 	ui_->graphicsView_stereo->setAlpha(255);
 
@@ -295,6 +301,8 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	ui_->menuView->addAction(ui_->dockWidget_coreparameters->toggleViewAction());
 	ui_->menuView->addAction(ui_->dockWidget_info->toggleViewAction());
 	ui_->menuView->addAction(ui_->dockWidget_statistics->toggleViewAction());
+	ui_->menuView->addAction(ui_->dockWidget_anchorPoints->toggleViewAction());
+	connect(ui_->dockWidget_anchorPoints->toggleViewAction(), SIGNAL(triggered()), this, SLOT(updateAnchorPointsTable()));
 	connect(ui_->dockWidget_graphView->toggleViewAction(), SIGNAL(triggered()), this, SLOT(updateGraphView()));
 	connect(ui_->dockWidget_occupancyGridView->toggleViewAction(), SIGNAL(triggered()), this, SLOT(updateGraphView()));
 	connect(ui_->dockWidget_statistics->toggleViewAction(), SIGNAL(triggered()), this, SLOT(updateStatistics()));
@@ -345,7 +353,6 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	connect(ui_->actionGenerate_3D_map_pcd, SIGNAL(triggered()), this, SLOT(generate3DMap()));
 	connect(ui_->actionDetect_more_loop_closures, SIGNAL(triggered()), this, SLOT(detectMoreLoopClosures()));
 	connect(ui_->actionMerge_components_using_selected_nodes, SIGNAL(triggered()), this, SLOT(mergeComponents()));
-	connect(ui_->actionAnchor_points, SIGNAL(triggered()), this, SLOT(editAnchorPoints()));
 	connect(ui_->actionUpdate_all_neighbor_covariances, SIGNAL(triggered()), this, SLOT(updateAllNeighborCovariances()));
 	connect(ui_->actionUpdate_all_loop_closure_covariances, SIGNAL(triggered()), this, SLOT(updateAllLoopClosureCovariances()));
 	connect(ui_->actionUpdate_all_landmark_covariances, SIGNAL(triggered()), this, SLOT(updateAllLandmarkCovariances()));
@@ -565,6 +572,7 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	ui_->dockWidget_coreparameters->installEventFilter(this);
 	ui_->dockWidget_info->installEventFilter(this);
 	ui_->dockWidget_statistics->installEventFilter(this);
+	ui_->dockWidget_anchorPoints->installEventFilter(this);
 }
 
 DatabaseViewer::~DatabaseViewer()
@@ -1241,6 +1249,7 @@ bool DatabaseViewer::closeDatabase()
 		cloudViewer3dPose_.setNull();
 		ui_->graphViewer->clearAll();
 		occupancyGridViewer_->clear();
+		updateAnchorPointsTable();
 		ui_->menuEdit->setEnabled(false);
 		ui_->actionGenerate_3D_map_pcd->setEnabled(false);
 		ui_->actionExport->setEnabled(false);
@@ -7470,180 +7479,164 @@ void DatabaseViewer::removeAnchorPoint(int landmarkId)
 	}
 }
 
-void DatabaseViewer::editAnchorPoints()
+void DatabaseViewer::updateAnchorPointsTable()
 {
+	QTableWidget * table = ui_->tableWidget_anchors;
 	if(!dbDriver_)
 	{
+		table->setRowCount(0);
+		ui_->pushButton_anchorEdit->setEnabled(false);
+		ui_->pushButton_anchorRemove->setEnabled(false);
+		ui_->pushButton_anchorShow->setEnabled(false);
 		return;
 	}
-
-	QDialog dialog(this);
-	dialog.setWindowTitle(tr("Anchor points"));
-	dialog.resize(700, 300);
-	QVBoxLayout * layout = new QVBoxLayout(&dialog);
-
-	QTableWidget * table = new QTableWidget(&dialog);
-	table->setColumnCount(7);
-	table->setHorizontalHeaderLabels(QStringList()
-			<< tr("Landmark") << tr("Seen from node(s)")
-			<< tr("World X") << tr("World Y") << tr("World Z")
-			<< tr("Sigma X/Y") << tr("Sigma Z"));
-	table->setSelectionBehavior(QAbstractItemView::SelectRows);
-	table->setSelectionMode(QAbstractItemView::SingleSelection);
-	table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-	table->horizontalHeader()->setStretchLastSection(true);
-	layout->addWidget(table);
-
-	QHBoxLayout * buttonLayout = new QHBoxLayout();
-	QPushButton * editButton = new QPushButton(tr("Edit..."), &dialog);
-	QPushButton * removeButton = new QPushButton(tr("Remove"), &dialog);
-	QPushButton * showButton = new QPushButton(tr("Show node"), &dialog);
-	QPushButton * closeButton = new QPushButton(tr("Close"), &dialog);
-	buttonLayout->addWidget(editButton);
-	buttonLayout->addWidget(removeButton);
-	buttonLayout->addWidget(showButton);
-	buttonLayout->addStretch();
-	buttonLayout->addWidget(closeButton);
-	layout->addLayout(buttonLayout);
-	connect(closeButton, SIGNAL(clicked()), &dialog, SLOT(accept()));
+	if(!ui_->dockWidget_anchorPoints->isVisible())
+	{
+		return;
+	}
 
 	// Gather anchors (landmarks having a pose prior, i.e. created as anchor
-	// points; landmarks from marker detection have no prior) and fill table.
-	std::map<int, Link> priors;             // landmark id -> prior link
+	// points; landmarks from marker detection have no prior).
+	std::map<int, Link> priors;                 // landmark id -> prior link
 	std::map<int, std::vector<int> > observers; // landmark id -> observing nodes
-	auto refresh = [&]()
+	std::multimap<int, Link> allLinks = updateLinksWithModifications(links_);
+	for(std::multimap<int, Link>::iterator iter=allLinks.begin(); iter!=allLinks.end(); ++iter)
 	{
-		priors.clear();
-		observers.clear();
-		std::multimap<int, Link> allLinks = updateLinksWithModifications(links_);
-		for(std::multimap<int, Link>::iterator iter=allLinks.begin(); iter!=allLinks.end(); ++iter)
+		if(iter->second.from() == iter->second.to() && iter->second.from() < 0 &&
+		   iter->second.type() == Link::kPosePrior)
 		{
-			if(iter->second.from() == iter->second.to() && iter->second.from() < 0 &&
-			   iter->second.type() == Link::kPosePrior)
+			priors.insert(std::make_pair(iter->second.from(), iter->second));
+		}
+		else if(iter->second.type() == Link::kLandmark && iter->second.to() < 0)
+		{
+			observers[iter->second.to()].push_back(iter->second.from());
+		}
+	}
+
+	int selectedLandmark = selectedAnchorLandmarkId();
+	table->setRowCount(0);
+	for(std::map<int, Link>::iterator iter=priors.begin(); iter!=priors.end(); ++iter)
+	{
+		int row = table->rowCount();
+		table->insertRow(row);
+		QStringList nodes;
+		if(observers.find(iter->first) != observers.end())
+		{
+			for(size_t i=0; i<observers.at(iter->first).size(); ++i)
 			{
-				priors.insert(std::make_pair(iter->second.from(), iter->second));
-			}
-			else if(iter->second.type() == Link::kLandmark && iter->second.to() < 0)
-			{
-				observers[iter->second.to()].push_back(iter->second.from());
+				nodes.append(QString::number(observers.at(iter->first)[i]));
 			}
 		}
-
-		table->setRowCount(0);
-		for(std::map<int, Link>::iterator iter=priors.begin(); iter!=priors.end(); ++iter)
+		const Link & prior = iter->second;
+		double sigmaXY = prior.infMatrix().at<double>(0,0)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(0,0)):0.0;
+		double sigmaZ = prior.infMatrix().at<double>(2,2)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(2,2)):0.0;
+		table->setItem(row, 0, new QTableWidgetItem(QString::number(-iter->first)));
+		table->setItem(row, 1, new QTableWidgetItem(nodes.isEmpty()?"-":nodes.join(", ")));
+		table->setItem(row, 2, new QTableWidgetItem(QString::number(prior.transform().x(), 'f', 3)));
+		table->setItem(row, 3, new QTableWidgetItem(QString::number(prior.transform().y(), 'f', 3)));
+		table->setItem(row, 4, new QTableWidgetItem(QString::number(prior.transform().z(), 'f', 3)));
+		table->setItem(row, 5, new QTableWidgetItem(QString::number(sigmaXY, 'f', 2)));
+		table->setItem(row, 6, new QTableWidgetItem(QString::number(sigmaZ, 'f', 2)));
+		table->item(row, 0)->setData(Qt::UserRole, iter->first); // landmark id
+		// remember first observing node for the "Show node" button
+		table->item(row, 0)->setData(Qt::UserRole+1, nodes.isEmpty()?0:observers.at(iter->first)[0]);
+		if(iter->first == selectedLandmark)
 		{
-			int row = table->rowCount();
-			table->insertRow(row);
-			QStringList nodes;
-			if(observers.find(iter->first) != observers.end())
-			{
-				for(size_t i=0; i<observers.at(iter->first).size(); ++i)
-				{
-					nodes.append(QString::number(observers.at(iter->first)[i]));
-				}
-			}
-			const Link & prior = iter->second;
-			double sigmaXY = prior.infMatrix().at<double>(0,0)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(0,0)):0.0;
-			double sigmaZ = prior.infMatrix().at<double>(2,2)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(2,2)):0.0;
-			table->setItem(row, 0, new QTableWidgetItem(QString::number(-iter->first)));
-			table->setItem(row, 1, new QTableWidgetItem(nodes.isEmpty()?"-":nodes.join(", ")));
-			table->setItem(row, 2, new QTableWidgetItem(QString::number(prior.transform().x(), 'f', 3)));
-			table->setItem(row, 3, new QTableWidgetItem(QString::number(prior.transform().y(), 'f', 3)));
-			table->setItem(row, 4, new QTableWidgetItem(QString::number(prior.transform().z(), 'f', 3)));
-			table->setItem(row, 5, new QTableWidgetItem(QString::number(sigmaXY, 'f', 2)));
-			table->setItem(row, 6, new QTableWidgetItem(QString::number(sigmaZ, 'f', 2)));
-			table->item(row, 0)->setData(Qt::UserRole, iter->first); // landmark id
+			table->selectRow(row);
 		}
-	};
-	refresh();
-
-	if(table->rowCount() == 0)
+	}
+	if(table->rowCount() && table->currentRow() < 0)
 	{
-		QMessageBox::information(this, tr("Anchor points"),
-				tr("There are no anchor points in this database. Right-click a point "
-				   "in the 3D View, the Occupancy Grid View, a \"View 3D map\" window "
-				   "or the node images to add one."));
+		table->selectRow(0);
+	}
+	table->resizeColumnsToContents();
+	bool hasSelection = table->rowCount() > 0;
+	ui_->pushButton_anchorEdit->setEnabled(hasSelection);
+	ui_->pushButton_anchorRemove->setEnabled(hasSelection);
+	ui_->pushButton_anchorShow->setEnabled(hasSelection);
+}
+
+int DatabaseViewer::selectedAnchorLandmarkId() const
+{
+	int row = ui_->tableWidget_anchors->currentRow();
+	if(row >= 0 && row < ui_->tableWidget_anchors->rowCount())
+	{
+		return ui_->tableWidget_anchors->item(row, 0)->data(Qt::UserRole).toInt();
+	}
+	return 0;
+}
+
+void DatabaseViewer::editSelectedAnchorPoint()
+{
+	int landmarkId = selectedAnchorLandmarkId();
+	if(landmarkId >= 0)
+	{
 		return;
 	}
-	table->selectRow(0);
+	std::multimap<int, Link> allLinks = updateLinksWithModifications(links_);
+	std::multimap<int, Link>::iterator priorIter = rtabmap::graph::findLink(allLinks, landmarkId, landmarkId, false, Link::kPosePrior);
+	if(priorIter == allLinks.end())
+	{
+		return;
+	}
+	const Link & prior = priorIter->second;
+	double x = prior.transform().x();
+	double y = prior.transform().y();
+	double z = prior.transform().z();
+	double sigmaXY = prior.infMatrix().at<double>(0,0)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(0,0)):0.3;
+	double sigmaZ = prior.infMatrix().at<double>(2,2)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(2,2)):2.0;
+	if(getAnchorPointInput(tr("Edit anchor point %1").arg(-landmarkId), QString(), x, y, z, sigmaXY, sigmaZ))
+	{
+		Link newPrior(landmarkId, landmarkId, Link::kPosePrior,
+				Transform((float)x, (float)y, (float)z, 0, 0, 0),
+				makeAnchorPriorInfMatrix(sigmaXY, sigmaZ));
+		// updateLinksWithModifications() gives refined links precedence over
+		// both original and added links, so a replacement in linksRefined_
+		// covers anchors from the database and new ones alike.
+		std::multimap<int, Link>::iterator jter = rtabmap::graph::findLink(linksRefined_, landmarkId, landmarkId);
+		if(jter != linksRefined_.end())
+		{
+			linksRefined_.erase(jter);
+		}
+		linksRefined_.insert(std::make_pair(landmarkId, newPrior));
 
-	auto selectedLandmarkId = [&]() -> int
-	{
-		int row = table->currentRow();
-		if(row >= 0 && row < table->rowCount())
-		{
-			return table->item(row, 0)->data(Qt::UserRole).toInt();
-		}
-		return 0;
-	};
-
-	bool modified = false;
-	connect(editButton, &QPushButton::clicked, [&]()
-	{
-		int landmarkId = selectedLandmarkId();
-		if(landmarkId >= 0)
-		{
-			return;
-		}
-		const Link & prior = priors.at(landmarkId);
-		double x = prior.transform().x();
-		double y = prior.transform().y();
-		double z = prior.transform().z();
-		double sigmaXY = prior.infMatrix().at<double>(0,0)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(0,0)):0.3;
-		double sigmaZ = prior.infMatrix().at<double>(2,2)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(2,2)):2.0;
-		if(getAnchorPointInput(tr("Edit anchor point %1").arg(-landmarkId), QString(), x, y, z, sigmaXY, sigmaZ))
-		{
-			Link newPrior(landmarkId, landmarkId, Link::kPosePrior,
-					Transform((float)x, (float)y, (float)z, 0, 0, 0),
-					makeAnchorPriorInfMatrix(sigmaXY, sigmaZ));
-			// updateLinksWithModifications() gives refined links precedence
-			// over both original and added links, so a replacement in
-			// linksRefined_ covers anchors from the database and new ones.
-			std::multimap<int, Link>::iterator jter = rtabmap::graph::findLink(linksRefined_, landmarkId, landmarkId);
-			if(jter != linksRefined_.end())
-			{
-				linksRefined_.erase(jter);
-			}
-			linksRefined_.insert(std::make_pair(landmarkId, newPrior));
-			modified = true;
-			refresh();
-		}
-	});
-	connect(removeButton, &QPushButton::clicked, [&]()
-	{
-		int landmarkId = selectedLandmarkId();
-		if(landmarkId >= 0)
-		{
-			return;
-		}
-		if(QMessageBox::question(&dialog, tr("Remove anchor point"),
-				tr("Remove anchor point %1 and its observation link(s)?").arg(-landmarkId),
-				QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::Yes)
-		{
-			removeAnchorPoint(landmarkId);
-			modified = true;
-			refresh();
-		}
-	});
-	connect(showButton, &QPushButton::clicked, [&]()
-	{
-		int landmarkId = selectedLandmarkId();
-		if(landmarkId < 0 &&
-		   observers.find(landmarkId) != observers.end() &&
-		   !observers.at(landmarkId).empty() &&
-		   idToIndex_.contains(observers.at(landmarkId)[0]))
-		{
-			ui_->horizontalSlider_A->setValue(idToIndex_.value(observers.at(landmarkId)[0]));
-		}
-	});
-
-	dialog.exec();
-
-	if(modified)
-	{
 		this->updateGraphView();
 		updateLoopClosuresSlider();
 		update3dView();
+		updateAnchorPointsTable();
+	}
+}
+
+void DatabaseViewer::removeSelectedAnchorPoint()
+{
+	int landmarkId = selectedAnchorLandmarkId();
+	if(landmarkId >= 0)
+	{
+		return;
+	}
+	if(QMessageBox::question(this, tr("Remove anchor point"),
+			tr("Remove anchor point %1 and its observation link(s)?").arg(-landmarkId),
+			QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::Yes)
+	{
+		removeAnchorPoint(landmarkId);
+
+		this->updateGraphView();
+		updateLoopClosuresSlider();
+		update3dView();
+		updateAnchorPointsTable();
+	}
+}
+
+void DatabaseViewer::showSelectedAnchorPoint()
+{
+	int row = ui_->tableWidget_anchors->currentRow();
+	if(row >= 0 && row < ui_->tableWidget_anchors->rowCount())
+	{
+		int nodeId = ui_->tableWidget_anchors->item(row, 0)->data(Qt::UserRole+1).toInt();
+		if(nodeId > 0 && idToIndex_.contains(nodeId))
+		{
+			ui_->horizontalSlider_A->setValue(idToIndex_.value(nodeId));
+		}
 	}
 }
 
@@ -9486,6 +9479,82 @@ void DatabaseViewer::updateGraphView()
 		if(applyRotation ||
 		   ui_->comboBox_optimizationFlavor->currentIndex() != 2)
 		{
+			// If there are anchor point priors (world-referenced landmarks) and
+			// priors are used, rigidly pre-align the initial guess to them
+			// (translation + yaw, like an alignment to GPS). Absolute priors can
+			// be arbitrarily far from the current map frame (e.g. site CRS
+			// coordinates) and the iterative optimizers diverge when starting
+			// that far from the solution; the optimizer only has to correct
+			// drift after this rigid alignment.
+			bool priorsIgnored = Parameters::defaultOptimizerPriorsIgnored();
+			Parameters::parse(parameters, Parameters::kOptimizerPriorsIgnored(), priorsIgnored);
+			if(!priorsIgnored)
+			{
+				std::vector<cv::Point3d> effPoints;   // current landmark estimates
+				std::vector<cv::Point3d> priorPoints; // known world positions
+				for(std::multimap<int, rtabmap::Link>::iterator iter=links.begin(); iter!=links.end(); ++iter)
+				{
+					if(iter->second.from() == iter->second.to() &&
+					   iter->second.from() < 0 &&
+					   iter->second.type() == Link::kPosePrior &&
+					   uContains(poses, iter->second.from()))
+					{
+						const Transform & p = poses.at(iter->second.from());
+						const Transform & q = iter->second.transform();
+						effPoints.push_back(cv::Point3d(p.x(), p.y(), p.z()));
+						priorPoints.push_back(cv::Point3d(q.x(), q.y(), q.z()));
+					}
+				}
+				if(!effPoints.empty())
+				{
+					cv::Point3d effCentroid(0,0,0);
+					cv::Point3d priorCentroid(0,0,0);
+					for(size_t i=0; i<effPoints.size(); ++i)
+					{
+						effCentroid += effPoints[i];
+						priorCentroid += priorPoints[i];
+					}
+					effCentroid *= 1.0/double(effPoints.size());
+					priorCentroid *= 1.0/double(priorPoints.size());
+
+					// 2D Kabsch on the horizontal plane for the yaw (needs 2+ anchors)
+					double theta = 0.0;
+					if(effPoints.size() > 1)
+					{
+						double num = 0.0;
+						double den = 0.0;
+						for(size_t i=0; i<effPoints.size(); ++i)
+						{
+							double ex = effPoints[i].x - effCentroid.x;
+							double ey = effPoints[i].y - effCentroid.y;
+							double px = priorPoints[i].x - priorCentroid.x;
+							double py = priorPoints[i].y - priorCentroid.y;
+							num += ex*py - ey*px;
+							den += ex*px + ey*py;
+						}
+						theta = atan2(num, den);
+					}
+
+					// t = priorCentroid - R * effCentroid
+					double cosT = cos(theta);
+					double sinT = sin(theta);
+					Transform align(
+							(float)(priorCentroid.x - (cosT*effCentroid.x - sinT*effCentroid.y)),
+							(float)(priorCentroid.y - (sinT*effCentroid.x + cosT*effCentroid.y)),
+							(float)(priorCentroid.z - effCentroid.z),
+							0, 0, (float)theta);
+					if(align.getNorm() > 0.5 || fabs(theta) > 0.05)
+					{
+						UINFO("Pre-aligning initial guess to %d anchor point prior(s): %s",
+								(int)effPoints.size(), align.prettyPrint().c_str());
+						for(std::map<int, rtabmap::Transform>::iterator iter=poses.begin(); iter!=poses.end(); ++iter)
+						{
+							iter->second = align * iter->second;
+						}
+					}
+				}
+			}
+
 			if(ui_->horizontalSlider_rotation->value()!=0 && applyRotation)
 			{
 				float theta = float(-ui_->horizontalSlider_rotation->value())*M_PI/1800.0f;
@@ -11287,6 +11356,9 @@ void DatabaseViewer::updateLoopClosuresSlider(int from, int to)
 		constraintsViewer_->refreshView();
 		updateConstraintButtons();
 	}
+
+	// links possibly changed, keep the anchor points dock in sync
+	updateAnchorPointsTable();
 }
 
 void DatabaseViewer::updateLoopClosuresSlider()

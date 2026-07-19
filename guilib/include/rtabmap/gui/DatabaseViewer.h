@@ -178,7 +178,10 @@ private Q_SLOTS:
 	void anchorPointPicked(float x, float y, float z);
 	void anchorPointPickedFromImage(float x, float y, float z);
 	void anchorPointPickedFromMap(float x, float y, float z);
-	void editAnchorPoints();
+	void updateAnchorPointsTable();
+	void editSelectedAnchorPoint();
+	void removeSelectedAnchorPoint();
+	void showSelectedAnchorPoint();
 	void updateGrid();
 	void updateOctomapView();
 	void updateGraphRotation();
@@ -257,6 +260,7 @@ private:
 			double & sigmaXY, double & sigmaZ);
 	static cv::Mat makeAnchorPriorInfMatrix(double sigmaXY, double sigmaZ);
 	void removeAnchorPoint(int landmarkId);
+	int selectedAnchorLandmarkId() const;
 	void exportPoses(int format);
 	void exportGPS(int format);
 
