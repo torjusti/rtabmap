@@ -1519,6 +1519,16 @@
               </property>
              </widget>
             </item>
+            <item>
+             <widget class="QPushButton" name="pushButton_optimize">
+              <property name="toolTip">
+               <string>Re-run graph optimization with the current settings.</string>
+              </property>
+              <property name="text">
+               <string>Optimize</string>
+              </property>
+             </widget>
+            </item>
            </layout>
           </item>
           <item>

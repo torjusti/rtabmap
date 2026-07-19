@@ -254,6 +254,7 @@ private:
 	void refineConstraint(int from, int to, Registration * reg, RegistrationIcp * regIcp, bool silent);
 	bool addConstraint(int from, int to, Registration * reg, bool silent, bool silentlyUseOptimizedGraphAsGuess = false, Optimizer * optimizer = 0);
 	void addAnchorPoint(int nodeId, const Transform & tLocal);
+	void addAnchorPointFromWorld(const std::map<int, Transform> & refPoses, float x, float y, float z);
 	bool getAnchorPointInput(
 			const QString & title,
 			const QString & header,
@@ -289,6 +290,11 @@ private:
 	std::vector<GraphComponent> components_;
 	int activeComponentIndex_;
 	int lastValidNodeId_;
+	// Poses snapshots of the assembled views usable for anchor point picking,
+	// so that picks stay valid after the graph is re-optimized.
+	std::map<int, rtabmap::Transform> exportViewRefPoses_;
+	std::map<int, rtabmap::Transform> gridViewRefPoses_;
+	std::map<int, rtabmap::Transform> fileViewRefPoses_;
 	std::map<int, rtabmap::Transform> odomPoses_;
 	std::map<int, rtabmap::Transform> groundTruthPoses_;
 	std::map<int, rtabmap::Transform> gpsPoses_;
