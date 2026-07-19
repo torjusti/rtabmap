@@ -96,7 +96,8 @@ ExportCloudsDialog::ExportCloudsDialog(QWidget *parent) :
 	_canceled(false),
 	_compensator(0),
 	_dbDriver(0),
-	_scansHaveRGB(false)
+	_scansHaveRGB(false),
+	_anchorPointsEnabled(false)
 {
 	_ui = new Ui_ExportCloudsDialog();
 	_ui->setupUi(this);
@@ -1274,6 +1275,11 @@ void ExportCloudsDialog::viewClouds(
 		window->resize(this->window()->windowHandle()->screen()->availableGeometry().size() * 0.7);
 
 		CloudViewer * viewer = new CloudViewer(window);
+		if(_anchorPointsEnabled)
+		{
+			viewer->setAnchorPointActionEnabled(true);
+			connect(viewer, SIGNAL(pointPicked(float,float,float)), this, SIGNAL(pointPicked(float,float,float)));
+		}
 		if(_ui->comboBox_pipeline->currentIndex() == 0)
 		{
 			viewer->setBackfaceCulling(true, false);

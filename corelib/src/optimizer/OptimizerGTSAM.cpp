@@ -964,7 +964,7 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 				}
 				++it;
 			}
-			catch(gtsam::IndeterminantLinearSystemException & e)
+			catch(std::exception & e)
 			{
 				UWARN("GTSAM exception caught: %s\n Graph has %d edges and %d vertices", e.what(),
 						(int)newEdgeConstraints.size(),

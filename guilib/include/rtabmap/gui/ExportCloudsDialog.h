@@ -69,6 +69,8 @@ public:
 	void loadSettings(QSettings & settings, const QString & group = "");
 
 	void setDBDriver(const DBDriver * dbDriver) {_dbDriver = dbDriver;}
+	// Enable the "Add anchor point" context menu action in viewers opened by viewClouds()
+	void setAnchorPointActionEnabled(bool enabled) {_anchorPointsEnabled = enabled;}
 	void forceAssembling(bool enabled);
 	void setProgressDialogToMax();
 	void setSaveButton();
@@ -123,6 +125,7 @@ public:
 
 Q_SIGNALS:
 	void configChanged();
+	void pointPicked(float x, float y, float z); // in the frame of the poses passed to viewClouds()
 
 public Q_SLOTS:
 	void restoreDefaults();
@@ -180,6 +183,7 @@ private:
 	GainCompensator * _compensator;
 	const DBDriver * _dbDriver;
 	bool _scansHaveRGB;
+	bool _anchorPointsEnabled;
 
     bool saveOBJFile(const QString &path, pcl::TextureMesh::Ptr &mesh) const;
     bool saveOBJFile(const QString &path, pcl::PolygonMesh &mesh) const;
