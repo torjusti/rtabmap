@@ -41,7 +41,7 @@ public:
   // error function
   // @param p    the pose in Pose2
   // @param H    the optional Jacobian matrix, which use boost optional and has default null pointer
-  gtsam::Vector evaluateError(const VALUE& p,
+  gtsam::Vector evaluateError(const gtsam::Pose2& p,
 #if GTSAM_VERSION_NUMERIC >= 40300
 		  gtsam::OptionalMatrixType H = OptionalNone) const {
 #else
@@ -54,6 +54,18 @@ public:
                                       0.0, 1.0, 0.0).finished();
 
     // return error vector
+    return (gtsam::Vector2() << p.x() - mx_, p.y() - my_).finished();
+  }
+
+  // error function for a landmark stored as a 2D point (no orientation)
+  gtsam::Vector evaluateError(const gtsam::Point2& p,
+#if GTSAM_VERSION_NUMERIC >= 40300
+		  gtsam::OptionalMatrixType H = OptionalNone) const {
+#else
+		  boost::optional<gtsam::Matrix&> H = boost::none) const {
+#endif
+    if (H) *H = gtsam::Matrix22::Identity();
+
     return (gtsam::Vector2() << p.x() - mx_, p.y() - my_).finished();
   }
 

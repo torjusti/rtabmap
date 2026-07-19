@@ -177,6 +177,8 @@ private Q_SLOTS:
 	void editConstraint();
 	void anchorPointPicked(float x, float y, float z);
 	void anchorPointPickedFromImage(float x, float y, float z);
+	void anchorPointPickedFromMap(float x, float y, float z);
+	void editAnchorPoints();
 	void updateGrid();
 	void updateOctomapView();
 	void updateGraphRotation();
@@ -248,6 +250,13 @@ private:
 	void refineConstraint(int from, int to, Registration * reg, RegistrationIcp * regIcp, bool silent);
 	bool addConstraint(int from, int to, Registration * reg, bool silent, bool silentlyUseOptimizedGraphAsGuess = false, Optimizer * optimizer = 0);
 	void addAnchorPoint(int nodeId, const Transform & tLocal);
+	bool getAnchorPointInput(
+			const QString & title,
+			const QString & header,
+			double & worldX, double & worldY, double & worldZ,
+			double & sigmaXY, double & sigmaZ);
+	static cv::Mat makeAnchorPriorInfMatrix(double sigmaXY, double sigmaZ);
+	void removeAnchorPoint(int landmarkId);
 	void exportPoses(int format);
 	void exportGPS(int format);
 
@@ -300,10 +309,6 @@ private:
 	// point picked in that view can be expressed in the node's frame.
 	int cloudViewer3dNodeId_;
 	Transform cloudViewer3dPose_;
-	// Local origin subtracted from anchor point world coordinates (e.g. EPSG
-	// easting/northing) to keep values within float precision.
-	cv::Point3d anchorOrigin_;
-	bool anchorOriginSet_;
 
 	bool savedMaximized_;
 	bool firstCall_;

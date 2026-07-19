@@ -40,6 +40,11 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QFormLayout>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QTableWidget>
+#include <QHeaderView>
+#include <QPushButton>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QGraphicsLineItem>
 #include <QtGui/QCloseEvent>
 #include <QGraphicsOpacityEffect>
@@ -127,8 +132,6 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	linkRefiningDialog_(new LinkRefiningDialog(this)),
 	exportDataDialog_(new ExportDialog(this)),
 	cloudViewer3dNodeId_(0),
-	anchorOrigin_(0,0,0),
-	anchorOriginSet_(false),
 	savedMaximized_(false),
 	firstCall_(true),
 	iniFilePath_(ini),
@@ -218,6 +221,10 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	ui_->graphicsView_B->setAnchorPointActionEnabled(true);
 	connect(ui_->graphicsView_A, SIGNAL(pointPicked(float,float,float)), this, SLOT(anchorPointPickedFromImage(float,float,float)));
 	connect(ui_->graphicsView_B, SIGNAL(pointPicked(float,float,float)), this, SLOT(anchorPointPickedFromImage(float,float,float)));
+	occupancyGridViewer_->setAnchorPointActionEnabled(true);
+	connect(occupancyGridViewer_, SIGNAL(pointPicked(float,float,float)), this, SLOT(anchorPointPickedFromMap(float,float,float)));
+	exportDialog_->setAnchorPointActionEnabled(true);
+	connect(exportDialog_, SIGNAL(pointPicked(float,float,float)), this, SLOT(anchorPointPickedFromMap(float,float,float)));
 
 	ui_->graphicsView_stereo->setAlpha(255);
 
@@ -338,6 +345,7 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	connect(ui_->actionGenerate_3D_map_pcd, SIGNAL(triggered()), this, SLOT(generate3DMap()));
 	connect(ui_->actionDetect_more_loop_closures, SIGNAL(triggered()), this, SLOT(detectMoreLoopClosures()));
 	connect(ui_->actionMerge_components_using_selected_nodes, SIGNAL(triggered()), this, SLOT(mergeComponents()));
+	connect(ui_->actionAnchor_points, SIGNAL(triggered()), this, SLOT(editAnchorPoints()));
 	connect(ui_->actionUpdate_all_neighbor_covariances, SIGNAL(triggered()), this, SLOT(updateAllNeighborCovariances()));
 	connect(ui_->actionUpdate_all_loop_closure_covariances, SIGNAL(triggered()), this, SLOT(updateAllLoopClosureCovariances()));
 	connect(ui_->actionUpdate_all_landmark_covariances, SIGNAL(triggered()), this, SLOT(updateAllLandmarkCovariances()));
@@ -1231,8 +1239,6 @@ bool DatabaseViewer::closeDatabase()
 		modifiedLaserScans_.clear();
 		cloudViewer3dNodeId_ = 0;
 		cloudViewer3dPose_.setNull();
-		anchorOrigin_ = cv::Point3d(0,0,0);
-		anchorOriginSet_ = false;
 		ui_->graphViewer->clearAll();
 		occupancyGridViewer_->clear();
 		ui_->menuEdit->setEnabled(false);
@@ -2152,10 +2158,7 @@ void DatabaseViewer::updateIds()
 	}
 
 	// Add self-referring links on landmarks (e.g. anchor point priors), they
-	// are keyed by negative ids so the per-node loop above missed them. Also
-	// restore the anchor local origin saved in the prior's user data.
-	anchorOrigin_ = cv::Point3d(0,0,0);
-	anchorOriginSet_ = false;
+	// are keyed by negative ids so the per-node loop above missed them.
 	for(std::multimap<int, Link>::iterator iter=links.begin(); iter!=links.end(); ++iter)
 	{
 		if(iter->second.from() == iter->second.to() && iter->second.from() < 0 && iter->second.isValid())
@@ -2163,16 +2166,6 @@ void DatabaseViewer::updateIds()
 			if(graph::findLink(links_, iter->second.from(), iter->second.to(), false, iter->second.type()) == links_.end())
 			{
 				links_.insert(std::make_pair(iter->second.from(), iter->second));
-			}
-			if(!anchorOriginSet_ && iter->second.type() == Link::kPosePrior)
-			{
-				cv::Mat userData = iter->second.uncompressUserDataConst();
-				if(!userData.empty() && userData.type() == CV_64FC1 && userData.total() == 3)
-				{
-					anchorOrigin_ = cv::Point3d(userData.at<double>(0), userData.at<double>(1), userData.at<double>(2));
-					anchorOriginSet_ = true;
-					UINFO("Restored anchor point local origin (%f, %f, %f)", anchorOrigin_.x, anchorOrigin_.y, anchorOrigin_.z);
-				}
 			}
 		}
 	}
@@ -5975,9 +5968,9 @@ void DatabaseViewer::update(int value,
 							{
 								cloudViewer_->addOrUpdateText(anchorId+"_text",
 										uFormat("%.2f, %.2f, %.2f",
-												anchorOrigin_.x+priorIter->second.transform().x(),
-												anchorOrigin_.y+priorIter->second.transform().y(),
-												anchorOrigin_.z+priorIter->second.transform().z()),
+												priorIter->second.transform().x(),
+												priorIter->second.transform().y(),
+												priorIter->second.transform().z()),
 										anchorPose,
 										0.05,
 										QColor(Qt::magenta));
@@ -7207,6 +7200,79 @@ void DatabaseViewer::anchorPointPickedFromImage(float x, float y, float z)
 	addAnchorPoint(nodeId, Transform(x, y, z, 0, 0, 0));
 }
 
+void DatabaseViewer::anchorPointPickedFromMap(float x, float y, float z)
+{
+	if(!dbDriver_ || ids_.empty())
+	{
+		return;
+	}
+
+	// The assembled views (Occupancy Grid View, "View 3D map") are rendered with
+	// the poses of the currently selected graph iteration. Use that same graph to
+	// find the node closest to the picked point and express the point in the
+	// node's base frame; the resulting local point is frame-independent so the
+	// shared anchor creation path can be reused as is.
+	std::map<int, Transform> graph;
+	if(ui_->checkBox_alignScansCloudsWithGroundTruth->isEnabled() &&
+	   ui_->checkBox_alignScansCloudsWithGroundTruth->isChecked() &&
+	   !groundTruthPoses_.empty())
+	{
+		graph = groundTruthPoses_;
+	}
+	else if(!graphes_.empty())
+	{
+		// When poses are aligned with ground truth or GPS for display, the
+		// rendered frame differs from the optimization frame by an alignment
+		// transform not kept around, so picked points cannot be mapped back.
+		if((ui_->checkBox_alignPosesWithGroundTruth->isEnabled() &&
+			ui_->checkBox_alignPosesWithGroundTruth->isChecked() &&
+			!groundTruthPoses_.empty()) ||
+		   (ui_->checkBox_alignPosesWithGPS->isEnabled() &&
+			ui_->checkBox_alignPosesWithGPS->isChecked() &&
+			!gpsPoses_.empty()))
+		{
+			QMessageBox::warning(this, tr("Add anchor point"),
+					tr("Cannot add an anchor point while \"Align poses with ground truth/GPS\" is checked, "
+					   "uncheck it and try again."));
+			return;
+		}
+		graph = uValueAt(graphes_, ui_->horizontalSlider_iterations->value());
+	}
+	if(graph.empty())
+	{
+		QMessageBox::warning(this, tr("Add anchor point"),
+				tr("The optimized graph is empty, cannot add an anchor point."));
+		return;
+	}
+
+	Transform pointWorld(x, y, z, 0, 0, 0);
+	int nodeId = 0;
+	float bestSqrdDist = 0.0f;
+	for(std::map<int, Transform>::iterator iter=graph.begin(); iter!=graph.end(); ++iter)
+	{
+		if(iter->first > 0 &&
+		   !iter->second.isNull() &&
+		   odomPoses_.find(iter->first) != odomPoses_.end())
+		{
+			float sqrdDist = iter->second.getDistanceSquared(pointWorld);
+			if(nodeId == 0 || sqrdDist < bestSqrdDist)
+			{
+				nodeId = iter->first;
+				bestSqrdDist = sqrdDist;
+			}
+		}
+	}
+	if(nodeId == 0)
+	{
+		QMessageBox::warning(this, tr("Add anchor point"),
+				tr("No node with an odometry pose found in the graph, cannot add an anchor point."));
+		return;
+	}
+
+	Transform tLocal = graph.at(nodeId).inverse() * pointWorld;
+	addAnchorPoint(nodeId, tLocal);
+}
+
 void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal)
 {
 	// Estimate current world coordinates of that point using the latest optimized graph
@@ -7218,9 +7284,8 @@ void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal)
 	Transform pointWorld = nodeWorldPose * tLocal;
 
 	// Find a free landmark id (below any existing landmark, including removed
-	// ones so that their ids are not reused) and check if anchors already exist.
+	// ones so that their ids are not reused).
 	int landmarkId = -1;
-	bool hasAnchors = false;
 	std::multimap<int, Link> allLinks = updateLinksWithModifications(links_);
 	for(std::multimap<int, Link>::iterator iter=allLinks.begin(); iter!=allLinks.end(); ++iter)
 	{
@@ -7228,10 +7293,6 @@ void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal)
 		if(negId<0 && negId <= landmarkId)
 		{
 			landmarkId = negId-1;
-		}
-		if(iter->second.from() == iter->second.to() && iter->second.from()<0 && iter->second.type() == Link::kPosePrior)
-		{
-			hasAnchors = true;
 		}
 	}
 	for(std::multimap<int, Link>::iterator iter=linksRemoved_.begin(); iter!=linksRemoved_.end(); ++iter)
@@ -7243,98 +7304,21 @@ void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal)
 		}
 	}
 
-	// Dialog
-	QDialog dialog(this);
-	dialog.setWindowTitle(tr("Add anchor point (seen from node %1)").arg(nodeId));
-	QFormLayout * form = new QFormLayout(&dialog);
-	form->addRow(new QLabel(tr("Enter the known world coordinates of the picked point "
-			"(e.g. EPSG easting/northing from your 2D map).\n"
-			"Picked point is currently at %1, %2, %3 in the map frame.")
-			.arg(pointWorld.x(),0,'f',2).arg(pointWorld.y(),0,'f',2).arg(pointWorld.z(),0,'f',2), &dialog));
-
-	double prefillX = (anchorOriginSet_?anchorOrigin_.x:0.0) + pointWorld.x();
-	double prefillY = (anchorOriginSet_?anchorOrigin_.y:0.0) + pointWorld.y();
-	double prefillZ = (anchorOriginSet_?anchorOrigin_.z:0.0) + pointWorld.z();
-
-	QDoubleSpinBox * worldX = new QDoubleSpinBox(&dialog);
-	worldX->setRange(-1e9, 1e9); worldX->setDecimals(3); worldX->setSuffix(" m"); worldX->setValue(prefillX);
-	QDoubleSpinBox * worldY = new QDoubleSpinBox(&dialog);
-	worldY->setRange(-1e9, 1e9); worldY->setDecimals(3); worldY->setSuffix(" m"); worldY->setValue(prefillY);
-	QDoubleSpinBox * worldZ = new QDoubleSpinBox(&dialog);
-	worldZ->setRange(-1e9, 1e9); worldZ->setDecimals(3); worldZ->setSuffix(" m"); worldZ->setValue(prefillZ);
-	worldZ->setToolTip(tr("If elevation is unknown, keep the current estimate and use a large Z uncertainty."));
-	form->addRow(tr("World X (easting):"), worldX);
-	form->addRow(tr("World Y (northing):"), worldY);
-	form->addRow(tr("World Z (elevation):"), worldZ);
-
-	QDoubleSpinBox * sigmaXY = new QDoubleSpinBox(&dialog);
-	sigmaXY->setRange(0.01, 1000); sigmaXY->setDecimals(2); sigmaXY->setSuffix(" m"); sigmaXY->setValue(0.3);
-	sigmaXY->setToolTip(tr("How precisely this feature can be located on the 2D map."));
-	QDoubleSpinBox * sigmaZ = new QDoubleSpinBox(&dialog);
-	sigmaZ->setRange(0.01, 10000); sigmaZ->setDecimals(2); sigmaZ->setSuffix(" m"); sigmaZ->setValue(2.0);
-	sigmaZ->setToolTip(tr("Keep large if elevation is unknown."));
-	form->addRow(tr("X/Y uncertainty (std dev):"), sigmaXY);
-	form->addRow(tr("Z uncertainty (std dev):"), sigmaZ);
-
-	form->addRow(new QLabel(tr("Local origin, subtracted from the coordinates above before storing\n"
-			"(keeps values small for numerical precision, set once per site):"), &dialog));
-	QDoubleSpinBox * originX = new QDoubleSpinBox(&dialog);
-	originX->setRange(-1e9, 1e9); originX->setDecimals(2); originX->setSuffix(" m"); originX->setValue(anchorOrigin_.x);
-	QDoubleSpinBox * originY = new QDoubleSpinBox(&dialog);
-	originY->setRange(-1e9, 1e9); originY->setDecimals(2); originY->setSuffix(" m"); originY->setValue(anchorOrigin_.y);
-	QDoubleSpinBox * originZ = new QDoubleSpinBox(&dialog);
-	originZ->setRange(-1e9, 1e9); originZ->setDecimals(2); originZ->setSuffix(" m"); originZ->setValue(anchorOrigin_.z);
-	form->addRow(tr("Origin X:"), originX);
-	form->addRow(tr("Origin Y:"), originY);
-	form->addRow(tr("Origin Z:"), originZ);
-
-	QDialogButtonBox * buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, Qt::Horizontal, &dialog);
-	form->addRow(buttonBox);
-	connect(buttonBox, SIGNAL(accepted()), &dialog, SLOT(accept()));
-	connect(buttonBox, SIGNAL(rejected()), &dialog, SLOT(reject()));
-
-	if(dialog.exec() != QDialog::Accepted)
+	double worldX = pointWorld.x();
+	double worldY = pointWorld.y();
+	double worldZ = pointWorld.z();
+	double sigmaXY = 0.3;
+	double sigmaZ = 2.0;
+	if(!getAnchorPointInput(
+			tr("Add anchor point (seen from node %1)").arg(nodeId),
+			tr("Enter the known world coordinates of the picked point "
+			   "(e.g. from your 2D map, in a local CRS with small coordinates).\n"
+			   "Picked point is currently at %1, %2, %3 in the map frame.")
+			   .arg(pointWorld.x(),0,'f',2).arg(pointWorld.y(),0,'f',2).arg(pointWorld.z(),0,'f',2),
+			worldX, worldY, worldZ, sigmaXY, sigmaZ))
 	{
 		return;
 	}
-
-	cv::Point3d origin(originX->value(), originY->value(), originZ->value());
-	if(hasAnchors && anchorOriginSet_ &&
-	   (origin.x != anchorOrigin_.x || origin.y != anchorOrigin_.y || origin.z != anchorOrigin_.z))
-	{
-		if(QMessageBox::question(this, tr("Add anchor point"),
-				tr("The local origin was changed but there are already anchor points using origin (%1, %2, %3). "
-				   "Mixing origins will corrupt the optimization. Do you really want to continue with the new origin?")
-				   .arg(anchorOrigin_.x).arg(anchorOrigin_.y).arg(anchorOrigin_.z),
-				QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
-		{
-			return;
-		}
-	}
-	else if(!anchorOriginSet_ && origin == cv::Point3d(0,0,0) &&
-			(fabs(worldX->value()) >= 30000.0 || fabs(worldY->value()) >= 30000.0))
-	{
-		// Large grid coordinates with no origin would degrade float precision
-		double suggestedX = floor(worldX->value()/100.0)*100.0;
-		double suggestedY = floor(worldY->value()/100.0)*100.0;
-		if(QMessageBox::question(this, tr("Add anchor point"),
-				tr("The coordinates entered are large and would lose precision when stored "
-				   "(poses are stored with 32-bit floats). Set the local origin to (%1, %2, 0)? "
-				   "The optimized map will then be in \"world minus origin\" coordinates. (Recommended)")
-				   .arg(suggestedX).arg(suggestedY),
-				QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::Yes)
-		{
-			origin.x = suggestedX;
-			origin.y = suggestedY;
-			origin.z = 0.0;
-		}
-	}
-	anchorOrigin_ = origin;
-	anchorOriginSet_ = true;
-
-	double relX = worldX->value() - origin.x;
-	double relY = worldY->value() - origin.y;
-	double relZ = worldZ->value() - origin.z;
 
 	// Observation link: node -> landmark, orientation-less (angular variance
 	// 9999 makes optimizers treat the landmark as a 3D point).
@@ -7344,18 +7328,10 @@ void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal)
 	Link obsLink(nodeId, landmarkId, Link::kLandmark, tLocal, obsInf);
 	linksAdded_.insert(std::make_pair(obsLink.from(), obsLink));
 
-	// Prior link: known world position of the landmark (position only), with
-	// the local origin saved in user data to recover absolute coordinates.
-	cv::Mat priorInf = cv::Mat::eye(6, 6, CV_64FC1);
-	priorInf.at<double>(0,0) = 1.0/(sigmaXY->value()*sigmaXY->value());
-	priorInf.at<double>(1,1) = 1.0/(sigmaXY->value()*sigmaXY->value());
-	priorInf.at<double>(2,2) = 1.0/(sigmaZ->value()*sigmaZ->value());
-	priorInf.at<double>(3,3) = priorInf.at<double>(4,4) = priorInf.at<double>(5,5) = 1.0/9999.0;
-	cv::Mat originMat = (cv::Mat_<double>(1,3) << origin.x, origin.y, origin.z);
+	// Prior link: known world position of the landmark (position only)
 	Link priorLink(landmarkId, landmarkId, Link::kPosePrior,
-			Transform((float)relX, (float)relY, (float)relZ, 0, 0, 0),
-			priorInf,
-			compressData2(originMat));
+			Transform((float)worldX, (float)worldY, (float)worldZ, 0, 0, 0),
+			makeAnchorPriorInfMatrix(sigmaXY, sigmaZ));
 	linksAdded_.insert(std::make_pair(priorLink.from(), priorLink));
 
 	// Priors are ignored by default by the optimizer, propose to enable them
@@ -7380,6 +7356,295 @@ void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal)
 	}
 	updateLoopClosuresSlider();
 	update3dView();
+}
+
+bool DatabaseViewer::getAnchorPointInput(
+		const QString & title,
+		const QString & header,
+		double & worldX, double & worldY, double & worldZ,
+		double & sigmaXY, double & sigmaZ)
+{
+	QDialog dialog(this);
+	dialog.setWindowTitle(title);
+	QFormLayout * form = new QFormLayout(&dialog);
+	if(!header.isEmpty())
+	{
+		form->addRow(new QLabel(header, &dialog));
+	}
+
+	QDoubleSpinBox * spinX = new QDoubleSpinBox(&dialog);
+	spinX->setRange(-1e9, 1e9); spinX->setDecimals(3); spinX->setSuffix(" m"); spinX->setValue(worldX);
+	QDoubleSpinBox * spinY = new QDoubleSpinBox(&dialog);
+	spinY->setRange(-1e9, 1e9); spinY->setDecimals(3); spinY->setSuffix(" m"); spinY->setValue(worldY);
+	QDoubleSpinBox * spinZ = new QDoubleSpinBox(&dialog);
+	spinZ->setRange(-1e9, 1e9); spinZ->setDecimals(3); spinZ->setSuffix(" m"); spinZ->setValue(worldZ);
+	spinZ->setToolTip(tr("If elevation is unknown, keep the current estimate and use a large Z uncertainty."));
+	form->addRow(tr("World X (easting):"), spinX);
+	form->addRow(tr("World Y (northing):"), spinY);
+	form->addRow(tr("World Z (elevation):"), spinZ);
+
+	QDoubleSpinBox * spinSigmaXY = new QDoubleSpinBox(&dialog);
+	spinSigmaXY->setRange(0.01, 1000); spinSigmaXY->setDecimals(2); spinSigmaXY->setSuffix(" m"); spinSigmaXY->setValue(sigmaXY);
+	spinSigmaXY->setToolTip(tr("How precisely this feature can be located on the 2D map."));
+	QDoubleSpinBox * spinSigmaZ = new QDoubleSpinBox(&dialog);
+	spinSigmaZ->setRange(0.01, 10000); spinSigmaZ->setDecimals(2); spinSigmaZ->setSuffix(" m"); spinSigmaZ->setValue(sigmaZ);
+	spinSigmaZ->setToolTip(tr("Keep large if elevation is unknown."));
+	form->addRow(tr("X/Y uncertainty (std dev):"), spinSigmaXY);
+	form->addRow(tr("Z uncertainty (std dev):"), spinSigmaZ);
+
+	QDialogButtonBox * buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, Qt::Horizontal, &dialog);
+	form->addRow(buttonBox);
+	connect(buttonBox, SIGNAL(accepted()), &dialog, SLOT(accept()));
+	connect(buttonBox, SIGNAL(rejected()), &dialog, SLOT(reject()));
+
+	for(;;)
+	{
+		if(dialog.exec() != QDialog::Accepted)
+		{
+			return false;
+		}
+		if(fabs(spinX->value()) >= 30000.0 ||
+		   fabs(spinY->value()) >= 30000.0 ||
+		   fabs(spinZ->value()) >= 30000.0)
+		{
+			// Poses and clouds are stored/rendered with 32-bit floats: at
+			// e.g. UTM northing magnitudes (millions of meters), resolution
+			// drops to half a meter, silently corrupting the optimized map.
+			QMessageBox::warning(this, title,
+					tr("Coordinates are limited to +/-30 km. RTAB-Map stores poses with "
+					   "32-bit floats, so large coordinates (e.g. raw EPSG/UTM easting/northing) "
+					   "would lose sub-meter precision and corrupt the optimized map. "
+					   "Use a local CRS instead: subtract a constant site offset from your "
+					   "map coordinates, and use the same offset for all anchor points."));
+			continue;
+		}
+		break;
+	}
+
+	worldX = spinX->value();
+	worldY = spinY->value();
+	worldZ = spinZ->value();
+	sigmaXY = spinSigmaXY->value();
+	sigmaZ = spinSigmaZ->value();
+	return true;
+}
+
+cv::Mat DatabaseViewer::makeAnchorPriorInfMatrix(double sigmaXY, double sigmaZ)
+{
+	// Position-only prior: high variance (9999) on rotation makes the
+	// optimizers treat it as an XYZ constraint on a point landmark.
+	cv::Mat inf = cv::Mat::eye(6, 6, CV_64FC1);
+	inf.at<double>(0,0) = 1.0/(sigmaXY*sigmaXY);
+	inf.at<double>(1,1) = 1.0/(sigmaXY*sigmaXY);
+	inf.at<double>(2,2) = 1.0/(sigmaZ*sigmaZ);
+	inf.at<double>(3,3) = inf.at<double>(4,4) = inf.at<double>(5,5) = 1.0/9999.0;
+	return inf;
+}
+
+void DatabaseViewer::removeAnchorPoint(int landmarkId)
+{
+	// Remove the prior and all observation links of this landmark
+	std::multimap<int, Link> allLinks = updateLinksWithModifications(links_);
+	for(std::multimap<int, Link>::iterator iter=allLinks.begin(); iter!=allLinks.end(); ++iter)
+	{
+		if(iter->second.from() == landmarkId || iter->second.to() == landmarkId)
+		{
+			int from = iter->second.from();
+			int to = iter->second.to();
+			std::multimap<int, Link>::iterator jter = rtabmap::graph::findLink(linksAdded_, from, to);
+			if(jter != linksAdded_.end())
+			{
+				linksAdded_.erase(jter);
+			}
+			jter = rtabmap::graph::findLink(linksRefined_, from, to);
+			if(jter != linksRefined_.end())
+			{
+				linksRefined_.erase(jter);
+			}
+			jter = rtabmap::graph::findLink(links_, from, to);
+			if(jter != links_.end() && !containsLink(linksRemoved_, from, to))
+			{
+				linksRemoved_.insert(*jter);
+			}
+		}
+	}
+}
+
+void DatabaseViewer::editAnchorPoints()
+{
+	if(!dbDriver_)
+	{
+		return;
+	}
+
+	QDialog dialog(this);
+	dialog.setWindowTitle(tr("Anchor points"));
+	dialog.resize(700, 300);
+	QVBoxLayout * layout = new QVBoxLayout(&dialog);
+
+	QTableWidget * table = new QTableWidget(&dialog);
+	table->setColumnCount(7);
+	table->setHorizontalHeaderLabels(QStringList()
+			<< tr("Landmark") << tr("Seen from node(s)")
+			<< tr("World X") << tr("World Y") << tr("World Z")
+			<< tr("Sigma X/Y") << tr("Sigma Z"));
+	table->setSelectionBehavior(QAbstractItemView::SelectRows);
+	table->setSelectionMode(QAbstractItemView::SingleSelection);
+	table->setEditTriggers(QAbstractItemView::NoEditTriggers);
+	table->horizontalHeader()->setStretchLastSection(true);
+	layout->addWidget(table);
+
+	QHBoxLayout * buttonLayout = new QHBoxLayout();
+	QPushButton * editButton = new QPushButton(tr("Edit..."), &dialog);
+	QPushButton * removeButton = new QPushButton(tr("Remove"), &dialog);
+	QPushButton * showButton = new QPushButton(tr("Show node"), &dialog);
+	QPushButton * closeButton = new QPushButton(tr("Close"), &dialog);
+	buttonLayout->addWidget(editButton);
+	buttonLayout->addWidget(removeButton);
+	buttonLayout->addWidget(showButton);
+	buttonLayout->addStretch();
+	buttonLayout->addWidget(closeButton);
+	layout->addLayout(buttonLayout);
+	connect(closeButton, SIGNAL(clicked()), &dialog, SLOT(accept()));
+
+	// Gather anchors (landmarks having a pose prior, i.e. created as anchor
+	// points; landmarks from marker detection have no prior) and fill table.
+	std::map<int, Link> priors;             // landmark id -> prior link
+	std::map<int, std::vector<int> > observers; // landmark id -> observing nodes
+	auto refresh = [&]()
+	{
+		priors.clear();
+		observers.clear();
+		std::multimap<int, Link> allLinks = updateLinksWithModifications(links_);
+		for(std::multimap<int, Link>::iterator iter=allLinks.begin(); iter!=allLinks.end(); ++iter)
+		{
+			if(iter->second.from() == iter->second.to() && iter->second.from() < 0 &&
+			   iter->second.type() == Link::kPosePrior)
+			{
+				priors.insert(std::make_pair(iter->second.from(), iter->second));
+			}
+			else if(iter->second.type() == Link::kLandmark && iter->second.to() < 0)
+			{
+				observers[iter->second.to()].push_back(iter->second.from());
+			}
+		}
+
+		table->setRowCount(0);
+		for(std::map<int, Link>::iterator iter=priors.begin(); iter!=priors.end(); ++iter)
+		{
+			int row = table->rowCount();
+			table->insertRow(row);
+			QStringList nodes;
+			if(observers.find(iter->first) != observers.end())
+			{
+				for(size_t i=0; i<observers.at(iter->first).size(); ++i)
+				{
+					nodes.append(QString::number(observers.at(iter->first)[i]));
+				}
+			}
+			const Link & prior = iter->second;
+			double sigmaXY = prior.infMatrix().at<double>(0,0)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(0,0)):0.0;
+			double sigmaZ = prior.infMatrix().at<double>(2,2)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(2,2)):0.0;
+			table->setItem(row, 0, new QTableWidgetItem(QString::number(-iter->first)));
+			table->setItem(row, 1, new QTableWidgetItem(nodes.isEmpty()?"-":nodes.join(", ")));
+			table->setItem(row, 2, new QTableWidgetItem(QString::number(prior.transform().x(), 'f', 3)));
+			table->setItem(row, 3, new QTableWidgetItem(QString::number(prior.transform().y(), 'f', 3)));
+			table->setItem(row, 4, new QTableWidgetItem(QString::number(prior.transform().z(), 'f', 3)));
+			table->setItem(row, 5, new QTableWidgetItem(QString::number(sigmaXY, 'f', 2)));
+			table->setItem(row, 6, new QTableWidgetItem(QString::number(sigmaZ, 'f', 2)));
+			table->item(row, 0)->setData(Qt::UserRole, iter->first); // landmark id
+		}
+	};
+	refresh();
+
+	if(table->rowCount() == 0)
+	{
+		QMessageBox::information(this, tr("Anchor points"),
+				tr("There are no anchor points in this database. Right-click a point "
+				   "in the 3D View, the Occupancy Grid View, a \"View 3D map\" window "
+				   "or the node images to add one."));
+		return;
+	}
+	table->selectRow(0);
+
+	auto selectedLandmarkId = [&]() -> int
+	{
+		int row = table->currentRow();
+		if(row >= 0 && row < table->rowCount())
+		{
+			return table->item(row, 0)->data(Qt::UserRole).toInt();
+		}
+		return 0;
+	};
+
+	bool modified = false;
+	connect(editButton, &QPushButton::clicked, [&]()
+	{
+		int landmarkId = selectedLandmarkId();
+		if(landmarkId >= 0)
+		{
+			return;
+		}
+		const Link & prior = priors.at(landmarkId);
+		double x = prior.transform().x();
+		double y = prior.transform().y();
+		double z = prior.transform().z();
+		double sigmaXY = prior.infMatrix().at<double>(0,0)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(0,0)):0.3;
+		double sigmaZ = prior.infMatrix().at<double>(2,2)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(2,2)):2.0;
+		if(getAnchorPointInput(tr("Edit anchor point %1").arg(-landmarkId), QString(), x, y, z, sigmaXY, sigmaZ))
+		{
+			Link newPrior(landmarkId, landmarkId, Link::kPosePrior,
+					Transform((float)x, (float)y, (float)z, 0, 0, 0),
+					makeAnchorPriorInfMatrix(sigmaXY, sigmaZ));
+			// updateLinksWithModifications() gives refined links precedence
+			// over both original and added links, so a replacement in
+			// linksRefined_ covers anchors from the database and new ones.
+			std::multimap<int, Link>::iterator jter = rtabmap::graph::findLink(linksRefined_, landmarkId, landmarkId);
+			if(jter != linksRefined_.end())
+			{
+				linksRefined_.erase(jter);
+			}
+			linksRefined_.insert(std::make_pair(landmarkId, newPrior));
+			modified = true;
+			refresh();
+		}
+	});
+	connect(removeButton, &QPushButton::clicked, [&]()
+	{
+		int landmarkId = selectedLandmarkId();
+		if(landmarkId >= 0)
+		{
+			return;
+		}
+		if(QMessageBox::question(&dialog, tr("Remove anchor point"),
+				tr("Remove anchor point %1 and its observation link(s)?").arg(-landmarkId),
+				QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::Yes)
+		{
+			removeAnchorPoint(landmarkId);
+			modified = true;
+			refresh();
+		}
+	});
+	connect(showButton, &QPushButton::clicked, [&]()
+	{
+		int landmarkId = selectedLandmarkId();
+		if(landmarkId < 0 &&
+		   observers.find(landmarkId) != observers.end() &&
+		   !observers.at(landmarkId).empty() &&
+		   idToIndex_.contains(observers.at(landmarkId)[0]))
+		{
+			ui_->horizontalSlider_A->setValue(idToIndex_.value(observers.at(landmarkId)[0]));
+		}
+	});
+
+	dialog.exec();
+
+	if(modified)
+	{
+		this->updateGraphView();
+		updateLoopClosuresSlider();
+		update3dView();
+	}
 }
 
 // only called when ui_->checkBox_showOptimized state changed
