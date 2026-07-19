@@ -40,6 +40,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QFormLayout>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
+#include <QCheckBox>
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QPushButton>
@@ -121,6 +122,11 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #endif
 
 namespace rtabmap {
+
+// Sigma (std dev, meters) marking an anchor point prior axis as unconstrained
+// ("elevation unknown"): large enough to have no effect on the optimization,
+// small enough to keep the information matrix numerically sane.
+const double kAnchorSigmaZFree = 1e6;
 
 DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	QMainWindow(parent),
@@ -449,6 +455,7 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	ui_->horizontalSlider_iterations->setEnabled(false);
 	ui_->spinBox_optimizationsFrom->setEnabled(false);
 	connect(ui_->horizontalSlider_iterations, SIGNAL(valueChanged(int)), this, SLOT(sliderIterationsValueChanged(int)));
+	connect(ui_->pushButton_optimize, SIGNAL(clicked()), this, SLOT(updateGraphView()));
 	connect(ui_->spinBox_optimizationsFrom, SIGNAL(editingFinished()), this, SLOT(updateGraphViewRootId()));
 	connect(ui_->comboBox_optimizationFlavor, SIGNAL(activated(int)), this, SLOT(updateGraphView()));
 	connect(ui_->tabBar_components, SIGNAL(currentChanged(int)), this, SLOT(tabBarComponentsValueChanged(int)));
@@ -1232,6 +1239,9 @@ bool DatabaseViewer::closeDatabase()
 		loopLinks_.clear();
 		graphes_.clear();
 		graphLinks_.clear();
+		exportViewRefPoses_.clear();
+		gridViewRefPoses_.clear();
+		fileViewRefPoses_.clear();
 		odomPoses_.clear();
 		groundTruthPoses_.clear();
 		gpsPoses_.clear();
@@ -4334,6 +4344,7 @@ void DatabaseViewer::view3DMap()
 			}
 		}
 
+		exportViewRefPoses_ = optimizedPoses;
 		exportDialog_->setDBDriver(dbDriver_);
 		exportDialog_->viewClouds(optimizedPoses,
 				updateLinksWithModifications(links_),
@@ -4391,6 +4402,20 @@ void DatabaseViewer::view3DMapFromFile()
 		{
 			hasNormals = true;
 		}
+	}
+
+	// The file is assumed to be in the frame of the currently displayed graph;
+	// snapshot it so that picks in this window stay valid after re-optimizations.
+	fileViewRefPoses_.clear();
+	if(ui_->checkBox_alignScansCloudsWithGroundTruth->isEnabled() &&
+	   ui_->checkBox_alignScansCloudsWithGroundTruth->isChecked() &&
+	   !groundTruthPoses_.empty())
+	{
+		fileViewRefPoses_ = groundTruthPoses_;
+	}
+	else if(!graphes_.empty())
+	{
+		fileViewRefPoses_ = uValueAt(graphes_, ui_->horizontalSlider_iterations->value());
 	}
 
 	QDialog * window = new QDialog(this, Qt::Window);
@@ -7298,48 +7323,70 @@ void DatabaseViewer::anchorPointPickedFromMap(float x, float y, float z)
 		return;
 	}
 
-	// The assembled views (Occupancy Grid View, "View 3D map") are rendered with
-	// the poses of the currently selected graph iteration. Use that same graph to
-	// find the node closest to the picked point and express the point in the
-	// node's base frame; the resulting local point is frame-independent so the
-	// shared anchor creation path can be reused as is.
-	std::map<int, Transform> graph;
-	if(ui_->checkBox_alignScansCloudsWithGroundTruth->isEnabled() &&
-	   ui_->checkBox_alignScansCloudsWithGroundTruth->isChecked() &&
-	   !groundTruthPoses_.empty())
+	// Each assembled view (Occupancy Grid View, "View 3D map", 3D map from file)
+	// keeps a snapshot of the poses it was rendered with. Resolving the pick
+	// against that snapshot (instead of the current graph) keeps picks valid
+	// even after the graph has been re-optimized and moved: the anchor is stored
+	// as a node-local offset, which is frame-independent.
+	std::map<int, Transform> refPoses;
+	if(sender() == exportDialog_)
 	{
-		graph = groundTruthPoses_;
+		refPoses = exportViewRefPoses_;
 	}
-	else if(!graphes_.empty())
+	else if(sender() == occupancyGridViewer_)
 	{
-		// When poses are aligned with ground truth or GPS for display, the
-		// rendered frame differs from the optimization frame by an alignment
-		// transform not kept around, so picked points cannot be mapped back.
-		if((ui_->checkBox_alignPosesWithGroundTruth->isEnabled() &&
-			ui_->checkBox_alignPosesWithGroundTruth->isChecked() &&
-			!groundTruthPoses_.empty()) ||
-		   (ui_->checkBox_alignPosesWithGPS->isEnabled() &&
-			ui_->checkBox_alignPosesWithGPS->isChecked() &&
-			!gpsPoses_.empty()))
+		refPoses = gridViewRefPoses_;
+	}
+	else
+	{
+		refPoses = fileViewRefPoses_;
+	}
+
+	if(refPoses.empty())
+	{
+		// Fallback: assume the view is in the frame of the currently selected graph.
+		if(ui_->checkBox_alignScansCloudsWithGroundTruth->isEnabled() &&
+		   ui_->checkBox_alignScansCloudsWithGroundTruth->isChecked() &&
+		   !groundTruthPoses_.empty())
 		{
-			QMessageBox::warning(this, tr("Add anchor point"),
-					tr("Cannot add an anchor point while \"Align poses with ground truth/GPS\" is checked, "
-					   "uncheck it and try again."));
-			return;
+			refPoses = groundTruthPoses_;
 		}
-		graph = uValueAt(graphes_, ui_->horizontalSlider_iterations->value());
+		else if(!graphes_.empty())
+		{
+			// When poses are aligned with ground truth or GPS for display, the
+			// rendered frame differs from the optimization frame by an alignment
+			// transform not kept around, so picked points cannot be mapped back.
+			if((ui_->checkBox_alignPosesWithGroundTruth->isEnabled() &&
+				ui_->checkBox_alignPosesWithGroundTruth->isChecked() &&
+				!groundTruthPoses_.empty()) ||
+			   (ui_->checkBox_alignPosesWithGPS->isEnabled() &&
+				ui_->checkBox_alignPosesWithGPS->isChecked() &&
+				!gpsPoses_.empty()))
+			{
+				QMessageBox::warning(this, tr("Add anchor point"),
+						tr("Cannot add an anchor point while \"Align poses with ground truth/GPS\" is checked, "
+						   "uncheck it and try again."));
+				return;
+			}
+			refPoses = uValueAt(graphes_, ui_->horizontalSlider_iterations->value());
+		}
 	}
-	if(graph.empty())
+	if(refPoses.empty())
 	{
 		QMessageBox::warning(this, tr("Add anchor point"),
 				tr("The optimized graph is empty, cannot add an anchor point."));
 		return;
 	}
 
+	addAnchorPointFromWorld(refPoses, x, y, z);
+}
+
+void DatabaseViewer::addAnchorPointFromWorld(const std::map<int, Transform> & refPoses, float x, float y, float z)
+{
 	Transform pointWorld(x, y, z, 0, 0, 0);
 	int nodeId = 0;
 	float bestSqrdDist = 0.0f;
-	for(std::map<int, Transform>::iterator iter=graph.begin(); iter!=graph.end(); ++iter)
+	for(std::map<int, Transform>::const_iterator iter=refPoses.begin(); iter!=refPoses.end(); ++iter)
 	{
 		if(iter->first > 0 &&
 		   !iter->second.isNull() &&
@@ -7360,7 +7407,29 @@ void DatabaseViewer::anchorPointPickedFromMap(float x, float y, float z)
 		return;
 	}
 
-	Transform tLocal = graph.at(nodeId).inverse() * pointWorld;
+	// A picked point was observed by a camera a few meters away at most. If the
+	// nearest node is far from the pick, the picked point cannot be expressed
+	// reliably in a node's frame (e.g. the view was generated in a different
+	// frame than the poses used here), and the observation link would be garbage.
+	if(bestSqrdDist > 20.0f*20.0f)
+	{
+		QMessageBox::warning(this, tr("Add anchor point"),
+				tr("The picked point is %1 m away from the closest node of the graph "
+				   "the view was generated with. The view content is inconsistent with "
+				   "the graph (e.g. a cloud loaded from a file exported with a different "
+				   "optimization). Re-generate the view (or re-open the 3D map) and pick again.")
+				   .arg(std::sqrt(bestSqrdDist), 0, 'f', 1));
+		return;
+	}
+
+	Transform tLocal = refPoses.at(nodeId).inverse() * pointWorld;
+	UINFO("Anchor pick: point (%.2f, %.2f, %.2f) in view frame, nearest node %d at (%.2f, %.2f, %.2f), "
+		  "distance to node=%.2f m, local offset in node frame=(%.2f, %.2f, %.2f)",
+			x, y, z,
+			nodeId,
+			refPoses.at(nodeId).x(), refPoses.at(nodeId).y(), refPoses.at(nodeId).z(),
+			std::sqrt(bestSqrdDist),
+			tLocal.x(), tLocal.y(), tLocal.z());
 	addAnchorPoint(nodeId, tLocal);
 }
 
@@ -7399,7 +7468,10 @@ void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal)
 	double worldY = pointWorld.y();
 	double worldZ = pointWorld.z();
 	double sigmaXY = 0.3;
-	double sigmaZ = 2.0;
+	// Default to an unconstrained elevation: the prefilled Z is the current
+	// (possibly drift-corrupted) estimate, not a measurement, so constraining
+	// it would anchor the very drift the user is trying to correct.
+	double sigmaZ = kAnchorSigmaZFree;
 	if(!getAnchorPointInput(
 			tr("Add anchor point (seen from node %1)").arg(nodeId),
 			tr("Enter the known world coordinates of the picked point "
@@ -7410,6 +7482,17 @@ void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal)
 	{
 		return;
 	}
+
+	UINFO("Anchor %d created: observing node %d, local offset=(%.2f, %.2f, %.2f) (%.2f m from node), "
+		  "current estimated world position=(%.2f, %.2f, %.2f), entered coordinates=(%.3f, %.3f, %.3f), "
+		  "sigma XY=%.2f m, sigma Z=%s",
+			-landmarkId,
+			nodeId,
+			tLocal.x(), tLocal.y(), tLocal.z(),
+			tLocal.getNorm(),
+			pointWorld.x(), pointWorld.y(), pointWorld.z(),
+			worldX, worldY, worldZ,
+			sigmaXY, sigmaZ>=kAnchorSigmaZFree?"unconstrained":uFormat("%.2f m", sigmaZ).c_str());
 
 	// Observation link: node -> landmark, orientation-less (angular variance
 	// 9999 makes optimizers treat the landmark as a 3D point).
@@ -7441,6 +7524,26 @@ void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal)
 		}
 	}
 
+	// Robust optimization (switchable constraints) performs poorly with anchor
+	// priors: instead of correcting the drift, the optimizer can switch off the
+	// loop closures that the anchors disagree with, deforming the map.
+	bool robust = Parameters::defaultOptimizerRobust();
+	Parameters::parse(ui_->parameters_toolbox->getParameters(), Parameters::kOptimizerRobust(), robust);
+	if(robust)
+	{
+		if(QMessageBox::question(this,
+			tr("Adding anchor point"),
+			tr("Parameter %1 is true. Robust optimization (switchable constraints) "
+			   "works poorly with anchor points: instead of correcting the drift, the "
+			   "optimizer can disable the loop closures that disagree with the anchors, "
+			   "deforming the map. Do you want to turn it off?").arg(Parameters::kOptimizerRobust().c_str()),
+			QMessageBox::Yes | QMessageBox::No,
+			QMessageBox::Yes) == QMessageBox::Yes)
+		{
+			ui_->parameters_toolbox->updateParameter(Parameters::kOptimizerRobust(), "false");
+		}
+	}
+
 	if(!priorsIgnored)
 	{
 		this->updateGraphView();
@@ -7463,25 +7566,40 @@ bool DatabaseViewer::getAnchorPointInput(
 		form->addRow(new QLabel(header, &dialog));
 	}
 
+	bool zUnconstrained = sigmaZ >= kAnchorSigmaZFree;
+
 	QDoubleSpinBox * spinX = new QDoubleSpinBox(&dialog);
 	spinX->setRange(-1e9, 1e9); spinX->setDecimals(3); spinX->setSuffix(" m"); spinX->setValue(worldX);
 	QDoubleSpinBox * spinY = new QDoubleSpinBox(&dialog);
 	spinY->setRange(-1e9, 1e9); spinY->setDecimals(3); spinY->setSuffix(" m"); spinY->setValue(worldY);
 	QDoubleSpinBox * spinZ = new QDoubleSpinBox(&dialog);
 	spinZ->setRange(-1e9, 1e9); spinZ->setDecimals(3); spinZ->setSuffix(" m"); spinZ->setValue(worldZ);
-	spinZ->setToolTip(tr("If elevation is unknown, keep the current estimate and use a large Z uncertainty."));
 	form->addRow(tr("World X (easting):"), spinX);
 	form->addRow(tr("World Y (northing):"), spinY);
 	form->addRow(tr("World Z (elevation):"), spinZ);
+
+	QCheckBox * checkZFree = new QCheckBox(tr("Elevation (Z) unknown, leave unconstrained"), &dialog);
+	checkZFree->setChecked(zUnconstrained);
+	checkZFree->setToolTip(tr("When checked, the prior does not constrain Z at all; the optimizer keeps "
+			"the elevation the rest of the graph agrees on. Uncheck only if the real "
+			"elevation is known (e.g. from site plans): a Z prior can then correct "
+			"vertical drift the same way X/Y priors correct horizontal drift."));
+	form->addRow(checkZFree);
 
 	QDoubleSpinBox * spinSigmaXY = new QDoubleSpinBox(&dialog);
 	spinSigmaXY->setRange(0.01, 1000); spinSigmaXY->setDecimals(2); spinSigmaXY->setSuffix(" m"); spinSigmaXY->setValue(sigmaXY);
 	spinSigmaXY->setToolTip(tr("How precisely this feature can be located on the 2D map."));
 	QDoubleSpinBox * spinSigmaZ = new QDoubleSpinBox(&dialog);
-	spinSigmaZ->setRange(0.01, 10000); spinSigmaZ->setDecimals(2); spinSigmaZ->setSuffix(" m"); spinSigmaZ->setValue(sigmaZ);
-	spinSigmaZ->setToolTip(tr("Keep large if elevation is unknown."));
+	spinSigmaZ->setRange(0.01, 10000); spinSigmaZ->setDecimals(2); spinSigmaZ->setSuffix(" m");
+	spinSigmaZ->setValue(zUnconstrained?2.0:sigmaZ);
+	spinSigmaZ->setToolTip(tr("How precisely the elevation is known."));
 	form->addRow(tr("X/Y uncertainty (std dev):"), spinSigmaXY);
 	form->addRow(tr("Z uncertainty (std dev):"), spinSigmaZ);
+
+	spinZ->setEnabled(!zUnconstrained);
+	spinSigmaZ->setEnabled(!zUnconstrained);
+	connect(checkZFree, SIGNAL(toggled(bool)), spinZ, SLOT(setDisabled(bool)));
+	connect(checkZFree, SIGNAL(toggled(bool)), spinSigmaZ, SLOT(setDisabled(bool)));
 
 	QDialogButtonBox * buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, Qt::Horizontal, &dialog);
 	form->addRow(buttonBox);
@@ -7516,7 +7634,10 @@ bool DatabaseViewer::getAnchorPointInput(
 	worldY = spinY->value();
 	worldZ = spinZ->value();
 	sigmaXY = spinSigmaXY->value();
-	sigmaZ = spinSigmaZ->value();
+	// With an unconstrained Z, the Z value kept in the prior (the current
+	// estimate) is irrelevant for the optimization, it only keeps the
+	// residual small for numerical safety.
+	sigmaZ = checkZFree->isChecked()?kAnchorSigmaZFree:spinSigmaZ->value();
 	return true;
 }
 
@@ -7616,9 +7737,10 @@ void DatabaseViewer::updateAnchorPointsTable()
 		table->setItem(row, 1, new QTableWidgetItem(nodes.isEmpty()?"-":nodes.join(", ")));
 		table->setItem(row, 2, new QTableWidgetItem(QString::number(prior.transform().x(), 'f', 3)));
 		table->setItem(row, 3, new QTableWidgetItem(QString::number(prior.transform().y(), 'f', 3)));
-		table->setItem(row, 4, new QTableWidgetItem(QString::number(prior.transform().z(), 'f', 3)));
+		bool zFree = sigmaZ >= kAnchorSigmaZFree;
+		table->setItem(row, 4, new QTableWidgetItem(zFree?tr("-"):QString::number(prior.transform().z(), 'f', 3)));
 		table->setItem(row, 5, new QTableWidgetItem(QString::number(sigmaXY, 'f', 2)));
-		table->setItem(row, 6, new QTableWidgetItem(QString::number(sigmaZ, 'f', 2)));
+		table->setItem(row, 6, new QTableWidgetItem(zFree?tr("free"):QString::number(sigmaZ, 'f', 2)));
 		table->item(row, 0)->setData(Qt::UserRole, iter->first); // landmark id
 		// remember first observing node for the "Show node" button
 		table->item(row, 0)->setData(Qt::UserRole+1, nodes.isEmpty()?0:observers.at(iter->first)[0]);
@@ -7717,7 +7839,12 @@ void DatabaseViewer::showSelectedAnchorPoint()
 		int nodeId = ui_->tableWidget_anchors->item(row, 0)->data(Qt::UserRole+1).toInt();
 		if(nodeId > 0 && idToIndex_.contains(nodeId))
 		{
+			// Setting the slider also highlights the node in the Graph view
 			ui_->horizontalSlider_A->setValue(idToIndex_.value(nodeId));
+			if(ui_->dockWidget_graphView->isVisible())
+			{
+				ui_->graphViewer->centerOnNode(nodeId);
+			}
 		}
 	}
 }
@@ -8712,9 +8839,12 @@ void DatabaseViewer::sliderIterationsValueChanged(int value)
 		QGraphicsRectItem * rectScaleItem = 0;
 		ui_->graphViewer->clearMap();
 		occupancyGridViewer_->clear();
+		gridViewRefPoses_.clear();
 		if(graph.size() && combinedLocalMaps.size() &&
 			(ui_->graphViewer->isGridMapVisible() || ui_->dockWidget_occupancyGridView->isVisible()))
 		{
+			// remember the poses this view is generated with, for anchor point picking
+			gridViewRefPoses_ = graphFiltered;
 			QElapsedTimer time;
 			time.start();
 
@@ -9229,6 +9359,15 @@ void DatabaseViewer::updateGraphView()
 			return;
 		}
 
+		// Keep the last optimized graph (if any) so the anchor diagnostics below
+		// can compare the entered coordinates against the loop-closed geometry;
+		// the raw odometry geometry can be off by the full accumulated drift.
+		std::map<int, rtabmap::Transform> previousOptimizedPoses;
+		if(!graphes_.empty())
+		{
+			previousOptimizedPoses = graphes_.back();
+		}
+
 		graphes_.clear();
 		graphLinks_.clear();
 
@@ -9572,6 +9711,7 @@ void DatabaseViewer::updateGraphView()
 			Parameters::parse(parameters, Parameters::kOptimizerPriorsIgnored(), priorsIgnored);
 			if(!priorsIgnored)
 			{
+				std::vector<int> anchorIds;
 				std::vector<cv::Point3d> effPoints;   // current landmark estimates
 				std::vector<cv::Point3d> priorPoints; // known world positions
 				for(std::multimap<int, rtabmap::Link>::iterator iter=links.begin(); iter!=links.end(); ++iter)
@@ -9583,8 +9723,11 @@ void DatabaseViewer::updateGraphView()
 					{
 						const Transform & p = poses.at(iter->second.from());
 						const Transform & q = iter->second.transform();
+						anchorIds.push_back(iter->second.from());
 						effPoints.push_back(cv::Point3d(p.x(), p.y(), p.z()));
 						priorPoints.push_back(cv::Point3d(q.x(), q.y(), q.z()));
+						UINFO("Anchor %d: initial estimate (odometry frame)=(%.2f, %.2f, %.2f), prior=(%.3f, %.3f, %.3f)",
+								-iter->second.from(), p.x(), p.y(), p.z(), q.x(), q.y(), q.z());
 					}
 				}
 				if(!effPoints.empty())
@@ -9634,6 +9777,77 @@ void DatabaseViewer::updateGraphView()
 							iter->second = align * iter->second;
 						}
 					}
+					else
+					{
+						UINFO("Pre-alignment to %d anchor point prior(s) skipped, initial guess already close (%s)",
+								(int)effPoints.size(), align.prettyPrint().c_str());
+					}
+
+					// Report how consistent the anchor coordinates are with the raw
+					// odometry geometry. This residual includes the accumulated
+					// odometry drift between the anchors, which loop closures will
+					// absorb during optimization, so a large value here is expected
+					// on long sessions and is informational only; the meaningful
+					// consistency check is the pairwise comparison against the
+					// loop-closed geometry below.
+					for(size_t i=0; i<effPoints.size(); ++i)
+					{
+						double ax = cosT*effPoints[i].x - sinT*effPoints[i].y + align.x();
+						double ay = sinT*effPoints[i].x + cosT*effPoints[i].y + align.y();
+						double az = effPoints[i].z + align.z();
+						double dx = priorPoints[i].x - ax;
+						double dy = priorPoints[i].y - ay;
+						double dz = priorPoints[i].z - az;
+						double residualXY = sqrt(dx*dx + dy*dy);
+						UINFO("Anchor %d: XY residual after rigid alignment of the odometry-only graph: %.2f m "
+							  "(dx=%.2f dy=%.2f dz=%.2f). This includes odometry drift that loop closures will absorb.",
+								-anchorIds[i], residualXY, dx, dy, dz);
+					}
+
+					// Pairwise distances: a rigid alignment can never fix distance
+					// mismatches, so this directly shows which anchor disagrees
+					// with the others (wrong coordinate/pick) or whether all
+					// distances are off by the same factor (map scale issue).
+					// Compare against the loop-closed geometry (last optimized
+					// graph) when available; raw odometry distances between
+					// anchors far apart in the trajectory are dominated by drift
+					// and are only a fallback. Note that if the previous
+					// optimization already used the priors, the anchors were
+					// pulled toward them, so only large remaining differences
+					// (the graph resisting the pull) are meaningful.
+					for(size_t i=0; i<effPoints.size(); ++i)
+					{
+						for(size_t j=i+1; j<effPoints.size(); ++j)
+						{
+							cv::Point3d pi = effPoints[i];
+							cv::Point3d pj = effPoints[j];
+							bool optimized = false;
+							std::map<int, Transform>::const_iterator oi = previousOptimizedPoses.find(anchorIds[i]);
+							std::map<int, Transform>::const_iterator oj = previousOptimizedPoses.find(anchorIds[j]);
+							if(oi != previousOptimizedPoses.end() && oj != previousOptimizedPoses.end())
+							{
+								pi = cv::Point3d(oi->second.x(), oi->second.y(), oi->second.z());
+								pj = cv::Point3d(oj->second.x(), oj->second.y(), oj->second.z());
+								optimized = true;
+							}
+							double dMap = sqrt(pow(pi.x-pj.x, 2) + pow(pi.y-pj.y, 2));
+							double dPrior = sqrt(pow(priorPoints[i].x-priorPoints[j].x, 2) + pow(priorPoints[i].y-priorPoints[j].y, 2));
+							double diff = dPrior-dMap;
+							if(optimized && fabs(diff) > 10.0 && fabs(diff) > 0.1*dMap)
+							{
+								UWARN("Anchors %d<->%d: distance in optimized map = %.2f m, distance between entered "
+									  "coordinates = %.2f m (difference %.2f m). The entered coordinates disagree "
+									  "with the loop-closed map geometry; verify the coordinates and the picks.",
+										-anchorIds[i], -anchorIds[j], dMap, dPrior, diff);
+							}
+							else
+							{
+								UINFO("Anchors %d<->%d: distance in %s map = %.2f m, distance between entered coordinates = %.2f m (difference %.2f m)",
+										-anchorIds[i], -anchorIds[j], optimized?"optimized":"odometry-only", dMap, dPrior, diff);
+							}
+						}
+					}
+
 				}
 			}
 
@@ -9660,7 +9874,75 @@ void DatabaseViewer::updateGraphView()
 			UINFO("Connected graph of %d poses and %d links", (int)posesOut.size(), (int)linksOut.size());
 			QElapsedTimer time;
 			time.start();
-			std::map<int, rtabmap::Transform> finalPoses = optimizer->optimize(fromId, posesOut, linksOut, ui_->comboBox_optimizationFlavor->currentIndex()==0?&graphes_:0);
+			double optFinalError = 0.0;
+			int optIterationsDone = 0;
+			std::map<int, rtabmap::Transform> finalPoses = optimizer->optimize(fromId, posesOut, linksOut, ui_->comboBox_optimizationFlavor->currentIndex()==0?&graphes_:0, &optFinalError, &optIterationsDone);
+			UINFO("Optimization finished: final error=%f, iterations done=%d (max=%s), poses out=%d",
+					optFinalError,
+					optIterationsDone,
+					uValue(parameters, Parameters::kOptimizerIterations(), std::string("?")).c_str(),
+					(int)finalPoses.size());
+
+			// Log per-anchor state after optimization: how far each anchor landmark
+			// is from its prior (remaining tension) and from its expected position
+			// relative to the observing node (observation link violation).
+			for(std::multimap<int, rtabmap::Link>::iterator iter=linksOut.begin(); iter!=linksOut.end(); ++iter)
+			{
+				if(iter->second.type() == Link::kPosePrior &&
+				   iter->second.from() == iter->second.to() &&
+				   iter->second.from() < 0 &&
+				   finalPoses.find(iter->second.from()) != finalPoses.end())
+				{
+					int landmarkId = iter->second.from();
+					const Transform & prior = iter->second.transform();
+					const Transform & landmarkPose = finalPoses.at(landmarkId);
+					// report XY and Z separately: anchors typically have a loose or
+					// unconstrained Z, so a combined distance would look alarming
+					// while the constrained part (XY) is actually satisfied
+					float priorResidualXY = std::sqrt(
+							(prior.x()-landmarkPose.x())*(prior.x()-landmarkPose.x()) +
+							(prior.y()-landmarkPose.y())*(prior.y()-landmarkPose.y()));
+					float priorResidualZ = landmarkPose.z()-prior.z();
+
+					// find the observation link and its residual (note: getConnectedGraph()
+					// re-keys landmark links with the landmark as from())
+					float obsResidual = -1.0f;
+					int obsNodeId = 0;
+					for(std::multimap<int, rtabmap::Link>::iterator jter=linksOut.begin(); jter!=linksOut.end(); ++jter)
+					{
+						if(jter->second.type() == Link::kLandmark &&
+						   (jter->second.to() == landmarkId || jter->second.from() == landmarkId))
+						{
+							Transform expected;
+							if(jter->second.to() == landmarkId && finalPoses.find(jter->second.from()) != finalPoses.end())
+							{
+								obsNodeId = jter->second.from();
+								expected = finalPoses.at(obsNodeId) * jter->second.transform();
+							}
+							else if(jter->second.from() == landmarkId && finalPoses.find(jter->second.to()) != finalPoses.end())
+							{
+								obsNodeId = jter->second.to();
+								expected = finalPoses.at(obsNodeId) * jter->second.transform().inverse();
+							}
+							else
+							{
+								continue;
+							}
+							obsResidual = expected.getDistance(landmarkPose);
+							break;
+						}
+					}
+					UINFO("Anchor %d after optimization: position=(%.2f, %.2f, %.2f), prior=(%.2f, %.2f, %.2f), "
+						  "XY distance to prior=%.2f m, Z offset to prior=%.2f m, observation residual=%.2f m (node %d)",
+							-landmarkId,
+							landmarkPose.x(), landmarkPose.y(), landmarkPose.z(),
+							prior.x(), prior.y(), prior.z(),
+							priorResidualXY,
+							priorResidualZ,
+							obsResidual,
+							obsNodeId);
+				}
+			}
 			ui_->label_timeOptimization->setNum(double(time.elapsed())/1000.0);
 			graphLinks_ = linksOut;
 			if(posesOut.size() && finalPoses.empty())
