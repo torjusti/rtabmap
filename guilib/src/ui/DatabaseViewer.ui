@@ -957,6 +957,7 @@
     <addaction name="separator"/>
     <addaction name="actionMerge_components_using_selected_nodes"/>
     <addaction name="actionDetect_more_loop_closures"/>
+    <addaction name="actionAnchor_points"/>
     <addaction name="actionRefine_links"/>
     <addaction name="actionUpdate_all_neighbor_covariances"/>
     <addaction name="actionUpdate_all_loop_closure_covariances"/>
@@ -3610,6 +3611,14 @@
   <action name="actionDetect_more_loop_closures">
    <property name="text">
     <string>Detect more loop closures...</string>
+   </property>
+  </action>
+  <action name="actionAnchor_points">
+   <property name="text">
+    <string>Anchor points...</string>
+   </property>
+   <property name="toolTip">
+    <string>List, edit and remove anchor points (landmarks with known world coordinates)</string>
    </property>
   </action>
   <action name="actionSave_config">
