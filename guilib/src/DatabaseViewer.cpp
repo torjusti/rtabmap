@@ -47,6 +47,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QHBoxLayout>
 #include <QGraphicsLineItem>
 #include <QtGui/QCloseEvent>
+#include <QApplication>
+#include <QScreen>
 #include <QGraphicsOpacityEffect>
 #include <QtCore/QBuffer>
 #include <QtCore/QTextStream>
@@ -350,6 +352,7 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	connect(ui_->actionExport_optimized_mesh, SIGNAL(triggered()), this , SLOT(exportOptimizedMesh()));
 	connect(ui_->actionUpdate_optimized_mesh, SIGNAL(triggered()), this , SLOT(updateOptimizedMesh()));
 	connect(ui_->actionView_3D_map, SIGNAL(triggered()), this, SLOT(view3DMap()));
+	connect(ui_->actionView_3D_map_from_file, SIGNAL(triggered()), this, SLOT(view3DMapFromFile()));
 	connect(ui_->actionGenerate_3D_map_pcd, SIGNAL(triggered()), this, SLOT(generate3DMap()));
 	connect(ui_->actionDetect_more_loop_closures, SIGNAL(triggered()), this, SLOT(detectMoreLoopClosures()));
 	connect(ui_->actionMerge_components_using_selected_nodes, SIGNAL(triggered()), this, SLOT(mergeComponents()));
@@ -4345,6 +4348,85 @@ void DatabaseViewer::view3DMap()
 	{
 		QMessageBox::critical(this, tr("Error"), tr("No neighbors found for node %1.").arg(ui_->spinBox_optimizationsFrom->value()));
 	}
+}
+
+void DatabaseViewer::view3DMapFromFile()
+{
+	QString path = QFileDialog::getOpenFileName(this, tr("Select a previously exported 3D map"), pathDatabase_, tr("Point cloud data (*.ply *.pcd)"));
+	if(path.isEmpty())
+	{
+		return;
+	}
+
+	pcl::PCLPointCloud2::Ptr cloud2(new pcl::PCLPointCloud2);
+	int loaded;
+	if(QFileInfo(path).suffix().compare("pcd", Qt::CaseInsensitive) == 0)
+	{
+		loaded = pcl::io::loadPCDFile(path.toStdString(), *cloud2);
+	}
+	else
+	{
+		loaded = pcl::io::loadPLYFile(path.toStdString(), *cloud2);
+	}
+	if(loaded != 0 || cloud2->data.empty())
+	{
+		QMessageBox::warning(this, tr("View 3D map from file"), tr("Failed to load \"%1\".").arg(path));
+		return;
+	}
+
+	bool hasRGB = false;
+	bool hasIntensity = false;
+	bool hasNormals = false;
+	for(unsigned int i=0; i<cloud2->fields.size(); ++i)
+	{
+		if(cloud2->fields[i].name.compare("rgb") == 0 || cloud2->fields[i].name.compare("rgba") == 0)
+		{
+			hasRGB = true;
+		}
+		else if(cloud2->fields[i].name.compare("intensity") == 0)
+		{
+			hasIntensity = true;
+		}
+		else if(cloud2->fields[i].name.compare("normal_x") == 0)
+		{
+			hasNormals = true;
+		}
+	}
+
+	QDialog * window = new QDialog(this, Qt::Window);
+	window->setAttribute(Qt::WA_DeleteOnClose, true);
+	window->setWindowTitle(tr("3D map from file: %1 (%2 points)").arg(QFileInfo(path).fileName()).arg(cloud2->width*cloud2->height));
+	window->setMinimumWidth(120);
+	window->setMinimumHeight(90);
+	window->resize(QApplication::primaryScreen()->availableGeometry().size() * 0.7);
+
+	CloudViewer * viewer = new CloudViewer(window);
+	if(dbDriver_)
+	{
+		viewer->setAnchorPointActionEnabled(true);
+		connect(viewer, SIGNAL(pointPicked(float,float,float)), this, SLOT(anchorPointPickedFromMap(float,float,float)));
+	}
+	viewer->setLighting(false);
+	viewer->setDefaultBackgroundColor(QColor(40, 40, 40, 255));
+	viewer->buildPickingLocator(true);
+
+	QVBoxLayout * layout = new QVBoxLayout();
+	layout->addWidget(viewer);
+	layout->setContentsMargins(0,0,0,0);
+	window->setLayout(layout);
+	connect(window, SIGNAL(finished(int)), viewer, SLOT(clear()));
+
+	window->show();
+	QApplication::processEvents();
+
+	if(!viewer->addCloud("map", cloud2, Transform::getIdentity(), hasRGB, hasNormals, hasIntensity))
+	{
+		QMessageBox::warning(this, tr("View 3D map from file"), tr("Failed to display \"%1\".").arg(path));
+		window->close();
+		return;
+	}
+	viewer->setCloudPointSize("map", 1);
+	viewer->refreshView();
 }
 
 void DatabaseViewer::generate3DMap()

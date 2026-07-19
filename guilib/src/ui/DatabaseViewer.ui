@@ -971,6 +971,7 @@
     <addaction name="actionReset_all_changes"/>
     <addaction name="separator"/>
     <addaction name="actionView_3D_map"/>
+    <addaction name="actionView_3D_map_from_file"/>
    </widget>
    <widget class="QMenu" name="menuView">
     <property name="title">
@@ -3707,6 +3708,14 @@
   <action name="actionView_3D_map">
    <property name="text">
     <string>View 3D map...</string>
+   </property>
+  </action>
+  <action name="actionView_3D_map_from_file">
+   <property name="text">
+    <string>View 3D map from file (*.ply *.pcd) ...</string>
+   </property>
+   <property name="toolTip">
+    <string>View a previously exported 3D map without regenerating it. The file must be in the same frame as the current optimized graph for anchor points to be placed correctly.</string>
    </property>
   </action>
   <action name="actionRefine_links">
