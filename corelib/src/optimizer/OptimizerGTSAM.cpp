@@ -230,9 +230,15 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 			UASSERT(uContains(poses, rootId));
 			const Transform & initialPose = poses.at(rootId);
 			UDEBUG("hasGPSPrior=%s", hasGPSPrior?"true":"false");
+			// When global position priors exist (GPS, landmark/anchor priors), the root
+			// prior is only needed to fix the rotation gauge (position-only priors with
+			// gravity leave global yaw undetermined). Its position part must then be
+			// essentially free: pinning the root position (previously variance=2) at its
+			// initial pose fights the global priors by the accumulated drift correction,
+			// bending the graph instead of translating it.
 			if(isSlam2d())
 			{
-				gtsam::noiseModel::Diagonal::shared_ptr priorNoise = gtsam::noiseModel::Diagonal::Variances(gtsam::Vector3(0.01, 0.01, hasGPSPrior?1e-2:1e-9));
+				gtsam::noiseModel::Diagonal::shared_ptr priorNoise = gtsam::noiseModel::Diagonal::Variances(gtsam::Vector3(hasGPSPrior?1e7:0.01, hasGPSPrior?1e7:0.01, hasGPSPrior?1e-2:1e-9));
 				graph.add(gtsam::PriorFactor<gtsam::Pose2>(rootId, gtsam::Pose2(initialPose.x(), initialPose.y(), initialPose.theta()), priorNoise));
 				addedPrior.push_back(ConstraintToFactor(rootId, rootId, -1));
 			}
@@ -241,7 +247,7 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 				gtsam::noiseModel::Diagonal::shared_ptr priorNoise = gtsam::noiseModel::Diagonal::Variances(
 						(gtsam::Vector(6) <<
 								(hasGravityConstraints?2:1e-2), (hasGravityConstraints?2:1e-2), (hasGPSPrior?1e-2:1e-9), // roll, pitch, fixed yaw if there are no priors
-								(hasGPSPrior?2:1e-2), hasGPSPrior?2:1e-2, hasGPSPrior?2:1e-2 // xyz
+								(hasGPSPrior?1e7:1e-2), hasGPSPrior?1e7:1e-2, hasGPSPrior?1e7:1e-2 // xyz
 								).finished());
 				graph.add(gtsam::PriorFactor<gtsam::Pose3>(rootId, gtsam::Pose3(initialPose.toEigen4d()), priorNoise));
 				addedPrior.push_back(ConstraintToFactor(rootId, rootId, -1));
