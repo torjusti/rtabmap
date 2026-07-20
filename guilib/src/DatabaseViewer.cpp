@@ -41,6 +41,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QCheckBox>
+#include <QLineEdit>
+#include <QRegularExpression>
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QPushButton>
@@ -4451,6 +4453,9 @@ void DatabaseViewer::view3DMapFromFile()
 		return;
 	}
 	viewer->setCloudPointSize("map", 1);
+	// The cloud can be far from the world origin (e.g. exported from a map
+	// optimized against world-referenced anchor points), start centered on it.
+	viewer->centerCameraOnVisible();
 	viewer->refreshView();
 }
 
@@ -7574,11 +7579,38 @@ bool DatabaseViewer::getAnchorPointInput(
 	spinY->setRange(-1e9, 1e9); spinY->setDecimals(3); spinY->setSuffix(" m"); spinY->setValue(worldY);
 	QDoubleSpinBox * spinZ = new QDoubleSpinBox(&dialog);
 	spinZ->setRange(-1e9, 1e9); spinZ->setDecimals(3); spinZ->setSuffix(" m"); spinZ->setValue(worldZ);
+
+	// Paste "X,Y" (or "X,Y,Z") directly, e.g. coordinates copied from QGIS,
+	// to fill the spin boxes below in one go.
+	QLineEdit * pasteEdit = new QLineEdit(&dialog);
+	pasteEdit->setPlaceholderText(tr("e.g. 2679.3077,5568.9452 (copied from QGIS)"));
+	pasteEdit->setToolTip(tr("Paste coordinates as \"X,Y\" or \"X,Y,Z\" (decimal point, separated "
+			"by comma, semicolon or spaces) to fill the fields below automatically."));
+	QCheckBox * checkZFree = new QCheckBox(tr("Elevation (Z) unknown, leave unconstrained"), &dialog);
+	connect(pasteEdit, &QLineEdit::textChanged, &dialog, [spinX, spinY, spinZ, checkZFree](const QString & text)
+	{
+		QRegularExpression re(
+				"^\\s*(-?\\d+(?:\\.\\d+)?)\\s*[,;\\s]\\s*(-?\\d+(?:\\.\\d+)?)"
+				"(?:\\s*[,;\\s]\\s*(-?\\d+(?:\\.\\d+)?))?\\s*$");
+		QRegularExpressionMatch match = re.match(text);
+		if(match.hasMatch())
+		{
+			spinX->setValue(match.captured(1).toDouble());
+			spinY->setValue(match.captured(2).toDouble());
+			if(!match.captured(3).isEmpty())
+			{
+				spinZ->setValue(match.captured(3).toDouble());
+				// an explicit elevation was provided, use it
+				checkZFree->setChecked(false);
+			}
+		}
+	});
+	form->addRow(tr("Paste coordinates:"), pasteEdit);
+
 	form->addRow(tr("World X (easting):"), spinX);
 	form->addRow(tr("World Y (northing):"), spinY);
 	form->addRow(tr("World Z (elevation):"), spinZ);
 
-	QCheckBox * checkZFree = new QCheckBox(tr("Elevation (Z) unknown, leave unconstrained"), &dialog);
 	checkZFree->setChecked(zUnconstrained);
 	checkZFree->setToolTip(tr("When checked, the prior does not constrain Z at all; the optimizer keeps "
 			"the elevation the rest of the graph agrees on. Uncheck only if the real "
@@ -9015,6 +9047,9 @@ void DatabaseViewer::sliderIterationsValueChanged(int value)
 						occupancyGridViewer_->setCloudPointSize("emptyCells", 5);
 						occupancyGridViewer_->setCloudOpacity("emptyCells", 0.5);
 					}
+					// re-center only if the map moved away from the current view
+					// (e.g. first optimization with world-referenced anchor points)
+					occupancyGridViewer_->centerCameraOnVisible(true);
 					occupancyGridViewer_->refreshView();
 				}
 			}
@@ -9038,6 +9073,7 @@ void DatabaseViewer::sliderIterationsValueChanged(int value)
 					pcl::PolygonMesh::Ptr mesh = gridMap.createTerrainMesh();
 					occupancyGridViewer_->addCloudMesh("elevation_mesh", mesh);
 				}
+				occupancyGridViewer_->centerCameraOnVisible(true);
 				occupancyGridViewer_->refreshView();
 			}
 #endif
@@ -9714,6 +9750,7 @@ void DatabaseViewer::updateGraphView()
 				std::vector<int> anchorIds;
 				std::vector<cv::Point3d> effPoints;   // current landmark estimates
 				std::vector<cv::Point3d> priorPoints; // known world positions
+				std::vector<bool> zConstrained;       // prior actually constrains Z
 				for(std::multimap<int, rtabmap::Link>::iterator iter=links.begin(); iter!=links.end(); ++iter)
 				{
 					if(iter->second.from() == iter->second.to() &&
@@ -9726,8 +9763,11 @@ void DatabaseViewer::updateGraphView()
 						anchorIds.push_back(iter->second.from());
 						effPoints.push_back(cv::Point3d(p.x(), p.y(), p.z()));
 						priorPoints.push_back(cv::Point3d(q.x(), q.y(), q.z()));
-						UINFO("Anchor %d: initial estimate (odometry frame)=(%.2f, %.2f, %.2f), prior=(%.3f, %.3f, %.3f)",
-								-iter->second.from(), p.x(), p.y(), p.z(), q.x(), q.y(), q.z());
+						double zInf = iter->second.infMatrix().at<double>(2,2);
+						zConstrained.push_back(zInf > 0.0 && 1.0/zInf < 9999.0);
+						UINFO("Anchor %d: initial estimate (odometry frame)=(%.2f, %.2f, %.2f), prior=(%.3f, %.3f, %.3f)%s",
+								-iter->second.from(), p.x(), p.y(), p.z(), q.x(), q.y(), q.z(),
+								zConstrained.back()?"":" (Z unconstrained)");
 					}
 				}
 				if(!effPoints.empty())
@@ -9741,6 +9781,25 @@ void DatabaseViewer::updateGraphView()
 					}
 					effCentroid *= 1.0/double(effPoints.size());
 					priorCentroid *= 1.0/double(priorPoints.size());
+
+					// The vertical shift can only use anchors whose prior actually
+					// constrains Z: unconstrained-Z anchors store the pick-time
+					// estimate as a placeholder Z (possibly from an old, drifted
+					// graph), which is meaningless as an alignment target. If no
+					// anchor constrains Z, don't touch the elevation at all.
+					double effZ = 0.0;
+					double priorZ = 0.0;
+					int nZ = 0;
+					for(size_t i=0; i<effPoints.size(); ++i)
+					{
+						if(zConstrained[i])
+						{
+							effZ += effPoints[i].z;
+							priorZ += priorPoints[i].z;
+							++nZ;
+						}
+					}
+					double alignZ = nZ>0?(priorZ - effZ)/double(nZ):0.0;
 
 					// 2D Kabsch on the horizontal plane for the yaw (needs 2+ anchors)
 					double theta = 0.0;
@@ -9766,7 +9825,7 @@ void DatabaseViewer::updateGraphView()
 					Transform align(
 							(float)(priorCentroid.x - (cosT*effCentroid.x - sinT*effCentroid.y)),
 							(float)(priorCentroid.y - (sinT*effCentroid.x + cosT*effCentroid.y)),
-							(float)(priorCentroid.z - effCentroid.z),
+							(float)alignZ,
 							0, 0, (float)theta);
 					if(align.getNorm() > 0.5 || fabs(theta) > 0.05)
 					{
@@ -9800,8 +9859,9 @@ void DatabaseViewer::updateGraphView()
 						double dz = priorPoints[i].z - az;
 						double residualXY = sqrt(dx*dx + dy*dy);
 						UINFO("Anchor %d: XY residual after rigid alignment of the odometry-only graph: %.2f m "
-							  "(dx=%.2f dy=%.2f dz=%.2f). This includes odometry drift that loop closures will absorb.",
-								-anchorIds[i], residualXY, dx, dy, dz);
+							  "(dx=%.2f dy=%.2f dz=%s). This includes odometry drift that loop closures will absorb.",
+								-anchorIds[i], residualXY, dx, dy,
+								zConstrained[i]?uFormat("%.2f", dz).c_str():"n/a (Z unconstrained)");
 					}
 
 					// Pairwise distances: a rigid alignment can never fix distance
@@ -9932,13 +9992,15 @@ void DatabaseViewer::updateGraphView()
 							break;
 						}
 					}
+					double zInf = iter->second.infMatrix().at<double>(2,2);
+					bool zIsConstrained = zInf > 0.0 && 1.0/zInf < 9999.0;
 					UINFO("Anchor %d after optimization: position=(%.2f, %.2f, %.2f), prior=(%.2f, %.2f, %.2f), "
-						  "XY distance to prior=%.2f m, Z offset to prior=%.2f m, observation residual=%.2f m (node %d)",
+						  "XY distance to prior=%.2f m, Z offset to prior=%s, observation residual=%.2f m (node %d)",
 							-landmarkId,
 							landmarkPose.x(), landmarkPose.y(), landmarkPose.z(),
 							prior.x(), prior.y(), prior.z(),
 							priorResidualXY,
-							priorResidualZ,
+							zIsConstrained?uFormat("%.2f m", priorResidualZ).c_str():"n/a (Z unconstrained)",
 							obsResidual,
 							obsNodeId);
 				}
@@ -10321,6 +10383,9 @@ void DatabaseViewer::updateOctomapView()
 						occupancyGridViewer_->setCloudPointSize("octomap_frontiers", 5);
 					}
 				}
+				// re-center only if the map moved away from the current view
+				// (e.g. first optimization with world-referenced anchor points)
+				occupancyGridViewer_->centerCameraOnVisible(true);
 				occupancyGridViewer_->refreshView();
 			}
 			if(ui_->dockWidget_view3d->isVisible() && ui_->checkBox_showGrid->isChecked())

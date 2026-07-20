@@ -187,6 +187,7 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 
 		// detect if there is a global pose prior set, if so remove rootId
 		bool hasGPSPrior = false;
+		bool hasZPrior = false;
 		bool hasGravityConstraints = false;
 		if(!priorsIgnored() || (!isSlam2d() && gravitySigma() > 0))
 		{
@@ -197,6 +198,12 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 					if(!priorsIgnored() && iter->second.type() == Link::kPosePrior)
 					{
 						hasGPSPrior = true;
+						if(iter->second.infMatrix().at<double>(2,2) > 0.0 &&
+						   1 / static_cast<double>(iter->second.infMatrix().at<double>(2,2)) < 9999.0)
+						{
+							// at least one prior constrains the global elevation
+							hasZPrior = true;
+						}
 						if ((isSlam2d() && 1 / static_cast<double>(iter->second.infMatrix().at<double>(5,5)) < 9999) ||
 							(1 / static_cast<double>(iter->second.infMatrix().at<double>(3,3)) < 9999.0 &&
 							 1 / static_cast<double>(iter->second.infMatrix().at<double>(4,4)) < 9999.0 &&
@@ -235,7 +242,10 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 			// gravity leave global yaw undetermined). Its position part must then be
 			// essentially free: pinning the root position (previously variance=2) at its
 			// initial pose fights the global priors by the accumulated drift correction,
-			// bending the graph instead of translating it.
+			// bending the graph instead of translating it. Exception: if no prior
+			// constrains the elevation (e.g. anchor points with unknown Z), the global
+			// Z is a free gauge direction and must stay pinned at the root, otherwise
+			// the whole map can drift vertically by thousands of meters at no cost.
 			if(isSlam2d())
 			{
 				gtsam::noiseModel::Diagonal::shared_ptr priorNoise = gtsam::noiseModel::Diagonal::Variances(gtsam::Vector3(hasGPSPrior?1e7:0.01, hasGPSPrior?1e7:0.01, hasGPSPrior?1e-2:1e-9));
@@ -247,7 +257,7 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 				gtsam::noiseModel::Diagonal::shared_ptr priorNoise = gtsam::noiseModel::Diagonal::Variances(
 						(gtsam::Vector(6) <<
 								(hasGravityConstraints?2:1e-2), (hasGravityConstraints?2:1e-2), (hasGPSPrior?1e-2:1e-9), // roll, pitch, fixed yaw if there are no priors
-								(hasGPSPrior?1e7:1e-2), hasGPSPrior?1e7:1e-2, hasGPSPrior?1e7:1e-2 // xyz
+								(hasGPSPrior?1e7:1e-2), hasGPSPrior?1e7:1e-2, (hasGPSPrior&&hasZPrior)?1e7:1e-2 // xyz
 								).finished());
 				graph.add(gtsam::PriorFactor<gtsam::Pose3>(rootId, gtsam::Pose3(initialPose.toEigen4d()), priorNoise));
 				addedPrior.push_back(ConstraintToFactor(rootId, rootId, -1));
