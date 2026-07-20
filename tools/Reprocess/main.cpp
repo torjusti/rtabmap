@@ -35,6 +35,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rtabmap/core/global_map/CloudMap.h>
 #include <rtabmap/core/Graph.h>
 #include <rtabmap/core/Memory.h>
+#include <rtabmap/core/Features2d.h>
+#include <rtabmap/core/util2d.h>
 #include <rtabmap/core/SensorCaptureThread.h>
 #include <rtabmap/core/Odometry.h>
 #include <rtabmap/core/OdometryInfo.h>
@@ -48,6 +50,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <stdlib.h>
 #include <pcl/io/pcd_io.h>
 #include <signal.h>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
 
 using namespace rtabmap;
 
@@ -98,6 +104,12 @@ void showUsage()
 			"     -noimu      Don't republish IMU contained in input database.\n"
 			"     -pub_loops  Republish loop closures contained in input database.\n"
 			"     -pub_inter_as_normal Republish intermediate nodes as normal nodes.\n"
+			"     -parallel_features   Extract visual features in the data loading thread (pipelined with graph update).\n"
+			"                          Enabled by default when features are being re-extracted; automatically\n"
+			"                          skipped if features from the database are reused (Mem/UseOdomFeatures=true), if\n"
+			"                          odometry is recomputed or if rectification/floor-masking is enabled. Passing this\n"
+			"                          flag explicitly additionally prints why it was skipped when it cannot run.\n"
+			"     -no_parallel_features Disable parallel feature extraction (extract features on the main thread).\n"
 			"     -abort_disconnected_sessions Return error if not all sessions are connected together.\n"
 			"     -loc_null   On localization mode, reset localization pose to null and map correction to identity between sessions.\n"
 			"     -gt         When reprocessing a single database, load its original optimized graph, then \n"
@@ -128,6 +140,197 @@ void sighandler(int sig)
 	printf("\nSignal %d caught...\n", sig);
 	g_loopForever = false;
 }
+
+// Reads frames (SQLite read + image decompression + scan post-processing) in a
+// background thread so that data loading overlaps with rtabmap processing.
+// With maxQueueSize=0, frames are fetched synchronously in take() (used when
+// another part of the loop accesses the DBReader's driver directly).
+class FramePrefetcher
+{
+public:
+	FramePrefetcher(SensorCapture * reader, SensorCaptureThread * postProcessor, bool clearScan, size_t maxQueueSize,
+			Feature2D * feature2D = 0, bool depthAsMask = true, unsigned int preDecimation = 1) :
+		reader_(reader),
+		postProcessor_(postProcessor),
+		clearScan_(clearScan),
+		maxQueueSize_(maxQueueSize),
+		feature2D_(feature2D),
+		depthAsMask_(depthAsMask),
+		preDecimation_(preDecimation<1?1:preDecimation),
+		stopped_(false),
+		done_(false)
+	{
+		if(maxQueueSize_ > 0)
+		{
+			thread_ = std::thread(&FramePrefetcher::run, this);
+		}
+	}
+
+	~FramePrefetcher()
+	{
+		{
+			std::unique_lock<std::mutex> lock(mutex_);
+			stopped_ = true;
+		}
+		cv_.notify_all();
+		if(thread_.joinable())
+		{
+			thread_.join();
+		}
+	}
+
+	void take(SensorData & data, SensorCaptureInfo & info)
+	{
+		if(maxQueueSize_ == 0)
+		{
+			fetch(data, info);
+			return;
+		}
+		std::unique_lock<std::mutex> lock(mutex_);
+		cv_.wait(lock, [this]{ return !queue_.empty() || stopped_ || done_; });
+		if(queue_.empty())
+		{
+			// stopped, or reading past the end of the database(s)
+			data = SensorData();
+			info = SensorCaptureInfo();
+			return;
+		}
+		data = queue_.front().first;
+		info = queue_.front().second;
+		queue_.pop();
+		cv_.notify_all();
+	}
+
+private:
+	void fetch(SensorData & data, SensorCaptureInfo & info)
+	{
+		info = SensorCaptureInfo();
+		data = reader_->takeData(&info);
+		if(clearScan_)
+		{
+			data.setLaserScan(LaserScan());
+		}
+		postProcessor_->postUpdate(&data, &info);
+
+		// Extract visual features here (background thread) so that Memory
+		// reuses them (Mem/UseOdomFeatures=true) instead of extracting them
+		// on the main thread. Mirrors Memory::createSignature()'s
+		// pre-decimation, grayscale conversion and depth-mask handling.
+		// Keypoints are forwarded in full-resolution coordinates, which is
+		// what Memory's odometry-features path expects.
+		if(feature2D_ && data.isValid() && !data.imageRaw().empty())
+		{
+			cv::Mat image = data.imageRaw();
+			cv::Mat depth = data.depthRaw();
+			if(preDecimation_ > 1)
+			{
+				// same depth decimation rule as Memory::createSignature()
+				int decimationDepth = (int)preDecimation_;
+				if(!depth.empty() &&
+					!data.cameraModels().empty() &&
+					data.cameraModels()[0].imageHeight()>0 &&
+					data.cameraModels()[0].imageWidth()>0)
+				{
+					int targetSize = data.cameraModels()[0].imageHeight() / preDecimation_;
+					if(targetSize >= depth.rows)
+					{
+						decimationDepth = 1;
+					}
+					else
+					{
+						decimationDepth = (int)ceil(float(depth.rows) / float(targetSize));
+					}
+				}
+				image = util2d::decimate(image, preDecimation_);
+				if(!depth.empty())
+				{
+					depth = util2d::decimate(depth, decimationDepth);
+				}
+			}
+
+			cv::Mat imageMono;
+			if(image.channels() == 3)
+			{
+				cv::cvtColor(image, imageMono, cv::COLOR_BGR2GRAY);
+			}
+			else
+			{
+				imageMono = image;
+			}
+
+			cv::Mat depthMask;
+			if(depthAsMask_ && !depth.empty() &&
+				imageMono.rows % depth.rows == 0 &&
+				imageMono.cols % depth.cols == 0 &&
+				imageMono.rows/depth.rows == imageMono.cols/depth.cols)
+			{
+				depthMask = util2d::interpolate(depth, imageMono.rows/depth.rows, 0.1f);
+			}
+
+			std::vector<cv::KeyPoint> keypoints = feature2D_->generateKeypoints(imageMono, depthMask);
+			cv::Mat descriptors = feature2D_->generateDescriptors(imageMono, keypoints);
+
+			if(preDecimation_ > 1)
+			{
+				// remap keypoints to full image size
+				float ratio = float(preDecimation_);
+				double log2value = log(double(preDecimation_))/log(2.0);
+				for(size_t i=0; i<keypoints.size(); ++i)
+				{
+					keypoints[i].pt.x *= ratio;
+					keypoints[i].pt.y *= ratio;
+					keypoints[i].size *= ratio;
+					keypoints[i].octave += log2value;
+				}
+			}
+
+			data.setFeatures(keypoints, std::vector<cv::Point3f>(), descriptors);
+		}
+	}
+
+	void run()
+	{
+		for(;;)
+		{
+			SensorData data;
+			SensorCaptureInfo info;
+			fetch(data, info);
+			bool valid = data.isValid();
+			{
+				std::unique_lock<std::mutex> lock(mutex_);
+				cv_.wait(lock, [this]{ return queue_.size() < maxQueueSize_ || stopped_; });
+				if(stopped_)
+				{
+					return;
+				}
+				queue_.push(std::make_pair(data, info));
+				if(!valid)
+				{
+					done_ = true; // end of database(s)
+				}
+			}
+			cv_.notify_all();
+			if(!valid)
+			{
+				return;
+			}
+		}
+	}
+
+	SensorCapture * reader_;
+	SensorCaptureThread * postProcessor_;
+	bool clearScan_;
+	size_t maxQueueSize_;
+	Feature2D * feature2D_;
+	bool depthAsMask_;
+	unsigned int preDecimation_;
+	bool stopped_;
+	bool done_;
+	std::queue<std::pair<SensorData, SensorCaptureInfo> > queue_;
+	std::mutex mutex_;
+	std::condition_variable cv_;
+	std::thread thread_;
+};
 
 int loopCount = 0;
 int proxCount = 0;
@@ -307,6 +510,8 @@ int main(int argc, char * argv[])
 	bool ignoreImu = false;
 	bool republishLoopClosures = false;
 	bool pubInterNodesAsNormalNodes = false;
+	bool parallelFeatures = true;
+	bool parallelFeaturesExplicit = false;
 	bool abortDisconnectedSessions = false;
 	bool locNull = false;
 	bool originalGraphAsGT = false;
@@ -547,6 +752,17 @@ int main(int argc, char * argv[])
 		{
 			pubInterNodesAsNormalNodes = true;
 			printf("Republish intermdiate nodes as normal nodes (-pub_inter_as_normal option).\n");
+		}
+		else if(strcmp(argv[i], "-parallel_features") == 0 || strcmp(argv[i], "--parallel_features") == 0)
+		{
+			parallelFeatures = true;
+			parallelFeaturesExplicit = true;
+			printf("Visual features will be extracted in the data loading thread (-parallel_features option).\n");
+		}
+		else if(strcmp(argv[i], "-no_parallel_features") == 0 || strcmp(argv[i], "--no_parallel_features") == 0)
+		{
+			parallelFeatures = false;
+			printf("Parallel feature extraction disabled (-no_parallel_features option).\n");
 		}
 		else if(strcmp(argv[i], "-abort_disconnected_sessions") == 0 || strcmp(argv[i], "--abort_disconnected_sessions") == 0)
 		{
@@ -856,6 +1072,115 @@ int main(int argc, char * argv[])
 	bool intermediateNodes = Parameters::defaultRtabmapCreateIntermediateNodes();
 	Parameters::parse(parameters, Parameters::kRtabmapCreateIntermediateNodes(), intermediateNodes);
 
+	// Setup parallel feature extraction (-parallel_features). Features are extracted in the
+	// prefetch thread and forwarded to Memory through the Mem/UseOdomFeatures mechanism.
+	Feature2D * parallelFeature2D = 0;
+	bool parallelDepthAsMask = Parameters::defaultMemDepthAsMask();
+	unsigned int parallelPreDecimation = Parameters::defaultMemImagePreDecimation();
+	if(parallelFeatures)
+	{
+		Parameters::parse(parameters, Parameters::kMemImagePreDecimation(), parallelPreDecimation);
+		bool imagesAlreadyRectified = Parameters::defaultRtabmapImagesAlreadyRectified();
+		Parameters::parse(parameters, Parameters::kRtabmapImagesAlreadyRectified(), imagesAlreadyRectified);
+		bool rotateImagesUpsideUp = Parameters::defaultMemRotateImagesUpsideUp();
+		Parameters::parse(parameters, Parameters::kMemRotateImagesUpsideUp(), rotateImagesUpsideUp);
+		float maskFloorThreshold = Parameters::defaultMemDepthMaskFloorThr();
+		Parameters::parse(parameters, Parameters::kMemDepthMaskFloorThr(), maskFloorThreshold);
+		int kpMaxFeatures = Parameters::defaultKpMaxFeatures();
+		Parameters::parse(parameters, Parameters::kKpMaxFeatures(), kpMaxFeatures);
+		Parameters::parse(parameters, Parameters::kMemDepthAsMask(), parallelDepthAsMask);
+		bool useOdomFeaturesEffective = Parameters::defaultMemUseOdomFeatures();
+		Parameters::parse(parameters, Parameters::kMemUseOdomFeatures(), useOdomFeaturesEffective);
+
+		// Parallel feature extraction is enabled by default, so only nag with a
+		// [Warning] when the user explicitly asked for it with -parallel_features.
+		// Otherwise silently fall back (e.g. the common case where features are
+		// simply reused from the database and there is nothing to extract).
+		if(useOdomFeaturesEffective && useOdomFeatures)
+		{
+			if(parallelFeaturesExplicit)
+			{
+				printf("[Warning] -parallel_features is ignored because %s is true (features "
+						"from the input database are reused, nothing to extract). Set "
+						"--%s false explicitly to force re-extraction in parallel.\n",
+						Parameters::kMemUseOdomFeatures().c_str(),
+						Parameters::kMemUseOdomFeatures().c_str());
+			}
+			parallelFeatures = false;
+		}
+		else if(recomputeOdometry)
+		{
+			if(parallelFeaturesExplicit)
+			{
+				printf("[Warning] -parallel_features is ignored because odometry is recomputed (-odom).\n");
+			}
+			parallelFeatures = false;
+		}
+		else if(!imagesAlreadyRectified)
+		{
+			if(parallelFeaturesExplicit)
+			{
+				printf("[Warning] -parallel_features is ignored because %s is false.\n",
+						Parameters::kRtabmapImagesAlreadyRectified().c_str());
+			}
+			parallelFeatures = false;
+		}
+		else if(rotateImagesUpsideUp)
+		{
+			if(parallelFeaturesExplicit)
+			{
+				printf("[Warning] -parallel_features is ignored because %s is true.\n",
+						Parameters::kMemRotateImagesUpsideUp().c_str());
+			}
+			parallelFeatures = false;
+		}
+		else if(maskFloorThreshold != 0.0f)
+		{
+			if(parallelFeaturesExplicit)
+			{
+				printf("[Warning] -parallel_features is ignored because %s is not 0.\n",
+						Parameters::kMemDepthMaskFloorThr().c_str());
+			}
+			parallelFeatures = false;
+		}
+		else if(kpMaxFeatures < 0)
+		{
+			if(parallelFeaturesExplicit)
+			{
+				printf("[Warning] -parallel_features is ignored because %s<0 (no extraction).\n",
+						Parameters::kKpMaxFeatures().c_str());
+			}
+			parallelFeatures = false;
+		}
+		else
+		{
+			// Mirror Memory::createSignature(): when raw descriptors are kept and
+			// Vis/MaxFeatures is higher than Kp/MaxFeatures, features are extracted
+			// with the Vis limit (Memory will limit them back for the vocabulary).
+			ParametersMap featureParameters = parameters;
+			bool rawDescriptorsKept = Parameters::defaultMemRawDescriptorsKept();
+			Parameters::parse(parameters, Parameters::kMemRawDescriptorsKept(), rawDescriptorsKept);
+			int visMaxFeatures = Parameters::defaultVisMaxFeatures();
+			Parameters::parse(parameters, Parameters::kVisMaxFeatures(), visMaxFeatures);
+			bool visSSC = Parameters::defaultVisSSC();
+			Parameters::parse(parameters, Parameters::kVisSSC(), visSSC);
+			if(rawDescriptorsKept && kpMaxFeatures > 0 && kpMaxFeatures < visMaxFeatures)
+			{
+				uInsert(featureParameters, ParametersPair(Parameters::kKpMaxFeatures(), uNumber2Str(visMaxFeatures)));
+				uInsert(featureParameters, ParametersPair(Parameters::kKpSSC(), uBool2Str(visSSC)));
+			}
+			parallelFeature2D = Feature2D::create(featureParameters);
+
+			// Make Memory reuse the features attached to SensorData, and make the
+			// DBReader drop any features stored in the database so that only the
+			// freshly extracted ones are forwarded.
+			uInsert(parameters, ParametersPair(Parameters::kMemUseOdomFeatures(), "true"));
+			useOdomFeatures = false;
+			printf("Parallel feature extraction enabled (type=%d, max features=%d).\n",
+					parallelFeature2D->getType(), parallelFeature2D->getMaxFeatures());
+		}
+	}
+
 	int totalIds = 0;
 	std::set<int> ids;
 	dbDriver->getAllNodeIds(ids, false, false, !pubInterNodesAsNormalNodes && !intermediateNodes);
@@ -1061,15 +1386,19 @@ int main(int argc, char * argv[])
 	printf("Reprocessing data of \"%s\"...\n", inputDatabasePath.c_str());
 	std::map<std::string, float> globalMapStats;
 	int processed = 0;
-	SensorCaptureInfo info;
-	SensorData data = dbReader->takeData(&info);
 	SensorCaptureThread camThread(dbReader, parameters); // take ownership of dbReader
 	camThread.setScanParameters(scanFromDepth, scanDecimation, scanRangeMin, scanRangeMax, scanVoxelSize, scanNormalK, scanNormalRadius);
-	if(scanFromDepth)
+	// Disable prefetching when the loop accesses the database driver directly
+	// (republished loop closures), to keep all DBDriver access on one thread.
+	if(parallelFeature2D && republishLoopClosures && parallelFeaturesExplicit)
 	{
-		data.setLaserScan(LaserScan());
+		printf("[Warning] -parallel_features has no performance benefit with -pub_loops "
+				"(prefetching is disabled), features are extracted synchronously.\n");
 	}
-	camThread.postUpdate(&data, &info);
+	FramePrefetcher prefetcher(dbReader, &camThread, scanFromDepth, republishLoopClosures?0:2, parallelFeature2D, parallelDepthAsMask, parallelPreDecimation);
+	SensorCaptureInfo info;
+	SensorData data;
+	prefetcher.take(data, info);
 	Transform lastLocalizationOdomPose = info.odomPose;
 	Transform previousOdomPose;
 	cv::Mat odomCovariance;
@@ -1140,7 +1469,8 @@ int main(int argc, char * argv[])
 					while(skippedFrames-- > 0)
 					{
 						++processed;
-						data = dbReader->takeData();
+						SensorCaptureInfo skippedInfo;
+						prefetcher.take(data, skippedInfo);
 					}
 				}
 
@@ -1150,12 +1480,7 @@ int main(int argc, char * argv[])
 				}
 				else
 				{
-					data = dbReader->takeData(&info);
-					if(scanFromDepth)
-					{
-						data.setLaserScan(LaserScan());
-					}
-					camThread.postUpdate(&data, &info);
+					prefetcher.take(data, info);
 					++processed;
 					continue;
 				}
@@ -1431,7 +1756,7 @@ int main(int argc, char * argv[])
 			while(skippedFrames-- > 0)
 			{
 				processed++;
-				data = dbReader->takeData(&info);
+				prefetcher.take(data, info);
 				if(!odometryIgnored && !info.odomCovariance.empty() && info.odomCovariance.at<double>(0,0)>=9999)
 				{
 					printf("High variance detected, triggering a new map...\n");
@@ -1445,12 +1770,7 @@ int main(int argc, char * argv[])
 			}
 		}
 
-		data = dbReader->takeData(&info);
-		if(scanFromDepth)
-		{
-			data.setLaserScan(LaserScan());
-		}
-		camThread.postUpdate(&data, &info);
+		prefetcher.take(data, info);
 
 		inMotion = true;
 		if(!incrementalMemory &&
