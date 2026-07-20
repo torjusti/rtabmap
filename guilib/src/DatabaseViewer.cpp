@@ -1104,6 +1104,19 @@ bool DatabaseViewer::closeDatabase()
 	this->setWindowTitle("RTAB-Map Database Viewer[*]");
 	if(dbDriver_)
 	{
+		// Anchor point priors already saved in the database (without pending modifications)
+		bool anchorsInDatabase = false;
+		for(std::multimap<int, rtabmap::Link>::iterator iter=links_.begin(); iter!=links_.end(); ++iter)
+		{
+			if(iter->second.from() == iter->second.to() &&
+			   iter->second.from() < 0 &&
+			   iter->second.type() == Link::kPosePrior)
+			{
+				anchorsInDatabase = true;
+				break;
+			}
+		}
+
 		if(linksAdded_.size() || linksRefined_.size() || linksRemoved_.size())
 		{
 			QMessageBox::StandardButton button = QMessageBox::question(this,
@@ -1152,6 +1165,21 @@ bool DatabaseViewer::closeDatabase()
 					if(iter->second.from() != iter->second.to())
 						dbDriver_->removeLink(iter->second.from(), iter->second.to());
 				}
+
+				// re-evaluate with the links that were just saved
+				anchorsInDatabase = false;
+				std::multimap<int, Link> savedLinks = updateLinksWithModifications(links_);
+				for(std::multimap<int, rtabmap::Link>::iterator iter=savedLinks.begin(); iter!=savedLinks.end(); ++iter)
+				{
+					if(iter->second.from() == iter->second.to() &&
+					   iter->second.from() < 0 &&
+					   iter->second.type() == Link::kPosePrior)
+					{
+						anchorsInDatabase = true;
+						break;
+					}
+				}
+
 				linksAdded_.clear();
 				linksRefined_.clear();
 				linksRemoved_.clear();
@@ -1170,6 +1198,41 @@ bool DatabaseViewer::closeDatabase()
 			if(button != QMessageBox::Yes && button != QMessageBox::No)
 			{
 				return false;
+			}
+		}
+
+		// Other tools (rtabmap-export, rtabmap-reprocess, rtabmap) read the
+		// database parameters as defaults. If anchor point priors are saved in
+		// the database but the stored parameters make the optimizer ignore them
+		// (or use robust optimization, which performs poorly with them), those
+		// tools would silently ignore the anchors; propose to update the
+		// stored parameters.
+		if(anchorsInDatabase)
+		{
+			ParametersMap dbParameters = dbDriver_->getLastParameters();
+			bool priorsIgnored = Parameters::defaultOptimizerPriorsIgnored();
+			bool robust = Parameters::defaultOptimizerRobust();
+			Parameters::parse(dbParameters, Parameters::kOptimizerPriorsIgnored(), priorsIgnored);
+			Parameters::parse(dbParameters, Parameters::kOptimizerRobust(), robust);
+			if(priorsIgnored || robust)
+			{
+				if(QMessageBox::question(this,
+						tr("Anchor points"),
+						tr("The database contains anchor point priors, but with the parameters "
+						   "stored in the database (%1=%2, %3=%4), other tools (e.g., rtabmap-export, "
+						   "rtabmap-reprocess, rtabmap) would ignore the anchors or optimize poorly. "
+						   "Do you want to update the database parameters to %1=false and %3=false?")
+							.arg(Parameters::kOptimizerPriorsIgnored().c_str())
+							.arg(priorsIgnored?"true":"false")
+							.arg(Parameters::kOptimizerRobust().c_str())
+							.arg(robust?"true":"false"),
+						QMessageBox::Yes | QMessageBox::No,
+						QMessageBox::Yes) == QMessageBox::Yes)
+				{
+					uInsert(dbParameters, ParametersPair(Parameters::kOptimizerPriorsIgnored(), "false"));
+					uInsert(dbParameters, ParametersPair(Parameters::kOptimizerRobust(), "false"));
+					dbDriver_->addInfoAfterRun(0, 0, 0, 0, 0, dbParameters);
+				}
 			}
 		}
 
@@ -9772,61 +9835,10 @@ void DatabaseViewer::updateGraphView()
 				}
 				if(!effPoints.empty())
 				{
-					cv::Point3d effCentroid(0,0,0);
-					cv::Point3d priorCentroid(0,0,0);
-					for(size_t i=0; i<effPoints.size(); ++i)
-					{
-						effCentroid += effPoints[i];
-						priorCentroid += priorPoints[i];
-					}
-					effCentroid *= 1.0/double(effPoints.size());
-					priorCentroid *= 1.0/double(priorPoints.size());
-
-					// The vertical shift can only use anchors whose prior actually
-					// constrains Z: unconstrained-Z anchors store the pick-time
-					// estimate as a placeholder Z (possibly from an old, drifted
-					// graph), which is meaningless as an alignment target. If no
-					// anchor constrains Z, don't touch the elevation at all.
-					double effZ = 0.0;
-					double priorZ = 0.0;
-					int nZ = 0;
-					for(size_t i=0; i<effPoints.size(); ++i)
-					{
-						if(zConstrained[i])
-						{
-							effZ += effPoints[i].z;
-							priorZ += priorPoints[i].z;
-							++nZ;
-						}
-					}
-					double alignZ = nZ>0?(priorZ - effZ)/double(nZ):0.0;
-
-					// 2D Kabsch on the horizontal plane for the yaw (needs 2+ anchors)
-					double theta = 0.0;
-					if(effPoints.size() > 1)
-					{
-						double num = 0.0;
-						double den = 0.0;
-						for(size_t i=0; i<effPoints.size(); ++i)
-						{
-							double ex = effPoints[i].x - effCentroid.x;
-							double ey = effPoints[i].y - effCentroid.y;
-							double px = priorPoints[i].x - priorCentroid.x;
-							double py = priorPoints[i].y - priorCentroid.y;
-							num += ex*py - ey*px;
-							den += ex*px + ey*py;
-						}
-						theta = atan2(num, den);
-					}
-
-					// t = priorCentroid - R * effCentroid
+					Transform align = graph::alignPosesToLandmarkPriors(poses, links);
+					double theta = align.theta();
 					double cosT = cos(theta);
 					double sinT = sin(theta);
-					Transform align(
-							(float)(priorCentroid.x - (cosT*effCentroid.x - sinT*effCentroid.y)),
-							(float)(priorCentroid.y - (sinT*effCentroid.x + cosT*effCentroid.y)),
-							(float)alignZ,
-							0, 0, (float)theta);
 					if(align.getNorm() > 0.5 || fabs(theta) > 0.05)
 					{
 						UINFO("Pre-aligning initial guess to %d anchor point prior(s): %s",
