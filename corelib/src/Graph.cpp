@@ -946,6 +946,87 @@ Transform calcRMSE (
 	return t;
 }
 
+Transform alignPosesToLandmarkPriors(
+		const std::map<int, Transform> & poses,
+		const std::multimap<int, Link> & links)
+{
+	std::vector<cv::Point3d> effPoints;   // current landmark estimates
+	std::vector<cv::Point3d> priorPoints; // known world positions
+	std::vector<bool> zConstrained;
+	for(std::multimap<int, Link>::const_iterator iter=links.begin(); iter!=links.end(); ++iter)
+	{
+		if(iter->second.from() == iter->second.to() &&
+		   iter->second.from() < 0 &&
+		   iter->second.type() == Link::kPosePrior &&
+		   uContains(poses, iter->second.from()))
+		{
+			const Transform & p = poses.at(iter->second.from());
+			const Transform & q = iter->second.transform();
+			effPoints.push_back(cv::Point3d(p.x(), p.y(), p.z()));
+			priorPoints.push_back(cv::Point3d(q.x(), q.y(), q.z()));
+			double zInf = iter->second.infMatrix().at<double>(2,2);
+			zConstrained.push_back(zInf > 0.0 && 1.0/zInf < 9999.0);
+		}
+	}
+	if(effPoints.empty())
+	{
+		return Transform::getIdentity();
+	}
+
+	cv::Point3d effCentroid(0,0,0);
+	cv::Point3d priorCentroid(0,0,0);
+	for(size_t i=0; i<effPoints.size(); ++i)
+	{
+		effCentroid += effPoints[i];
+		priorCentroid += priorPoints[i];
+	}
+	effCentroid *= 1.0/double(effPoints.size());
+	priorCentroid *= 1.0/double(priorPoints.size());
+
+	// 2D Kabsch on the horizontal plane for the yaw (needs 2+ landmarks)
+	double theta = 0.0;
+	if(effPoints.size() > 1)
+	{
+		double num = 0.0;
+		double den = 0.0;
+		for(size_t i=0; i<effPoints.size(); ++i)
+		{
+			double ex = effPoints[i].x - effCentroid.x;
+			double ey = effPoints[i].y - effCentroid.y;
+			double px = priorPoints[i].x - priorCentroid.x;
+			double py = priorPoints[i].y - priorCentroid.y;
+			num += ex*py - ey*px;
+			den += ex*px + ey*py;
+		}
+		theta = atan2(num, den);
+	}
+
+	// The vertical shift can only use landmarks whose prior actually
+	// constrains the elevation; if none does, don't touch the elevation.
+	double effZ = 0.0;
+	double priorZ = 0.0;
+	int nZ = 0;
+	for(size_t i=0; i<effPoints.size(); ++i)
+	{
+		if(zConstrained[i])
+		{
+			effZ += effPoints[i].z;
+			priorZ += priorPoints[i].z;
+			++nZ;
+		}
+	}
+	double alignZ = nZ>0?(priorZ - effZ)/double(nZ):0.0;
+
+	// t = priorCentroid - R * effCentroid
+	double cosT = cos(theta);
+	double sinT = sin(theta);
+	return Transform(
+			(float)(priorCentroid.x - (cosT*effCentroid.x - sinT*effCentroid.y)),
+			(float)(priorCentroid.y - (sinT*effCentroid.x + cosT*effCentroid.y)),
+			(float)alignZ,
+			0, 0, (float)theta);
+}
+
 MaxGraphErrors computeMaxGraphErrors(
 		const std::map<int, Transform> & poses,
 		const std::multimap<int, Link> & links,

@@ -1363,6 +1363,26 @@ int main(int argc, char * argv[])
 				}
 			}
 
+			// If landmarks have global position priors (e.g. anchor points set in
+			// the database viewer) and priors are enabled, rigidly pre-align the
+			// initial guess to them like the database viewer does. Global priors
+			// can be arbitrarily far from the odometry frame (site CRS coordinates)
+			// and the iterative optimizers diverge when starting that far from the
+			// solution.
+			bool priorsIgnored = Parameters::defaultOptimizerPriorsIgnored();
+			Parameters::parse(parameters, Parameters::kOptimizerPriorsIgnored(), priorsIgnored);
+			if(!priorsIgnored)
+			{
+				Transform align = graph::alignPosesToLandmarkPriors(odomPoses, links);
+				if(align.getNorm() > 0.5 || fabs(align.theta()) > 0.05)
+				{
+					printf("Pre-aligning poses to landmark position prior(s): %s\n", align.prettyPrint().c_str());
+					for(std::map<int, Transform>::iterator iter=odomPoses.begin(); iter!=odomPoses.end(); ++iter)
+					{
+						iter->second = align * iter->second;
+					}
+				}
+			}
 
 			optimizer->getConnectedGraph(odomPoses.lower_bound(1)->first, odomPoses, links, posesOut, linksOut);
 			if(optimizationApproach == 1)
