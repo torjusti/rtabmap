@@ -223,6 +223,27 @@ Transform RTABMAP_CORE_EXPORT calcRMSE(
 		bool align2D = false);
 
 /**
+ * Compute a rigid transform (x/y/z translation + yaw) aligning landmark
+ * estimates to their global position priors (Link::kPosePrior self-links on
+ * negative ids, e.g. anchor points set in the database viewer). Global priors
+ * can be arbitrarily far from the odometry frame (e.g. site CRS coordinates),
+ * and iterative graph optimizers can diverge when the initial guess starts
+ * that far from the solution; applying the returned transform to all poses
+ * before optimizing leaves only the drift to correct.
+ * The yaw is estimated when 2+ landmarks have priors (2D Kabsch on the
+ * horizontal plane). The vertical shift only uses priors that constrain the
+ * elevation (variance < 9999 on z), as unconstrained-Z priors store an
+ * arbitrary placeholder z.
+ * @param poses, the graph poses, including the landmark estimates (negative ids)
+ * @param links, the graph links, including the landmark priors
+ * @return the transform to left-multiply all poses with, identity if there
+ *         is no landmark with a position prior in the graph
+ */
+Transform RTABMAP_CORE_EXPORT alignPosesToLandmarkPriors(
+		const std::map<int, Transform> & poses,
+		const std::multimap<int, Link> & links);
+
+/**
  * @brief Largest pose-graph constraint violations after optimization.
  *
  * For each non-self-referenced link (`from != to`), compares the relative pose implied by @p poses to the
