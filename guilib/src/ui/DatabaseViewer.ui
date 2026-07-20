@@ -3625,6 +3625,11 @@
          <string>σ Z</string>
         </property>
        </column>
+       <column>
+        <property name="text">
+         <string>Residual</string>
+        </property>
+       </column>
       </widget>
      </item>
      <item>

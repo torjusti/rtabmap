@@ -295,6 +295,8 @@ private:
 	std::map<int, rtabmap::Transform> exportViewRefPoses_;
 	std::map<int, rtabmap::Transform> gridViewRefPoses_;
 	std::map<int, rtabmap::Transform> fileViewRefPoses_;
+	// Per-anchor XY residual (m) from the last optimization, keyed by landmark id.
+	std::map<int, float> anchorResidualsXY_;
 	std::map<int, rtabmap::Transform> odomPoses_;
 	std::map<int, rtabmap::Transform> groundTruthPoses_;
 	std::map<int, rtabmap::Transform> gpsPoses_;

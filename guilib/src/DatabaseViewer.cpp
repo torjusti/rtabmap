@@ -130,6 +130,28 @@ namespace rtabmap {
 // small enough to keep the information matrix numerically sane.
 const double kAnchorSigmaZFree = 1e6;
 
+// Table item displaying formatted text but sorting by a numeric value, so
+// that e.g. "10.00" sorts after "9.00" in the anchor points table.
+class NumericTableWidgetItem : public QTableWidgetItem
+{
+public:
+	NumericTableWidgetItem(const QString & text, double sortValue) :
+		QTableWidgetItem(text)
+	{
+		setData(Qt::UserRole+2, sortValue);
+	}
+	bool operator<(const QTableWidgetItem & other) const override
+	{
+		QVariant a = data(Qt::UserRole+2);
+		QVariant b = other.data(Qt::UserRole+2);
+		if(a.isValid() && b.isValid())
+		{
+			return a.toDouble() < b.toDouble();
+		}
+		return QTableWidgetItem::operator<(other);
+	}
+};
+
 DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	QMainWindow(parent),
 	dbDriver_(0),
@@ -238,6 +260,7 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	connect(exportDialog_, SIGNAL(pointPicked(float,float,float)), this, SLOT(anchorPointPickedFromMap(float,float,float)));
 
 	ui_->tableWidget_anchors->horizontalHeader()->setStretchLastSection(true);
+	ui_->tableWidget_anchors->setSortingEnabled(true);
 	connect(ui_->pushButton_anchorEdit, SIGNAL(clicked()), this, SLOT(editSelectedAnchorPoint()));
 	connect(ui_->pushButton_anchorRemove, SIGNAL(clicked()), this, SLOT(removeSelectedAnchorPoint()));
 	connect(ui_->pushButton_anchorShow, SIGNAL(clicked()), this, SLOT(showSelectedAnchorPoint()));
@@ -1327,6 +1350,7 @@ bool DatabaseViewer::closeDatabase()
 		cloudViewer3dPose_.setNull();
 		ui_->graphViewer->clearAll();
 		occupancyGridViewer_->clear();
+		anchorResidualsXY_.clear();
 		updateAnchorPointsTable();
 		ui_->menuEdit->setEnabled(false);
 		ui_->actionGenerate_3D_map_pcd->setEnabled(false);
@@ -7812,6 +7836,8 @@ void DatabaseViewer::updateAnchorPointsTable()
 	}
 
 	int selectedLandmark = selectedAnchorLandmarkId();
+	bool sortingWasEnabled = table->isSortingEnabled();
+	table->setSortingEnabled(false); // avoid re-sorting while inserting
 	table->setRowCount(0);
 	for(std::map<int, Link>::iterator iter=priors.begin(); iter!=priors.end(); ++iter)
 	{
@@ -7828,14 +7854,40 @@ void DatabaseViewer::updateAnchorPointsTable()
 		const Link & prior = iter->second;
 		double sigmaXY = prior.infMatrix().at<double>(0,0)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(0,0)):0.0;
 		double sigmaZ = prior.infMatrix().at<double>(2,2)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(2,2)):0.0;
-		table->setItem(row, 0, new QTableWidgetItem(QString::number(-iter->first)));
+		table->setItem(row, 0, new NumericTableWidgetItem(QString::number(-iter->first), -iter->first));
 		table->setItem(row, 1, new QTableWidgetItem(nodes.isEmpty()?"-":nodes.join(", ")));
-		table->setItem(row, 2, new QTableWidgetItem(QString::number(prior.transform().x(), 'f', 3)));
-		table->setItem(row, 3, new QTableWidgetItem(QString::number(prior.transform().y(), 'f', 3)));
+		table->setItem(row, 2, new NumericTableWidgetItem(QString::number(prior.transform().x(), 'f', 3), prior.transform().x()));
+		table->setItem(row, 3, new NumericTableWidgetItem(QString::number(prior.transform().y(), 'f', 3), prior.transform().y()));
 		bool zFree = sigmaZ >= kAnchorSigmaZFree;
-		table->setItem(row, 4, new QTableWidgetItem(zFree?tr("-"):QString::number(prior.transform().z(), 'f', 3)));
-		table->setItem(row, 5, new QTableWidgetItem(QString::number(sigmaXY, 'f', 2)));
-		table->setItem(row, 6, new QTableWidgetItem(zFree?tr("free"):QString::number(sigmaZ, 'f', 2)));
+		table->setItem(row, 4, zFree?
+				new NumericTableWidgetItem(tr("-"), std::numeric_limits<double>::max()):
+				new NumericTableWidgetItem(QString::number(prior.transform().z(), 'f', 3), prior.transform().z()));
+		table->setItem(row, 5, new NumericTableWidgetItem(QString::number(sigmaXY, 'f', 2), sigmaXY));
+		table->setItem(row, 6, zFree?
+				new NumericTableWidgetItem(tr("free"), std::numeric_limits<double>::max()):
+				new NumericTableWidgetItem(QString::number(sigmaZ, 'f', 2), sigmaZ));
+		// XY residual from the last optimization: how far the optimized
+		// landmark position remains from the prior. Values well above sigma
+		// mean the anchor disagrees with the map geometry (bad coordinates,
+		// bad pick, or inconsistent with the other anchors).
+		std::map<int, float>::const_iterator resIter = anchorResidualsXY_.find(iter->first);
+		if(resIter != anchorResidualsXY_.end())
+		{
+			NumericTableWidgetItem * resItem = new NumericTableWidgetItem(QString::number(resIter->second, 'f', 2), resIter->second);
+			if(sigmaXY > 0.0 && resIter->second > 3.0*sigmaXY)
+			{
+				resItem->setBackground(QBrush(QColor(255, 150, 150)));
+				resItem->setToolTip(tr("Residual exceeds 3x the sigma: this anchor disagrees "
+						"with the map geometry, verify its coordinates or pick."));
+			}
+			table->setItem(row, 7, resItem);
+		}
+		else
+		{
+			QTableWidgetItem * resItem = new NumericTableWidgetItem(tr("-"), std::numeric_limits<double>::max());
+			resItem->setToolTip(tr("Optimize the graph to compute residuals."));
+			table->setItem(row, 7, resItem);
+		}
 		table->item(row, 0)->setData(Qt::UserRole, iter->first); // landmark id
 		// remember first observing node for the "Show node" button
 		table->item(row, 0)->setData(Qt::UserRole+1, nodes.isEmpty()?0:observers.at(iter->first)[0]);
@@ -7844,6 +7896,7 @@ void DatabaseViewer::updateAnchorPointsTable()
 			table->selectRow(row);
 		}
 	}
+	table->setSortingEnabled(sortingWasEnabled);
 	if(table->rowCount() && table->currentRow() < 0)
 	{
 		table->selectRow(0);
@@ -9958,6 +10011,7 @@ void DatabaseViewer::updateGraphView()
 			// Log per-anchor state after optimization: how far each anchor landmark
 			// is from its prior (remaining tension) and from its expected position
 			// relative to the observing node (observation link violation).
+			anchorResidualsXY_.clear();
 			for(std::multimap<int, rtabmap::Link>::iterator iter=linksOut.begin(); iter!=linksOut.end(); ++iter)
 			{
 				if(iter->second.type() == Link::kPosePrior &&
@@ -9975,6 +10029,7 @@ void DatabaseViewer::updateGraphView()
 							(prior.x()-landmarkPose.x())*(prior.x()-landmarkPose.x()) +
 							(prior.y()-landmarkPose.y())*(prior.y()-landmarkPose.y()));
 					float priorResidualZ = landmarkPose.z()-prior.z();
+					anchorResidualsXY_.insert(std::make_pair(landmarkId, priorResidualXY));
 
 					// find the observation link and its residual (note: getConnectedGraph()
 					// re-keys landmark links with the landmark as from())
@@ -10035,6 +10090,7 @@ void DatabaseViewer::updateGraphView()
 			ui_->label_poses->setNum((int)finalPoses.size());
 			graphes_.push_back(finalPoses);
 			delete optimizer;
+			updateAnchorPointsTable(); // refresh residual column
 
 			if(applyRotation && !finalPoses.empty())
 			{
