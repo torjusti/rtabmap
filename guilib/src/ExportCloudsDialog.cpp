@@ -1638,6 +1638,9 @@ void ExportCloudsDialog::viewClouds(
 				_progressDialog->appendText(tr("Viewing the cloud %1 (%2 points)... done.").arg(iter->first).arg(iter->second->size()));
 			}
 		}
+		// The map can be far from the world origin (e.g. optimized against
+		// world-referenced anchor points), so start centered on the data.
+		viewer->centerCameraOnVisible();
 		viewer->refreshView();
 		window->activateWindow();
 	}

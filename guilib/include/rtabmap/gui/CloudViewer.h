@@ -330,6 +330,11 @@ public:
 	void setFrustumScale(float value);
 	void setFrustumColor(QColor value);
 	void resetCamera();
+	// Center the camera on the currently displayed data. Useful when the
+	// data is far from the world origin (e.g. map optimized against
+	// world-referenced priors). If onlyIfOutOfView is true, the camera is
+	// left alone when the data is already around the current focal point.
+	void centerCameraOnVisible(bool onlyIfOutOfView = false);
 
 	void removeAllClouds(); //including meshes
 	bool removeCloud(const std::string & id); //including mesh

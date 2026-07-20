@@ -2498,6 +2498,65 @@ void CloudViewer::resetCamera()
 	}
 }
 
+void CloudViewer::centerCameraOnVisible(bool onlyIfOutOfView)
+{
+	// bounding box of everything currently displayed
+	double bounds[6] = {1, -1, 1, -1, 1, -1};
+	vtkRenderer* renderer = NULL;
+	_visualizer->getRendererCollection()->InitTraversal();
+	while ((renderer = _visualizer->getRendererCollection()->GetNextItem()) != NULL)
+	{
+		double BB[6];
+		renderer->ComputeVisiblePropBounds(BB);
+		if(BB[0] <= BB[1] && BB[2] <= BB[3] && BB[4] <= BB[5])
+		{
+			if(bounds[0] > bounds[1])
+			{
+				memcpy(bounds, BB, sizeof(BB));
+			}
+			else
+			{
+				for(int i = 0; i < 6; i += 2)
+				{
+					bounds[i] = std::min(bounds[i], BB[i]);
+					bounds[i+1] = std::max(bounds[i+1], BB[i+1]);
+				}
+			}
+		}
+	}
+	if(bounds[0] > bounds[1])
+	{
+		// nothing displayed
+		return;
+	}
+
+	double cx = (bounds[0]+bounds[1])/2.0;
+	double cy = (bounds[2]+bounds[3])/2.0;
+	double cz = (bounds[4]+bounds[5])/2.0;
+	double diagonal = sqrt(
+			(bounds[1]-bounds[0])*(bounds[1]-bounds[0]) +
+			(bounds[3]-bounds[2])*(bounds[3]-bounds[2]) +
+			(bounds[5]-bounds[4])*(bounds[5]-bounds[4]));
+
+	if(onlyIfOutOfView)
+	{
+		float x,y,z,fx,fy,fz,ux,uy,uz;
+		this->getCameraPosition(x,y,z,fx,fy,fz,ux,uy,uz);
+		double d = sqrt((fx-cx)*(fx-cx) + (fy-cy)*(fy-cy) + (fz-cz)*(fz-cz));
+		if(d < (diagonal>0.0?diagonal:10.0))
+		{
+			return;
+		}
+	}
+
+	// elevated side view containing all the data, z up
+	double distance = diagonal>0.0?diagonal:10.0;
+	this->setCameraPosition(
+			(float)(cx - distance), (float)cy, (float)(cz + 0.5*distance),
+			(float)cx, (float)cy, (float)cz,
+			0, 0, 1);
+}
+
 void CloudViewer::removeAllClouds()
 {
 	QMap<std::string, Transform> addedClouds = _addedClouds;
