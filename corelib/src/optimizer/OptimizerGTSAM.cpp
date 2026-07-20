@@ -257,10 +257,24 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 				gtsam::noiseModel::Diagonal::shared_ptr priorNoise = gtsam::noiseModel::Diagonal::Variances(
 						(gtsam::Vector(6) <<
 								(hasGravityConstraints?2:1e-2), (hasGravityConstraints?2:1e-2), (hasGPSPrior?1e-2:1e-9), // roll, pitch, fixed yaw if there are no priors
-								(hasGPSPrior?1e7:1e-2), hasGPSPrior?1e7:1e-2, (hasGPSPrior&&hasZPrior)?1e7:1e-2 // xyz
+								(hasGPSPrior?1e7:1e-2), hasGPSPrior?1e7:1e-2, (hasGPSPrior?1e7:1e-2) // xyz
 								).finished());
 				graph.add(gtsam::PriorFactor<gtsam::Pose3>(rootId, gtsam::Pose3(initialPose.toEigen4d()), priorNoise));
 				addedPrior.push_back(ConstraintToFactor(rootId, rootId, -1));
+				if(hasGPSPrior && !hasZPrior)
+				{
+					// PriorFactor<Pose3> expresses its translation error in the body
+					// frame of the pose: if the root pose is tilted (e.g., handheld
+					// scan), a tight z variance there would constrain a tilted axis,
+					// not the world elevation, leaving the global Z gauge free to
+					// drift by hundreds of meters. Pin the elevation in the world
+					// frame instead with a position-only factor (XY left loose for
+					// the global priors).
+					graph.add(XYZFactor<gtsam::Pose3>(rootId,
+							gtsam::Point3(initialPose.x(), initialPose.y(), initialPose.z()),
+							gtsam::noiseModel::Diagonal::Variances(gtsam::Vector3(1e7, 1e7, 1e-2))));
+					addedPrior.push_back(ConstraintToFactor(rootId, rootId, -1));
+				}
 			}
 			if(isam2_ && lastRootFactorIndex_.first!=0)
 			{
