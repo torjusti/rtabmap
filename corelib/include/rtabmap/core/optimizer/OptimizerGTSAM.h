@@ -88,6 +88,11 @@ private:
 	};
 
 	std::vector<ConstraintToFactor> lastAddedConstraints_;
+	// All binary (from!=to) constraints currently in the iSAM2 factor graph,
+	// keyed by (min id, max id), so that links added later between two
+	// existing poses (e.g., detect more loop closures) are detected as new,
+	// and any of them can be removed when absent from a subsequent call.
+	std::map<std::pair<int, int>, std::uint64_t> addedConstraints_;
 	int lastSwitchId_;
 	std::set<int> addedPoses_;
 	std::map<int, bool> isLandmarkWithRotation_; // persists across iSAM2 incremental calls

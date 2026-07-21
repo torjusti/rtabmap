@@ -73,6 +73,7 @@ class LinkRefiningDialog;
 class Registration;
 class RegistrationIcp;
 class ExportDialog;
+class Optimizer;
 
 class GraphComponent
 {
@@ -243,7 +244,7 @@ private:
 	void updateCovariances(const QList<Link> & links);
 	void refineLinks(const QList<Link> & links);
 	void refineConstraint(int from, int to, Registration * reg, RegistrationIcp * regIcp, bool silent);
-	bool addConstraint(int from, int to, Registration * reg, bool silent, bool silentlyUseOptimizedGraphAsGuess = false);
+	bool addConstraint(int from, int to, Registration * reg, bool silent, bool silentlyUseOptimizedGraphAsGuess = false, Optimizer * optimizer = 0);
 	void exportPoses(int format);
 	void exportGPS(int format);
 
