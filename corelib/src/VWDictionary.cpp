@@ -1074,7 +1074,7 @@ std::list<int> VWDictionary::addNewWords(
 
 		if(isFlannStrategy(_strategy))
 		{
-			_flannIndex->knnSearch(descriptors, results, dists, k, KNN_CHECKS);
+			_flannIndex->knnSearch(descriptors, results, dists, k, KNN_CHECKS, 0.0f, true, 0);
 		}
 		else if(_strategy == kNNBruteForce)
 		{
@@ -1396,7 +1396,7 @@ std::vector<int> VWDictionary::findNN(const cv::Mat & queryIn) const
 
 			if(isFlannStrategy(_strategy))
 			{
-				_flannIndex->knnSearch(query, results, dists, k, KNN_CHECKS);
+				_flannIndex->knnSearch(query, results, dists, k, KNN_CHECKS, 0.0f, true, 0);
 			}
 			else if(_strategy == kNNBruteForce)
 			{
