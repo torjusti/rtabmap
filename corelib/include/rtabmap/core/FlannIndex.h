@@ -209,7 +209,8 @@ public:
 	        int knn,
 			int checks = 32,
 			float eps = 0.0,
-			bool sorted = true) const;
+			bool sorted = true,
+			int cores = 1) const; // 0 = all available cores
 
 	/**
 	 * @brief Search the neighbors of each query within a radius

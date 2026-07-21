@@ -36,6 +36,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "rtflann/flann.hpp"
 #include "nanoflann/NanoFlannIndex.h"
 #include <boost/crc.hpp>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 namespace rtabmap {
 
@@ -910,7 +913,8 @@ void FlannIndex::knnSearch(
 		int knn,
 		int checks,
 		float eps,
-		bool sorted) const
+		bool sorted,
+		int cores) const
 {
 	if(nanoIndex_)
 	{
@@ -930,6 +934,15 @@ void FlannIndex::knnSearch(
 	rtflann::Matrix<size_t> indicesF((size_t*)indicesBuffer.data(), query.rows, knn);
 
 	rtflann::SearchParams params = rtflann::SearchParams(checks, eps, sorted);
+	if(cores <= 0)
+	{
+#ifdef _OPENMP
+		cores = omp_get_max_threads();
+#else
+		cores = 1;
+#endif
+	}
+	params.cores = cores;
 
 	if(featuresType_ == CV_8UC1)
 	{
