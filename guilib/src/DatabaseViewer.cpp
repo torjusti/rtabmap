@@ -4472,6 +4472,11 @@ void DatabaseViewer::detectMoreLoopClosures()
 	}
 
 	std::shared_ptr<Registration> reg(Registration::create(ui_->parameters_toolbox->getParameters()));
+	// Reuse the same optimizer for all candidate links so that incremental
+	// optimizers (e.g., GTSAM/Incremental) keep their internal state between
+	// the validations, making them a lot faster than a full optimization per
+	// candidate.
+	std::shared_ptr<Optimizer> optimizer(Optimizer::create(ui_->parameters_toolbox->getParameters()));
 
 	for(int n=0; n<iterations; ++n)
 	{
@@ -4588,7 +4593,7 @@ void DatabaseViewer::detectMoreLoopClosures()
 						   delta.getNorm() >= ui_->doubleSpinBox_detectMore_radiusMin->value())
 						{
 							checkedLoopClosures.insert(std::make_pair(from, to));
-							if(addConstraint(from, to, reg.get(), true, useOptimizedGraphAsGuess))
+							if(addConstraint(from, to, reg.get(), true, useOptimizedGraphAsGuess, optimizer.get()))
 							{
 								UINFO("Added new loop closure between %d and %d.", from, to);
 								++added;
@@ -9577,7 +9582,7 @@ void DatabaseViewer::addConstraint()
 	addConstraint(from, to, reg.get(), false);
 }
 
-bool DatabaseViewer::addConstraint(int from, int to, Registration * reg, bool silent, bool silentlyUseOptimizedGraphAsGuess)
+bool DatabaseViewer::addConstraint(int from, int to, Registration * reg, bool silent, bool silentlyUseOptimizedGraphAsGuess, Optimizer * optimizer)
 {
 	UASSERT(reg);
 
@@ -9834,7 +9839,15 @@ bool DatabaseViewer::addConstraint(int from, int to, Registration * reg, bool si
 		int fromId = newLink.from();
 		std::multimap<int, Link> linksIn = updateLinksWithModifications(links_);
 		linksIn.insert(std::make_pair(newLink.from(), newLink));
-		Optimizer * optimizer = Optimizer::create(ui_->parameters_toolbox->getParameters());
+		// A persistent optimizer can be passed (e.g., by detectMoreLoopClosures())
+		// so that incremental optimizers (GTSAM/Incremental) can reuse their
+		// internal state between the candidate links, which is a lot faster
+		// than doing a full optimization for each candidate.
+		bool ownOptimizer = optimizer == 0;
+		if(ownOptimizer)
+		{
+			optimizer = Optimizer::create(ui_->parameters_toolbox->getParameters());
+		}
 		std::map<int, Transform> poses;
 		std::multimap<int, Link> links;
 		UASSERT(odomPoses_.find(fromId) != odomPoses_.end());
@@ -9930,6 +9943,11 @@ bool DatabaseViewer::addConstraint(int from, int to, Registration * reg, bool si
 		if(updateConstraints && silent && !graphes_.empty() && graphes_.back().size() == poses.size())
 		{
 			graphes_.back() = poses;
+		}
+
+		if(ownOptimizer)
+		{
+			delete optimizer;
 		}
 	}
 

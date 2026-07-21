@@ -147,6 +147,7 @@ void OptimizerGTSAM::parseParameters(const ParametersMap & parameters)
 
 		addedPoses_.clear();
 		lastAddedConstraints_.clear();
+		addedConstraints_.clear();
 		lastRootFactorIndex_.first = 0;
 		lastSwitchId_ = 1000000000;
 	}
@@ -261,6 +262,7 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 					isam2_ = new gtsam::ISAM2(params);
 					addedPoses_.clear();
 					lastAddedConstraints_.clear();
+					addedConstraints_.clear();
 					isLandmarkWithRotation_.clear();
 					lastRootFactorIndex_.first = 0;
 					lastSwitchId_ = 1000000000;
@@ -288,8 +290,21 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 			// new links?
 			for(std::multimap<int, Link>::const_iterator iter=edgeConstraints.begin(); iter!=edgeConstraints.end(); ++iter)
 			{
-				if(addedPoses_.find(iter->second.from()) == addedPoses_.end() ||
-				   addedPoses_.find(iter->second.to()) == addedPoses_.end())
+				bool isNew =
+					addedPoses_.find(iter->second.from()) == addedPoses_.end() ||
+					addedPoses_.find(iter->second.to()) == addedPoses_.end();
+				if(!isNew &&
+				   iter->second.from() != iter->second.to() &&
+				   !this->isRobust())
+				{
+					// a link between two poses already in the factor graph
+					// (e.g., added by detect more loop closures)
+					std::pair<int, int> ids(
+							iter->second.from()<iter->second.to()?iter->second.from():iter->second.to(),
+							iter->second.from()<iter->second.to()?iter->second.to():iter->second.from());
+					isNew = addedConstraints_.find(ids) == addedConstraints_.end();
+				}
+				if(isNew)
 				{
 					newEdgeConstraints.insert(*iter);
 					UDEBUG("Adding constraint %d (%d->%d) to factor graph", iter->first, iter->second.from(), iter->second.to());
@@ -300,6 +315,9 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 			{
 				UDEBUG("Remove links...");
 				// Remove constraints not there anymore in case the last loop closures were rejected.
+				// Only constraints added by the previous call are checked, so that links
+				// legitimately out of scope of the current call (e.g., nodes transferred
+				// out of WM) keep their factors.
 				// As we don't track "switch" constraints, we don't support this if vertigo is used.
 				for(size_t i=0; i<lastAddedConstraints_.size(); ++i)
 				{
@@ -311,6 +329,9 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 								lastAddedConstraints_[i].from,
 								lastAddedConstraints_[i].to,
 								lastAddedConstraints_[i].factorIndice);
+						addedConstraints_.erase(std::make_pair(
+								lastAddedConstraints_[i].from<lastAddedConstraints_[i].to?lastAddedConstraints_[i].from:lastAddedConstraints_[i].to,
+								lastAddedConstraints_[i].from<lastAddedConstraints_[i].to?lastAddedConstraints_[i].to:lastAddedConstraints_[i].from));
 					}
 				}
 			}
@@ -910,6 +931,13 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 						{
 							UDEBUG("New factor indice: %ld", result.newFactorsIndices[j]);
 							lastAddedConstraints_[j].factorIndice = result.newFactorsIndices[j];
+							if(lastAddedConstraints_[j].from != lastAddedConstraints_[j].to)
+							{
+								addedConstraints_[std::make_pair(
+										lastAddedConstraints_[j].from<lastAddedConstraints_[j].to?lastAddedConstraints_[j].from:lastAddedConstraints_[j].to,
+										lastAddedConstraints_[j].from<lastAddedConstraints_[j].to?lastAddedConstraints_[j].to:lastAddedConstraints_[j].from)] =
+												result.newFactorsIndices[j];
+							}
 						}
 					}
 					if(rootId != 0 && lastRootFactorIndex_.first == 0)
@@ -951,6 +979,7 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 					isam2_ = new gtsam::ISAM2(params);
 					addedPoses_.clear();
 					lastAddedConstraints_.clear();
+					addedConstraints_.clear();
 					lastRootFactorIndex_.first = 0;
 					lastSwitchId_ = 1000000000;
 				}
