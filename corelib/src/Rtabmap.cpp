@@ -6239,118 +6239,100 @@ int Rtabmap::detectMoreLoopClosures(
 							{
 								bool updateConstraints = true;
 
-								//optimize the graph to see if the new constraint is globally valid
+								// With RGBD/OptimizeMaxError=0, this validation cannot
+								// reject the link, so skip the expensive per-candidate
+								// graph optimization and pose update: the graph is
+								// re-optimized with all the added links at the end of
+								// each iteration anyway.
+								if(_optimizationMaxError > 0.0f)
+								{
+									//optimize the graph to see if the new constraint is globally valid
 
-								int fromId = from;
-								int mapId = fromS.mapId();
-								// use first node of the map containing from
-								for(std::map<int, Transform>::iterator ster=posesToCheckLoopClosures.begin(); ster!=posesToCheckLoopClosures.end(); ++ster)
-								{
-									if(uValue(mapIds, ster->first, 0) == mapId)
+									int fromId = from;
+									int mapId = fromS.mapId();
+									// use first node of the map containing from
+									for(std::map<int, Transform>::iterator ster=posesToCheckLoopClosures.begin(); ster!=posesToCheckLoopClosures.end(); ++ster)
 									{
-										fromId = ster->first;
-										break;
-									}
-								}
-								std::multimap<int, Link> linksIn = links;
-								linksIn.insert(std::make_pair(from, Link(from, to, Link::kUserClosure, t, getInformation(info.covariance))));
-								graph::MaxGraphErrors maxGraphErrors;
-								std::map<int, Transform> optimizedPoses;
-								std::multimap<int, Link> linksOut;
-								UASSERT(poses.find(fromId) != poses.end());
-								UASSERT_MSG(poses.find(from) != poses.end(), uFormat("id=%d poses=%d links=%d", from, (int)poses.size(), (int)links.size()).c_str());
-								UASSERT_MSG(poses.find(to) != poses.end(), uFormat("id=%d poses=%d links=%d", to, (int)poses.size(), (int)links.size()).c_str());
-								_graphOptimizer->getConnectedGraph(fromId, poses, linksIn, optimizedPoses, linksOut);
-								UASSERT(optimizedPoses.find(fromId) != optimizedPoses.end());
-								UASSERT_MSG(optimizedPoses.find(from) != optimizedPoses.end(), uFormat("id=%d poses=%d links=%d", from, (int)optimizedPoses.size(), (int)linksOut.size()).c_str());
-								UASSERT_MSG(optimizedPoses.find(to) != optimizedPoses.end(), uFormat("id=%d poses=%d links=%d", to, (int)optimizedPoses.size(), (int)linksOut.size()).c_str());
-								UASSERT(graph::findLink(linksOut, from, to) != linksOut.end());
-								optimizedPoses = _graphOptimizer->optimize(fromId, optimizedPoses, linksOut);
-								std::string msg;
-								if(optimizedPoses.size())
-								{
-									maxGraphErrors = graph::computeMaxGraphErrors(
-											optimizedPoses,
-											linksOut);
-									if(maxGraphErrors.linearLink.isValid())
-									{
-										UINFO("Max optimization linear error = %f m (link %d->%d)", maxGraphErrors.linear, maxGraphErrors.linearLink.from(), maxGraphErrors.linearLink.to());
-										if(_optimizationMaxError > 0.0f && maxGraphErrors.linearRatio > _optimizationMaxError)
+										if(uValue(mapIds, ster->first, 0) == mapId)
 										{
-											msg = uFormat("Rejecting edge %d->%d because "
-														"graph error is too large after optimization (%f m for edge %d->%d with ratio %f > std=%f m). "
-														"\"%s\" is %f.",
-														from,
-														to,
-														maxGraphErrors.linear,
-														maxGraphErrors.linearLink.from(),
-														maxGraphErrors.linearLink.to(),
-														maxGraphErrors.linearRatio,
-														sqrt(maxGraphErrors.linearLink.transVariance()),
-														Parameters::kRGBDOptimizeMaxError().c_str(),
-														_optimizationMaxError);
-										}
-										else if(_optimizationMaxError == 0.0f && maxGraphErrors.linearRatio>100 && !_graphOptimizer->isRobust())
-										{
-											UERROR("Huge optimization error detected!"
-													"Linear error ratio of %f (edge %d->%d, type=%d, abs error=%f m, stddev=%f). You may consider "
-													"enabling \"%s\" to reject those bad optimizations by setting it to a non null value!",
-													maxGraphErrors.linearRatio,
-													maxGraphErrors.linearLink.from(),
-													maxGraphErrors.linearLink.to(),
-													maxGraphErrors.linearLink.type(),
-													maxGraphErrors.linear,
-													sqrt(maxGraphErrors.linearLink.transVariance()),
-													Parameters::kRGBDOptimizeMaxError().c_str());
+											fromId = ster->first;
+											break;
 										}
 									}
-									else if(maxGraphErrors.angularLink.isValid())
+									std::multimap<int, Link> linksIn = links;
+									linksIn.insert(std::make_pair(from, Link(from, to, Link::kUserClosure, t, getInformation(info.covariance))));
+									graph::MaxGraphErrors maxGraphErrors;
+									std::map<int, Transform> optimizedPoses;
+									std::multimap<int, Link> linksOut;
+									UASSERT(poses.find(fromId) != poses.end());
+									UASSERT_MSG(poses.find(from) != poses.end(), uFormat("id=%d poses=%d links=%d", from, (int)poses.size(), (int)links.size()).c_str());
+									UASSERT_MSG(poses.find(to) != poses.end(), uFormat("id=%d poses=%d links=%d", to, (int)poses.size(), (int)links.size()).c_str());
+									_graphOptimizer->getConnectedGraph(fromId, poses, linksIn, optimizedPoses, linksOut);
+									UASSERT(optimizedPoses.find(fromId) != optimizedPoses.end());
+									UASSERT_MSG(optimizedPoses.find(from) != optimizedPoses.end(), uFormat("id=%d poses=%d links=%d", from, (int)optimizedPoses.size(), (int)linksOut.size()).c_str());
+									UASSERT_MSG(optimizedPoses.find(to) != optimizedPoses.end(), uFormat("id=%d poses=%d links=%d", to, (int)optimizedPoses.size(), (int)linksOut.size()).c_str());
+									UASSERT(graph::findLink(linksOut, from, to) != linksOut.end());
+									optimizedPoses = _graphOptimizer->optimize(fromId, optimizedPoses, linksOut);
+									std::string msg;
+									if(optimizedPoses.size())
 									{
-										UINFO("Max optimization angular error = %f deg (link %d->%d)", maxGraphErrors.angular*180.0f/M_PI, maxGraphErrors.angularLink.from(), maxGraphErrors.angularLink.to());
-										if(_optimizationMaxError > 0.0f && maxGraphErrors.angularRatio > _optimizationMaxError)
+										maxGraphErrors = graph::computeMaxGraphErrors(
+												optimizedPoses,
+												linksOut);
+										if(maxGraphErrors.linearLink.isValid())
 										{
-											msg = uFormat("Rejecting edge %d->%d because "
-														"graph error is too large after optimization (%f deg for edge %d->%d with ratio %f > std=%f deg). "
-														"\"%s\" is %f m.",
-														from,
-														to,
-														maxGraphErrors.angular*180.0f/M_PI,
-														maxGraphErrors.angularLink.from(),
-														maxGraphErrors.angularLink.to(),
-														maxGraphErrors.angularRatio,
-														sqrt(maxGraphErrors.angularLink.rotVariance()),
-														Parameters::kRGBDOptimizeMaxError().c_str(),
-														_optimizationMaxError);
+											UINFO("Max optimization linear error = %f m (link %d->%d)", maxGraphErrors.linear, maxGraphErrors.linearLink.from(), maxGraphErrors.linearLink.to());
+											if(maxGraphErrors.linearRatio > _optimizationMaxError)
+											{
+												msg = uFormat("Rejecting edge %d->%d because "
+															"graph error is too large after optimization (%f m for edge %d->%d with ratio %f > std=%f m). "
+															"\"%s\" is %f.",
+															from,
+															to,
+															maxGraphErrors.linear,
+															maxGraphErrors.linearLink.from(),
+															maxGraphErrors.linearLink.to(),
+															maxGraphErrors.linearRatio,
+															sqrt(maxGraphErrors.linearLink.transVariance()),
+															Parameters::kRGBDOptimizeMaxError().c_str(),
+															_optimizationMaxError);
+											}
 										}
-										else if(_optimizationMaxError == 0.0f && maxGraphErrors.angularRatio>100 && !_graphOptimizer->isRobust())
+										else if(maxGraphErrors.angularLink.isValid())
 										{
-											UERROR("Huge optimization error detected!"
-													"Angular error ratio of %f (edge %d->%d, type=%d, abs error=%f m, stddev=%f). You may consider "
-													"enabling \"%s\" to reject those bad optimizations by setting it to a non null value!",
-													maxGraphErrors.angularRatio,
-													maxGraphErrors.angularLink.from(),
-													maxGraphErrors.angularLink.to(),
-													maxGraphErrors.angularLink.type(),
-													maxGraphErrors.angular*180.0f/CV_PI,
-													sqrt(maxGraphErrors.angularLink.rotVariance()),
-													Parameters::kRGBDOptimizeMaxError().c_str());
+											UINFO("Max optimization angular error = %f deg (link %d->%d)", maxGraphErrors.angular*180.0f/M_PI, maxGraphErrors.angularLink.from(), maxGraphErrors.angularLink.to());
+											if(maxGraphErrors.angularRatio > _optimizationMaxError)
+											{
+												msg = uFormat("Rejecting edge %d->%d because "
+															"graph error is too large after optimization (%f deg for edge %d->%d with ratio %f > std=%f deg). "
+															"\"%s\" is %f m.",
+															from,
+															to,
+															maxGraphErrors.angular*180.0f/M_PI,
+															maxGraphErrors.angularLink.from(),
+															maxGraphErrors.angularLink.to(),
+															maxGraphErrors.angularRatio,
+															sqrt(maxGraphErrors.angularLink.rotVariance()),
+															Parameters::kRGBDOptimizeMaxError().c_str(),
+															_optimizationMaxError);
+											}
 										}
 									}
-								}
-								else
-								{
-									msg = uFormat("Rejecting edge %d->%d because graph optimization has failed!",
-												from,
-												to);
-								}
-								if(!msg.empty())
-								{
-									UWARN("%s", msg.c_str());
-									updateConstraints = false;
-								}
-								else
-								{
-									poses = optimizedPoses;
+									else
+									{
+										msg = uFormat("Rejecting edge %d->%d because graph optimization has failed!",
+													from,
+													to);
+									}
+									if(!msg.empty())
+									{
+										UWARN("%s", msg.c_str());
+										updateConstraints = false;
+									}
+									else
+									{
+										poses = optimizedPoses;
+									}
 								}
 
 								if(updateConstraints)
