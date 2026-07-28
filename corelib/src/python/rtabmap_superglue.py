@@ -55,8 +55,9 @@ def match(kptsFrom, kptsTo, scoresFrom, scoresTo, descriptorsFrom, descriptorsTo
     descriptorsTo = descriptorsTo[None, :, :]
       
     data = {
-       'image0': torch.rand(1, 1, imageHeight, imageWidth).to(device),
-       'image1': torch.rand(1, 1, imageHeight, imageWidth).to(device),
+       # SuperGlue only reads the shape of the images (for keypoint normalization)
+       'image0': torch.empty(1, 1, imageHeight, imageWidth, device=device),
+       'image1': torch.empty(1, 1, imageHeight, imageWidth, device=device),
        'scores0': torch.from_numpy(scoresFrom).to(device),
        'scores1': torch.from_numpy(scoresTo).to(device),
        'keypoints0': torch.from_numpy(kptsFrom).to(device),
@@ -67,7 +68,11 @@ def match(kptsFrom, kptsTo, scoresFrom, scoresTo, descriptorsFrom, descriptorsTo
     
 
     global superglue
-    results = superglue(data)
+    # grad mode is thread-local in torch: the module-level
+    # torch.set_grad_enabled(False) doesn't apply when called from another
+    # thread, and keeping gradients would hold all intermediate activations
+    with torch.no_grad():
+        results = superglue(data)
 
     matches0 = results['matches0'].to('cpu').numpy()
   
@@ -110,7 +115,8 @@ def match_batch(kptsFrom, kptsTo, scoresFrom, scoresTo, descriptorsFrom, descrip
     }
 
     try:
-        results = superglue(data)
+        with torch.no_grad():  # grad mode is thread-local, see match()
+            results = superglue(data)
     except Exception:
         # free cached GPU memory so that the caller's fallback
         # (matching the pairs one by one) can proceed
