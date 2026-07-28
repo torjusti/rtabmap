@@ -4516,14 +4516,17 @@ void DatabaseViewer::detectMoreLoopClosures()
 	int corNNType = Parameters::defaultVisCorNNType();
 	Parameters::parse(parameters, Parameters::kVisCorNNType(), corNNType);
 #ifdef _OPENMP
-	if(corNNType != 4 && corNNType != 6) // 4=BruteForceGPU, 6=SuperGlue (python), not thread-safe
+	// 4=BruteForceGPU is not thread-safe. 6=Python matchers (e.g., SuperGlue)
+	// are thread-safe: PyMatcher batches concurrent calls in single GPU
+	// inferences.
+	if(corNNType != 4)
 	{
 		regThreads = omp_get_max_threads();
 	}
 #endif
-	if(parallelDetection && regThreads == 1 && (corNNType == 4 || corNNType == 6))
+	if(parallelDetection && regThreads == 1 && corNNType == 4)
 	{
-		progressDialog->appendText(tr("Note: %1=%2 (GPU/Python-based matcher) is not thread-safe, "
+		progressDialog->appendText(tr("Note: %1=%2 (GPU brute-force matcher) is not thread-safe, "
 				"registrations will run on a single background thread.")
 				.arg(Parameters::kVisCorNNType().c_str()).arg(corNNType));
 	}

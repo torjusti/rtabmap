@@ -80,6 +80,62 @@ def match(kptsFrom, kptsTo, scoresFrom, scoresTo, descriptorsFrom, descriptorsTo
     #   matches: array Nx2 (type=9 or uint64)
     return matchesArray
 
+def match_batch(kptsFrom, kptsTo, scoresFrom, scoresTo, descriptorsFrom, descriptorsTo, counts, imageWidth, imageHeight):
+    # Batched version of match(): all arrays have a leading batch dimension B,
+    # padded with zeros to the largest keypoint count in the batch. counts is
+    # a (B, 2) int array with the true (from, to) keypoint counts of each pair.
+    # Returns a (M, 3) int array of (batchIndex, matchFrom, matchTo).
+    global device
+    global superglue
+
+    kptsFrom = torch.from_numpy(np.asarray(kptsFrom, dtype=np.float32)).to(device)             # (B, N0, 2)
+    kptsTo = torch.from_numpy(np.asarray(kptsTo, dtype=np.float32)).to(device)                 # (B, N1, 2)
+    scoresFrom = torch.from_numpy(np.asarray(scoresFrom, dtype=np.float32)).to(device)         # (B, N0)
+    scoresTo = torch.from_numpy(np.asarray(scoresTo, dtype=np.float32)).to(device)             # (B, N1)
+    descriptorsFrom = torch.from_numpy(np.asarray(descriptorsFrom, dtype=np.float32)).permute(0, 2, 1).contiguous().to(device)  # (B, D, N0)
+    descriptorsTo = torch.from_numpy(np.asarray(descriptorsTo, dtype=np.float32)).permute(0, 2, 1).contiguous().to(device)      # (B, D, N1)
+    counts = np.asarray(counts)
+
+    data = {
+        # SuperGlue only reads the shape of the images (for keypoint
+        # normalization), the batch dimension is not used.
+        'image0': torch.empty(1, 1, imageHeight, imageWidth, device=device),
+        'image1': torch.empty(1, 1, imageHeight, imageWidth, device=device),
+        'scores0': scoresFrom,
+        'scores1': scoresTo,
+        'keypoints0': kptsFrom,
+        'keypoints1': kptsTo,
+        'descriptors0': descriptorsFrom,
+        'descriptors1': descriptorsTo,
+    }
+
+    try:
+        results = superglue(data)
+    except Exception:
+        # free cached GPU memory so that the caller's fallback
+        # (matching the pairs one by one) can proceed
+        del data
+        del kptsFrom, kptsTo, scoresFrom, scoresTo, descriptorsFrom, descriptorsTo
+        torch.cuda.empty_cache()
+        raise
+    matches0 = results['matches0'].to('cpu').numpy()  # (B, N0)
+
+    out = []
+    for b in range(matches0.shape[0]):
+        m = matches0[b]
+        matchesFrom = np.nonzero(m != -1)[0]
+        matchesTo = m[matchesFrom]
+        # drop matches involving padded (fake) keypoints
+        valid = (matchesFrom < counts[b, 0]) & (matchesTo < counts[b, 1])
+        matchesFrom = matchesFrom[valid]
+        matchesTo = matchesTo[valid]
+        batchIndex = np.full(matchesFrom.shape, b)
+        out.append(np.stack((batchIndex, matchesFrom, matchesTo), axis=1))
+
+    if len(out):
+        return np.concatenate(out, axis=0).astype(np.int64)
+    return np.zeros((0, 3), dtype=np.int64)
+
 
 if __name__ == '__main__':
     #test
