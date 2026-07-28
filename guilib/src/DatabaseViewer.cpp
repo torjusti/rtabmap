@@ -28,6 +28,11 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "rtabmap/gui/DatabaseViewer.h"
 #include "rtabmap/gui/CloudViewer.h"
 #include "ui_DatabaseViewer.h"
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+#include <atomic>
+#include <thread>
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QInputDialog>
@@ -4478,6 +4483,87 @@ void DatabaseViewer::detectMoreLoopClosures()
 	// candidate.
 	std::shared_ptr<Optimizer> optimizer(Optimizer::create(ui_->parameters_toolbox->getParameters()));
 
+	// The neighbor graph used to check how far candidates are along the
+	// trajectory is static during this call, so the hop-limited traversals
+	// below are computed once per node and reused across candidates and
+	// iterations (same approach as Rtabmap::detectMoreLoopClosures()).
+	std::multimap<int, int> neighborAdjacency;
+	if(minimumGraphDistance > 1)
+	{
+		for(std::multimap<int, Link>::iterator iter=links.begin(); iter!=links.end(); ++iter)
+		{
+			neighborAdjacency.insert(std::make_pair(iter->second.from(), iter->second.to()));
+			neighborAdjacency.insert(std::make_pair(iter->second.to(), iter->second.from()));
+		}
+	}
+	std::map<int, std::set<int> > neighborhoodsCache;
+
+	// With RGBD/OptimizeMaxError=0, the per-candidate graph optimization in
+	// addConstraint() is skipped as it cannot reject the link, so accepted
+	// candidates don't influence each other inside an iteration: they can be
+	// registered in parallel and there is no need to limit the accepted links
+	// to one per node per iteration (same as Rtabmap::detectMoreLoopClosures()).
+	// Restricted to visual registration from the features already saved in
+	// the database, the sequential path below handles the other pipelines.
+	float maxOptimizationError = uStr2Float(parameters.at(Parameters::kRGBDOptimizeMaxError()));
+	bool reextractVisualFeatures = uStr2Bool(parameters.at(Parameters::kRGBDLoopClosureReextractFeatures()));
+	bool parallelDetection =
+			maxOptimizationError == 0.0f &&
+			!reextractVisualFeatures &&
+			!reg->isScanRequired() &&
+			!reg->isUserDataRequired();
+	int regThreads = 1;
+	int corNNType = Parameters::defaultVisCorNNType();
+	Parameters::parse(parameters, Parameters::kVisCorNNType(), corNNType);
+#ifdef _OPENMP
+	if(corNNType != 4 && corNNType != 6) // 4=BruteForceGPU, 6=SuperGlue (python), not thread-safe
+	{
+		regThreads = omp_get_max_threads();
+	}
+#endif
+	if(parallelDetection && regThreads == 1 && (corNNType == 4 || corNNType == 6))
+	{
+		progressDialog->appendText(tr("Note: %1=%2 (GPU/Python-based matcher) is not thread-safe, "
+				"registrations will run on a single background thread.")
+				.arg(Parameters::kVisCorNNType().c_str()).arg(corNNType));
+	}
+
+	// LRU signature cache so that a node used by multiple candidate pairs is
+	// loaded from the database only once. Bounded so that huge databases
+	// don't blow up the memory.
+	std::map<int, std::pair<Signature, std::list<int>::iterator> > signatureCache;
+	std::list<int> signatureCacheLru; // front = most recently used
+	unsigned long signatureCacheBytes = 0;
+	const unsigned long signatureCacheMaxBytes = 2048UL*1024*1024; // 2 GB
+	auto getCachedSignature = [&](int id) -> Signature
+	{
+		std::map<int, std::pair<Signature, std::list<int>::iterator> >::iterator iter = signatureCache.find(id);
+		if(iter != signatureCache.end())
+		{
+			signatureCacheLru.erase(iter->second.second);
+			iter->second.second = signatureCacheLru.insert(signatureCacheLru.begin(), id);
+			return iter->second.first;
+		}
+		std::list<int> ids;
+		ids.push_back(id);
+		std::list<Signature*> loaded;
+		dbDriver_->loadSignatures(ids, loaded);
+		UASSERT_MSG(loaded.size() == 1, uFormat("Failed to load signature %d from database!", id).c_str());
+		Signature s = *loaded.front();
+		delete loaded.front();
+		unsigned long size = s.getMemoryUsed();
+		while(!signatureCacheLru.empty() && signatureCacheBytes + size > signatureCacheMaxBytes)
+		{
+			std::map<int, std::pair<Signature, std::list<int>::iterator> >::iterator eter = signatureCache.find(signatureCacheLru.back());
+			signatureCacheLru.pop_back();
+			signatureCacheBytes -= eter->second.first.getMemoryUsed();
+			signatureCache.erase(eter);
+		}
+		signatureCacheBytes += size;
+		signatureCache.insert(std::make_pair(id, std::make_pair(s, signatureCacheLru.insert(signatureCacheLru.begin(), id))));
+		return s;
+	};
+
 	for(int n=0; n<iterations; ++n)
 	{
 		UINFO("iteration %d/%d", n+1, iterations);
@@ -4543,9 +4629,36 @@ void DatabaseViewer::detectMoreLoopClosures()
 				}
 				else
 				{
-					// compute path to know how far we are in terms of graph length
-					std::list<int> path = graph::computePath(links, iter->first, iter->second);
-					if(!path.empty() && (int)path.size() <= minimumGraphDistance)
+					// check how far we are in terms of graph length (hops over
+					// neighbor links), memoized per node as the neighbor graph
+					// doesn't change during this call
+					std::map<int, std::set<int> >::iterator nter = neighborhoodsCache.find(iter->first);
+					if(nter == neighborhoodsCache.end())
+					{
+						std::set<int> near;
+						std::set<int> current;
+						near.insert(iter->first);
+						current.insert(iter->first);
+						for(int hop=0; hop<minimumGraphDistance-1 && !current.empty(); ++hop)
+						{
+							std::set<int> next;
+							for(std::set<int>::iterator kter=current.begin(); kter!=current.end(); ++kter)
+							{
+								for(std::multimap<int, int>::iterator ater=neighborAdjacency.lower_bound(*kter);
+									ater!=neighborAdjacency.end() && ater->first==*kter;
+									++ater)
+								{
+									if(near.insert(ater->second).second)
+									{
+										next.insert(ater->second);
+									}
+								}
+							}
+							current = next;
+						}
+						nter = neighborhoodsCache.insert(std::make_pair(iter->first, near)).first;
+					}
+					if(nter->second.find(iter->second) != nter->second.end())
 					{
 						iter = clusters.erase(iter);
 					}
@@ -4564,7 +4677,158 @@ void DatabaseViewer::detectMoreLoopClosures()
 		QApplication::processEvents();
 
 		std::set<int> addedLinks;
+		int addedBeforeIteration = added;
 		int i=0;
+		if(parallelDetection)
+		{
+			// Collect all candidate pairs upfront (same gates as the
+			// sequential path below, minus the one-link-per-node limitation).
+			std::vector<std::pair<int, int> > candidates;
+			candidates.reserve(clusters.size());
+			for(std::multimap<int, int>::iterator iter=clusters.begin(); iter!=clusters.end(); ++iter)
+			{
+				int from = iter->first;
+				int to = iter->second;
+				if(from < to)
+				{
+					from = iter->second;
+					to = iter->first;
+				}
+
+				int mapIdFrom = uValue(mapIds_, from, 0);
+				int mapIdTo = uValue(mapIds_, to, 0);
+
+				if(((interSession && mapIdFrom != mapIdTo) ||
+					(intraSession && mapIdFrom == mapIdTo)) &&
+				   rtabmap::graph::findLink(checkedLoopClosures, from, to) == checkedLoopClosures.end() &&
+				   !findActiveLink(from, to).isValid() &&
+				   !containsLink(linksRemoved_, from, to))
+				{
+					// Reverify if in the bounds with the current optimized graph
+					Transform delta = optimizedPoses.at(from).inverse() * optimizedPoses.at(to);
+					if(delta.getNorm() < ui_->doubleSpinBox_detectMore_radius->value() &&
+					   delta.getNorm() >= ui_->doubleSpinBox_detectMore_radiusMin->value())
+					{
+						checkedLoopClosures.insert(std::make_pair(from, to));
+						candidates.push_back(std::make_pair(from, to));
+					}
+				}
+			}
+			progressDialog->setMaximumSteps(progressDialog->maximumSteps()-(int)clusters.size()+(int)candidates.size());
+			progressDialog->appendText(tr("Iteration %1/%2: registering %3 candidates on %4 thread(s)...").arg(n+1).arg(iterations).arg(candidates.size()).arg(regThreads));
+			QApplication::processEvents();
+
+			struct RegistrationTask
+			{
+				int from;
+				int to;
+				Signature fromS;
+				Signature toS;
+				Transform t;
+				RegistrationInfo info;
+			};
+			const size_t chunkSize = 256;
+			for(size_t c=0; c<candidates.size() && !progressDialog->isCanceled(); c+=chunkSize)
+			{
+				UTimer chunkTimer;
+				size_t chunkEnd = c+chunkSize<candidates.size()?c+chunkSize:candidates.size();
+				std::vector<RegistrationTask> chunk(chunkEnd-c);
+				for(size_t k=c; k<chunkEnd; ++k)
+				{
+					RegistrationTask & task = chunk[k-c];
+					task.from = candidates[k].first;
+					task.to = candidates[k].second;
+					task.fromS = getCachedSignature(task.from);
+					task.toS = getCachedSignature(task.to);
+					if((k-c) % 16 == 15)
+					{
+						QApplication::processEvents();
+					}
+				}
+				double loadTime = chunkTimer.ticks();
+				QApplication::processEvents();
+
+				// Run the registrations on a background thread (which spawns
+				// the OpenMP team) so that the GUI thread stays responsive
+				// and the progress dialog can be canceled mid-chunk.
+				std::atomic<bool> chunkDone(false);
+				std::atomic<bool> chunkCanceled(false);
+				std::atomic<int> chunkProcessed(0);
+				std::thread worker([&]()
+				{
+#ifdef _OPENMP
+					#pragma omp parallel for schedule(dynamic) num_threads(regThreads) if(regThreads > 1)
+#endif
+					for(int b=0; b<(int)chunk.size(); ++b)
+					{
+						if(!chunkCanceled)
+						{
+							chunk[b].t = reg->computeTransformationMod(chunk[b].fromS, chunk[b].toS, Transform(), &chunk[b].info);
+						}
+						++chunkProcessed;
+					}
+					chunkDone = true;
+				});
+				int progressShown = 0;
+				while(!chunkDone)
+				{
+					if(progressDialog->isCanceled())
+					{
+						chunkCanceled = true;
+					}
+					for(int d=chunkProcessed; progressShown<d; ++progressShown)
+					{
+						progressDialog->incrementStep();
+					}
+					QApplication::processEvents();
+					QThread::msleep(20);
+				}
+				worker.join();
+				for(; progressShown<(int)chunk.size(); ++progressShown)
+				{
+					progressDialog->incrementStep();
+				}
+				double matchTime = chunkTimer.ticks();
+
+				int addedBeforeChunk = added;
+				for(int b=0; b<(int)chunk.size(); ++b)
+				{
+					++i;
+					if(!chunk[b].t.isNull())
+					{
+						cv::Mat information = chunk[b].info.covariance.inv();
+						if(odomMaxInf_.size() == 6 && information.cols==6 && information.rows==6)
+						{
+							for(int d=0; d<6; ++d)
+							{
+								if(information.at<double>(d,d) > odomMaxInf_[d])
+								{
+									information.at<double>(d,d) = odomMaxInf_[d];
+								}
+							}
+						}
+						Link newLink(chunk[b].from, chunk[b].to, Link::kUserClosure, chunk[b].t, information);
+						linksAdded_.insert(std::make_pair(newLink.from(), newLink));
+						UINFO("Added new loop closure between %d and %d.", chunk[b].from, chunk[b].to);
+						++added;
+						addedLinks.insert(chunk[b].from);
+						addedLinks.insert(chunk[b].to);
+						lastAdded.first = chunk[b].from;
+						lastAdded.second = chunk[b].to;
+					}
+				}
+				// One summary line per chunk: appending a line per link makes
+				// the text widget re-layout the whole (huge) log each time,
+				// which is O(n^2) and freezes the GUI.
+				double acceptTime = chunkTimer.ticks();
+				progressDialog->appendText(tr("Registered candidates %1/%2: detected %3 new loop closures (%4 total). "
+						"Load=%5s, registration=%6s, accept=%7s.")
+						.arg(i).arg(candidates.size()).arg(added-addedBeforeChunk).arg(added)
+						.arg(loadTime, 0, 'f', 1).arg(matchTime, 0, 'f', 1).arg(acceptTime, 0, 'f', 3));
+				QApplication::processEvents();
+			}
+		}
+		else
 		for(std::multimap<int, int>::iterator iter=clusters.begin(); iter!= clusters.end() && !progressDialog->isCanceled(); ++iter, ++i)
 		{
 			int from = iter->first;
@@ -4625,8 +4889,8 @@ void DatabaseViewer::detectMoreLoopClosures()
 				QApplication::processEvents();
 			}
 		}
-		UINFO("Iteration %d/%d: added %d loop closures.", n+1, iterations, (int)addedLinks.size()/2);
-		progressDialog->appendText(tr("Iteration %1/%2: Detected %3 loop closures!").arg(n+1).arg(iterations).arg(addedLinks.size()/2));
+		UINFO("Iteration %d/%d: added %d loop closures.", n+1, iterations, added-addedBeforeIteration);
+		progressDialog->appendText(tr("Iteration %1/%2: Detected %3 loop closures!").arg(n+1).arg(iterations).arg(added-addedBeforeIteration));
 		if(addedLinks.size() == 0)
 		{
 			break;
