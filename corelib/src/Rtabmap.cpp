@@ -6113,6 +6113,42 @@ int Rtabmap::detectMoreLoopClosures(
 		}
 	}
 
+	// Signature cache for the parallel registration path below: a node
+	// typically appears in several candidate pairs, so keep loaded signatures
+	// around instead of reloading them from the database for every pair.
+	// LRU-bounded so memory stays constant on large databases. Signatures
+	// handed to registration are copies, but the heavy payloads (compressed
+	// images/scans, descriptors) are reference-counted cv::Mat so the copies
+	// are cheap and eviction is safe while copies are still in use.
+	std::map<int, std::pair<Signature, std::list<int>::iterator> > signatureCache;
+	std::list<int> signatureCacheLru; // front = most recently used
+	unsigned long signatureCacheBytes = 0;
+	const unsigned long signatureCacheMaxBytes = 2048UL*1024*1024;
+	auto getCachedSignature = [&](int id) -> Signature
+	{
+		std::map<int, std::pair<Signature, std::list<int>::iterator> >::iterator iter = signatureCache.find(id);
+		if(iter != signatureCache.end())
+		{
+			signatureCacheLru.erase(iter->second.second);
+			signatureCacheLru.push_front(id);
+			iter->second.second = signatureCacheLru.begin();
+			return iter->second.first;
+		}
+		Signature s = getSignatureCopy(id, false, true, false, false, true, false);
+		signatureCacheLru.push_front(id);
+		signatureCacheBytes += s.getMemoryUsed();
+		signatureCache.insert(std::make_pair(id, std::make_pair(s, signatureCacheLru.begin())));
+		while(signatureCacheBytes > signatureCacheMaxBytes && signatureCache.size() > 1)
+		{
+			std::map<int, std::pair<Signature, std::list<int>::iterator> >::iterator jter = signatureCache.find(signatureCacheLru.back());
+			UASSERT(jter != signatureCache.end());
+			signatureCacheLru.pop_back();
+			signatureCacheBytes -= jter->second.first.getMemoryUsed();
+			signatureCache.erase(jter);
+		}
+		return s;
+	};
+
 	// Number of threads for parallel candidate registration (used only with
 	// RGBD/OptimizeMaxError=0, see below). Registrations are independent, but
 	// fall back to a single thread when the registration pipeline may use
@@ -6277,8 +6313,8 @@ int Rtabmap::detectMoreLoopClosures(
 					CandidateRegistration & candidate = chunk[b];
 					candidate.from = candidates[c0+b].first;
 					candidate.to = candidates[c0+b].second;
-					candidate.fromS = getSignatureCopy(candidate.from, false, true, false, false, true, false);
-					candidate.toS = getSignatureCopy(candidate.to, false, true, false, false, true, false);
+					candidate.fromS = getCachedSignature(candidate.from);
+					candidate.toS = getCachedSignature(candidate.to);
 					UASSERT(candidate.fromS.getWeight()>=0);
 					UASSERT(candidate.toS.getWeight()>=0);
 					if(_proximityBySpace)
