@@ -669,7 +669,7 @@ public:
 			const ProgressState * state = 0,
 			float clusterRadiusMin = 0.0f,
 			int toFromMapId = -1,
-			bool adaptiveSpacing = true,
+			bool loopsInGraphDistance = true,
 			bool parallelRegistration = true);
 	/**
 	 * @brief Runs a global bundle adjustment over the optimized graph.
