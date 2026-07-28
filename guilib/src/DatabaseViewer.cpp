@@ -4455,7 +4455,6 @@ void DatabaseViewer::detectMoreLoopClosures()
 	{
 		odomMaxInf_ = graph::getMaxOdomInf(links);
 	}
-	links = graph::filterLinks(links, Link::kNeighbor, true); // keep only neighbor links
 
 	int iterations = ui_->spinBox_detectMore_iterations->value();
 	UASSERT(iterations > 0);
@@ -4483,20 +4482,65 @@ void DatabaseViewer::detectMoreLoopClosures()
 	// candidate.
 	std::shared_ptr<Optimizer> optimizer(Optimizer::create(ui_->parameters_toolbox->getParameters()));
 
-	// The neighbor graph used to check how far candidates are along the
-	// trajectory is static during this call, so the hop-limited traversals
-	// below are computed once per node and reused across candidates and
-	// iterations (same approach as Rtabmap::detectMoreLoopClosures()).
-	std::multimap<int, int> neighborAdjacency;
+	// Undirected adjacency over all current links (odometry, loop closures,
+	// landmarks). Every accepted loop closure is inserted back into it, so a
+	// candidate pair already connected within "minimum graph distance" hops
+	// (e.g., by a loop closure just accepted nearby) is skipped. This adapts
+	// the link density to how well the graph is already connected: loop
+	// closures end up spaced by at least the minimum graph distance instead
+	// of being limited to one per node per iteration.
+	std::multimap<int, int> graphAdjacency;
 	if(minimumGraphDistance > 1)
 	{
 		for(std::multimap<int, Link>::iterator iter=links.begin(); iter!=links.end(); ++iter)
 		{
-			neighborAdjacency.insert(std::make_pair(iter->second.from(), iter->second.to()));
-			neighborAdjacency.insert(std::make_pair(iter->second.to(), iter->second.from()));
+			if(iter->second.from() != iter->second.to())
+			{
+				graphAdjacency.insert(std::make_pair(iter->second.from(), iter->second.to()));
+				graphAdjacency.insert(std::make_pair(iter->second.to(), iter->second.from()));
+			}
 		}
 	}
-	std::map<int, std::set<int> > neighborhoodsCache;
+	// Hop-limited BFS with early exit: only "is `to` reachable from `from`
+	// within minimumGraphDistance-1 hops?" is needed, not the shortest path.
+	auto linkedWithinGraphDistance = [&](int from, int to) -> bool
+	{
+		if(abs(from - to) < minimumGraphDistance)
+		{
+			return true; // ids are sequential along the odometry chain
+		}
+		std::set<int> visited;
+		std::set<int> current;
+		visited.insert(from);
+		current.insert(from);
+		for(int hop=0; hop<minimumGraphDistance-1 && !current.empty(); ++hop)
+		{
+			std::set<int> next;
+			for(std::set<int>::iterator kter=current.begin(); kter!=current.end(); ++kter)
+			{
+				for(std::multimap<int, int>::iterator ater=graphAdjacency.lower_bound(*kter);
+					ater!=graphAdjacency.end() && ater->first==*kter;
+					++ater)
+				{
+					if(visited.insert(ater->second).second)
+					{
+						if(ater->second == to)
+						{
+							return true;
+						}
+						next.insert(ater->second);
+					}
+				}
+			}
+			current = next;
+		}
+		return false;
+	};
+	auto addLinkToAdjacency = [&](int from, int to)
+	{
+		graphAdjacency.insert(std::make_pair(from, to));
+		graphAdjacency.insert(std::make_pair(to, from));
+	};
 
 	// With RGBD/OptimizeMaxError=0, the per-candidate graph optimization in
 	// addConstraint() is skipped as it cannot reject the link, so accepted
@@ -4621,60 +4665,9 @@ void DatabaseViewer::detectMoreLoopClosures()
 			}
 		}
 
-		if(minimumGraphDistance > 1)
-		{
-			int clusterBefore = clusters.size();
-			for(std::multimap<int, int>::iterator iter=clusters.begin(); iter!=clusters.end();)
-			{
-				if(abs(iter->first - iter->second) < minimumGraphDistance)
-				{
-					iter = clusters.erase(iter);
-				}
-				else
-				{
-					// check how far we are in terms of graph length (hops over
-					// neighbor links), memoized per node as the neighbor graph
-					// doesn't change during this call
-					std::map<int, std::set<int> >::iterator nter = neighborhoodsCache.find(iter->first);
-					if(nter == neighborhoodsCache.end())
-					{
-						std::set<int> near;
-						std::set<int> current;
-						near.insert(iter->first);
-						current.insert(iter->first);
-						for(int hop=0; hop<minimumGraphDistance-1 && !current.empty(); ++hop)
-						{
-							std::set<int> next;
-							for(std::set<int>::iterator kter=current.begin(); kter!=current.end(); ++kter)
-							{
-								for(std::multimap<int, int>::iterator ater=neighborAdjacency.lower_bound(*kter);
-									ater!=neighborAdjacency.end() && ater->first==*kter;
-									++ater)
-								{
-									if(near.insert(ater->second).second)
-									{
-										next.insert(ater->second);
-									}
-								}
-							}
-							current = next;
-						}
-						nter = neighborhoodsCache.insert(std::make_pair(iter->first, near)).first;
-					}
-					if(nter->second.find(iter->second) != nter->second.end())
-					{
-						iter = clusters.erase(iter);
-					}
-					else
-					{
-						++iter;
-					}
-				}
-			}
-			progressDialog->appendText(tr("Filtered %1/%2 clusters for too close nodes (below minimum graph distance=%3).")
-				.arg(clusterBefore-clusters.size()).arg(clusterBefore).arg(minimumGraphDistance));
-			QApplication::processEvents();
-		}
+		// No upfront graph-distance filtering here: the check is done per
+		// candidate against the live adjacency (which includes the loop
+		// closures accepted so far), in both the parallel and serial paths.
 
 		progressDialog->setMaximumSteps(progressDialog->maximumSteps()+(int)clusters.size());
 		QApplication::processEvents();
@@ -4705,7 +4698,8 @@ void DatabaseViewer::detectMoreLoopClosures()
 					(intraSession && mapIdFrom == mapIdTo)) &&
 				   rtabmap::graph::findLink(checkedLoopClosures, from, to) == checkedLoopClosures.end() &&
 				   !findActiveLink(from, to).isValid() &&
-				   !containsLink(linksRemoved_, from, to))
+				   !containsLink(linksRemoved_, from, to) &&
+				   !(minimumGraphDistance > 1 && linkedWithinGraphDistance(from, to)))
 				{
 					// Reverify if in the bounds with the current optimized graph
 					Transform delta = optimizedPoses.at(from).inverse() * optimizedPoses.at(to);
@@ -4731,25 +4725,42 @@ void DatabaseViewer::detectMoreLoopClosures()
 				RegistrationInfo info;
 			};
 			const size_t chunkSize = 256;
+			int suppressed = 0;
 			for(size_t c=0; c<candidates.size() && !progressDialog->isCanceled(); c+=chunkSize)
 			{
 				UTimer chunkTimer;
 				size_t chunkEnd = c+chunkSize<candidates.size()?c+chunkSize:candidates.size();
-				std::vector<RegistrationTask> chunk(chunkEnd-c);
+				std::vector<RegistrationTask> chunk;
+				chunk.reserve(chunkEnd-c);
+				int suppressedBeforeChunk = suppressed;
 				for(size_t k=c; k<chunkEnd; ++k)
 				{
-					RegistrationTask & task = chunk[k-c];
+					// Loop closures accepted in previous chunks may have
+					// brought this pair within the minimum graph distance.
+					if(minimumGraphDistance > 1 && linkedWithinGraphDistance(candidates[k].first, candidates[k].second))
+					{
+						++i;
+						++suppressed;
+						progressDialog->incrementStep();
+						continue;
+					}
+					chunk.push_back(RegistrationTask());
+					RegistrationTask & task = chunk.back();
 					task.from = candidates[k].first;
 					task.to = candidates[k].second;
 					task.fromS = getCachedSignature(task.from);
 					task.toS = getCachedSignature(task.to);
-					if((k-c) % 16 == 15)
+					if(chunk.size() % 16 == 15)
 					{
 						QApplication::processEvents();
 					}
 				}
 				double loadTime = chunkTimer.ticks();
 				QApplication::processEvents();
+				if(chunk.empty())
+				{
+					continue;
+				}
 
 				// Run the registrations on a background thread (which spawns
 				// the OpenMP team) so that the GUI thread stays responsive
@@ -4799,6 +4810,14 @@ void DatabaseViewer::detectMoreLoopClosures()
 					++i;
 					if(!chunk[b].t.isNull())
 					{
+						// A loop closure accepted just above (same chunk) may
+						// already connect this pair within the minimum graph
+						// distance; drop the link to keep the requested spacing.
+						if(minimumGraphDistance > 1 && linkedWithinGraphDistance(chunk[b].from, chunk[b].to))
+						{
+							++suppressed;
+							continue;
+						}
 						cv::Mat information = chunk[b].info.covariance.inv();
 						if(odomMaxInf_.size() == 6 && information.cols==6 && information.rows==6)
 						{
@@ -4814,6 +4833,7 @@ void DatabaseViewer::detectMoreLoopClosures()
 						linksAdded_.insert(std::make_pair(newLink.from(), newLink));
 						UINFO("Added new loop closure between %d and %d.", chunk[b].from, chunk[b].to);
 						++added;
+						addLinkToAdjacency(chunk[b].from, chunk[b].to);
 						addedLinks.insert(chunk[b].from);
 						addedLinks.insert(chunk[b].to);
 						lastAdded.first = chunk[b].from;
@@ -4824,9 +4844,9 @@ void DatabaseViewer::detectMoreLoopClosures()
 				// the text widget re-layout the whole (huge) log each time,
 				// which is O(n^2) and freezes the GUI.
 				double acceptTime = chunkTimer.ticks();
-				progressDialog->appendText(tr("Registered candidates %1/%2: detected %3 new loop closures (%4 total). "
-						"Load=%5s, registration=%6s, accept=%7s.")
-						.arg(i).arg(candidates.size()).arg(added-addedBeforeChunk).arg(added)
+				progressDialog->appendText(tr("Registered candidates %1/%2: detected %3 new loop closures (%4 total, %5 skipped as already connected). "
+						"Load=%6s, registration=%7s, accept=%8s.")
+						.arg(i).arg(candidates.size()).arg(added-addedBeforeChunk).arg(added).arg(suppressed-suppressedBeforeChunk)
 						.arg(loadTime, 0, 'f', 1).arg(matchTime, 0, 'f', 1).arg(acceptTime, 0, 'f', 3));
 				QApplication::processEvents();
 			}
@@ -4847,12 +4867,17 @@ void DatabaseViewer::detectMoreLoopClosures()
 
 			if((((interSession && mapIdFrom != mapIdTo) || (intraSession && mapIdFrom == mapIdTo)) && selectedIds.empty()) || !selectedIds.empty())
 			{
-				// only add new links and one per cluster per iteration
-				if(rtabmap::graph::findLink(checkedLoopClosures, from, to) == checkedLoopClosures.end())
+				// Only add new links. When the minimum graph distance drives
+				// the link density, nodes may participate in several loop
+				// closures per iteration; otherwise limit to one per node per
+				// iteration.
+				if(rtabmap::graph::findLink(checkedLoopClosures, from, to) == checkedLoopClosures.end() &&
+				   !(minimumGraphDistance > 1 && linkedWithinGraphDistance(from, to)))
 				{
 					if(!findActiveLink(from, to).isValid() && !containsLink(linksRemoved_, from, to) &&
-					   addedLinks.find(from) == addedLinks.end() &&
-					   addedLinks.find(to) == addedLinks.end())
+					   (minimumGraphDistance > 1 ||
+					    (addedLinks.find(from) == addedLinks.end() &&
+					     addedLinks.find(to) == addedLinks.end())))
 					{
 						// Reverify if in the bounds with the current optimized graph
 						Transform delta = optimizedPoses.at(from).inverse() * optimizedPoses.at(to);
@@ -4864,6 +4889,7 @@ void DatabaseViewer::detectMoreLoopClosures()
 							{
 								UINFO("Added new loop closure between %d and %d.", from, to);
 								++added;
+								addLinkToAdjacency(from, to);
 								addedLinks.insert(from);
 								addedLinks.insert(to);
 								lastAdded.first = from;

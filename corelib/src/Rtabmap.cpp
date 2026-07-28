@@ -6113,6 +6113,68 @@ int Rtabmap::detectMoreLoopClosures(
 		}
 	}
 
+	}
+
+	// Undirected adjacency over all current links (odometry, loop closures,
+	// landmarks), used to skip candidate pairs already connected within
+	// Mem/STMSize hops. Every accepted loop closure is inserted back into it,
+	// so the check adapts to how well the graph is already connected: loop
+	// closures end up spaced by at least Mem/STMSize hops instead of being
+	// limited to one per node per iteration.
+	int minimumGraphDistance = _memory->getMaxStMemSize();
+	std::multimap<int, int> graphAdjacency;
+	if(minimumGraphDistance > 1)
+	{
+		for(std::multimap<int, Link>::iterator iter=links.begin(); iter!=links.end(); ++iter)
+		{
+			if(iter->second.from() != iter->second.to())
+			{
+				graphAdjacency.insert(std::make_pair(iter->second.from(), iter->second.to()));
+				graphAdjacency.insert(std::make_pair(iter->second.to(), iter->second.from()));
+			}
+		}
+	}
+	// Hop-limited BFS with early exit: only "is `to` reachable from `from`
+	// within minimumGraphDistance-1 hops?" is needed, not the shortest path.
+	auto linkedWithinGraphDistance = [&](int from, int to) -> bool
+	{
+		if(abs(from - to) < minimumGraphDistance)
+		{
+			return true; // ids are sequential along the odometry chain
+		}
+		std::set<int> visited;
+		std::set<int> current;
+		visited.insert(from);
+		current.insert(from);
+		for(int hop=0; hop<minimumGraphDistance-1 && !current.empty(); ++hop)
+		{
+			std::set<int> next;
+			for(std::set<int>::iterator kter=current.begin(); kter!=current.end(); ++kter)
+			{
+				for(std::multimap<int, int>::iterator ater=graphAdjacency.lower_bound(*kter);
+					ater!=graphAdjacency.end() && ater->first==*kter;
+					++ater)
+				{
+					if(visited.insert(ater->second).second)
+					{
+						if(ater->second == to)
+						{
+							return true;
+						}
+						next.insert(ater->second);
+					}
+				}
+			}
+			current = next;
+		}
+		return false;
+	};
+	auto addLinkToAdjacency = [&](int from, int to)
+	{
+		graphAdjacency.insert(std::make_pair(from, to));
+		graphAdjacency.insert(std::make_pair(to, from));
+	};
+
 	// Signature cache for the parallel registration path below: a node
 	// typically appears in several candidate pairs, so keep loaded signatures
 	// around instead of reloading them from the database for every pair.
@@ -6202,32 +6264,11 @@ int Rtabmap::detectMoreLoopClosures(
 			}
 		}
 
-		if(_memory->getMaxStMemSize() > 1)
-		{
-			size_t clustersBefore = clusters.size();
-			for(std::multimap<int, int>::iterator iter=clusters.begin(); iter!=clusters.end();)
-			{
-				if(abs(iter->first - iter->second) < _memory->getMaxStMemSize())
-				{
-					iter = clusters.erase(iter);
-				}
-				else
-				{
-					// compute path to know how far we are in terms of graph length
-					std::map<int, int> ids = _memory->getNeighborsId(iter->first, _memory->getMaxStMemSize(), -1, true, true, true);
-					if(ids.find(iter->second) != ids.end())
-					{
-						iter = clusters.erase(iter);
-					}
-					else
-					{
-						++iter;
-					}
-				}
-			}
-			UINFO("Looking for more loop closures: filtered %ld/%ld clusters for too close nodes (below %s=%d).",
-				clustersBefore-clusters.size(), clustersBefore, Parameters::kMemSTMSize().c_str(), _memory->getMaxStMemSize());
 		}
+
+		// No upfront graph-distance filtering here: the check is done per
+		// candidate against the live adjacency (which includes the loop
+		// closures accepted so far), in both the parallel and serial paths.
 
 		int i=0;
 		std::set<int> addedLinks;
@@ -6287,6 +6328,10 @@ int Rtabmap::detectMoreLoopClosures(
 				{
 					continue;
 				}
+				if(minimumGraphDistance > 1 && linkedWithinGraphDistance(from, to))
+				{
+					continue;
+				}
 				// Reverify if in the bounds with the current optimized graph
 				Transform delta = poses.at(from).inverse() * poses.at(to);
 				if(!(delta.getNorm() < clusterRadiusMax &&
@@ -6310,12 +6355,20 @@ int Rtabmap::detectMoreLoopClosures(
 					return -1;
 				}
 				size_t c1 = std::min(c0+chunkSize, candidates.size());
-				std::vector<CandidateRegistration> chunk(c1-c0);
-				for(size_t b=0; b<chunk.size(); ++b)
+				std::vector<CandidateRegistration> chunk;
+				chunk.reserve(c1-c0);
+				for(size_t k=c0; k<c1; ++k)
 				{
-					CandidateRegistration & candidate = chunk[b];
-					candidate.from = candidates[c0+b].first;
-					candidate.to = candidates[c0+b].second;
+					// Loop closures accepted in previous chunks may have
+					// brought this pair within the minimum graph distance.
+					if(minimumGraphDistance > 1 && linkedWithinGraphDistance(candidates[k].first, candidates[k].second))
+					{
+						continue;
+					}
+					chunk.push_back(CandidateRegistration());
+					CandidateRegistration & candidate = chunk.back();
+					candidate.from = candidates[k].first;
+					candidate.to = candidates[k].second;
 					candidate.fromS = getCachedSignature(candidate.from);
 					candidate.toS = getCachedSignature(candidate.to);
 					UASSERT(candidate.fromS.getWeight()>=0);
@@ -6343,12 +6396,20 @@ int Rtabmap::detectMoreLoopClosures(
 					}
 					int from = chunk[b].from;
 					int to = chunk[b].to;
+					// A loop closure accepted just above (same chunk) may
+					// already connect this pair within the minimum graph
+					// distance; drop the link to keep the requested spacing.
+					if(minimumGraphDistance > 1 && linkedWithinGraphDistance(from, to))
+					{
+						continue;
+					}
 					addedLinks.insert(from);
 					addedLinks.insert(to);
+					addLinkToAdjacency(from, to);
 					cv::Mat inf = getInformation(chunk[b].info.covariance);
 					links.insert(std::make_pair(from, Link(from, to, Link::kUserClosure, chunk[b].t, inf)));
 					loopClosuresAdded.push_back(Link(from, to, Link::kUserClosure, chunk[b].t, inf));
-					std::string msg = uFormat("Iteration %d/%d: Added loop closure %d->%d! (%d/%d)", n+1, iterations, from, to, (int)(c0+b)+1, (int)candidates.size());
+					std::string msg = uFormat("Iteration %d/%d: Added loop closure %d->%d! (chunk %d/%d)", n+1, iterations, from, to, (int)(c0/chunkSize)+1, (int)((candidates.size()+chunkSize-1)/chunkSize));
 					UINFO(msg.c_str());
 					if(processState)
 					{
@@ -6395,11 +6456,16 @@ int Rtabmap::detectMoreLoopClosures(
 					}
 				}
 
-				if(!alreadyChecked)
+				if(!alreadyChecked &&
+				   !(minimumGraphDistance > 1 && linkedWithinGraphDistance(from, to)))
 				{
-					// only add new links and one per cluster per iteration
-					if(addedLinks.find(from) == addedLinks.end() &&
-					   addedLinks.find(to) == addedLinks.end() &&
+					// Only add new links. When the minimum graph distance
+					// drives the link density, nodes may participate in
+					// several loop closures per iteration; otherwise limit to
+					// one per node per iteration.
+					if((minimumGraphDistance > 1 ||
+						(addedLinks.find(from) == addedLinks.end() &&
+						 addedLinks.find(to) == addedLinks.end())) &&
 					   rtabmap::graph::findLink(links, from, to) == links.end())
 					{
 						// Reverify if in the bounds with the current optimized graph
@@ -6528,6 +6594,7 @@ int Rtabmap::detectMoreLoopClosures(
 								{
 									addedLinks.insert(from);
 									addedLinks.insert(to);
+									addLinkToAdjacency(from, to);
 									cv::Mat inf = getInformation(info.covariance);
 									links.insert(std::make_pair(from, Link(from, to, Link::kUserClosure, t, inf)));
 									loopClosuresAdded.push_back(Link(from, to, Link::kUserClosure, t, inf));
