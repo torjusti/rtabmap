@@ -505,6 +505,8 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	connect(ui_->checkBox_detectMore_intraSession, SIGNAL(stateChanged(int)), this, SLOT(configModified()));
 	connect(ui_->checkBox_detectMore_interSession, SIGNAL(stateChanged(int)), this, SLOT(configModified()));
 	connect(ui_->spinBox_minGraphDistance, SIGNAL(valueChanged(int)), this, SLOT(configModified()));
+	connect(ui_->checkBox_detectMore_adaptiveSpacing, SIGNAL(stateChanged(int)), this, SLOT(configModified()));
+	connect(ui_->checkBox_detectMore_parallel, SIGNAL(stateChanged(int)), this, SLOT(configModified()));
 	connect(ui_->checkBox_opt_graph_as_guess, SIGNAL(stateChanged(int)), this, SLOT(configModified()));
 
 	connect(ui_->lineEdit_obstacleColor, SIGNAL(textChanged(const QString &)), this, SLOT(configModified()));
@@ -739,6 +741,8 @@ void DatabaseViewer::readSettings()
 	ui_->checkBox_detectMore_interSession->setChecked(settings.value("inter_session", ui_->checkBox_detectMore_interSession->isChecked()).toBool());
 	ui_->checkBox_opt_graph_as_guess->setChecked(settings.value("opt_graph_as_guess", ui_->checkBox_opt_graph_as_guess->isChecked()).toBool());
 	ui_->spinBox_minGraphDistance->setValue(settings.value("min_graph_distance", ui_->spinBox_minGraphDistance->value()).toInt());
+	ui_->checkBox_detectMore_adaptiveSpacing->setChecked(settings.value("adaptive_spacing", ui_->checkBox_detectMore_adaptiveSpacing->isChecked()).toBool());
+	ui_->checkBox_detectMore_parallel->setChecked(settings.value("parallel_registration", ui_->checkBox_detectMore_parallel->isChecked()).toBool());
 	settings.endGroup();
 	settings.endGroup();
 
@@ -839,6 +843,8 @@ void DatabaseViewer::writeSettings()
 	settings.setValue("inter_session", ui_->checkBox_detectMore_interSession->isChecked());
 	settings.setValue("opt_graph_as_guess", ui_->checkBox_opt_graph_as_guess->isChecked());
 	settings.setValue("min_graph_distance", ui_->spinBox_minGraphDistance->value());
+	settings.setValue("adaptive_spacing", ui_->checkBox_detectMore_adaptiveSpacing->isChecked());
+	settings.setValue("parallel_registration", ui_->checkBox_detectMore_parallel->isChecked());
 	settings.endGroup();
 	settings.endGroup();
 
@@ -924,6 +930,8 @@ void DatabaseViewer::restoreDefaultSettings()
 	ui_->spinBox_minGraphDistance->setValue(10);
 	ui_->radioButton_graphHand->setChecked(true);
 	ui_->checkBox_optimize_on_all_changes->setChecked(true);
+	ui_->checkBox_detectMore_adaptiveSpacing->setChecked(true);
+	ui_->checkBox_detectMore_parallel->setChecked(true);
 }
 
 void DatabaseViewer::openDatabase()
@@ -4467,6 +4475,7 @@ void DatabaseViewer::detectMoreLoopClosures()
 	std::set<int> selectedIds = ui_->graphViewer->getSelectedNodeIds();
 	int fromToMapId = ui_->spinBox_fromToMapId->value();
 	int minimumGraphDistance = ui_->spinBox_minGraphDistance->value();
+	bool adaptiveSpacing = ui_->checkBox_detectMore_adaptiveSpacing->isChecked();
 	if(!interSession && !intraSession && selectedIds.empty())
 	{
 		QMessageBox::warning(this,
@@ -4482,19 +4491,24 @@ void DatabaseViewer::detectMoreLoopClosures()
 	// candidate.
 	std::shared_ptr<Optimizer> optimizer(Optimizer::create(ui_->parameters_toolbox->getParameters()));
 
-	// Undirected adjacency over all current links (odometry, loop closures,
-	// landmarks). Every accepted loop closure is inserted back into it, so a
-	// candidate pair already connected within "minimum graph distance" hops
-	// (e.g., by a loop closure just accepted nearby) is skipped. This adapts
-	// the link density to how well the graph is already connected: loop
-	// closures end up spaced by at least the minimum graph distance instead
-	// of being limited to one per node per iteration.
+	// Undirected adjacency used to check how far candidate pairs are in the
+	// graph. With adaptive spacing it covers all current links (odometry,
+	// loop closures, landmarks) and every accepted loop closure is inserted
+	// back into it, so a candidate pair already connected within "minimum
+	// graph distance" hops (e.g., by a loop closure just accepted nearby) is
+	// skipped: the link density adapts to how well the graph is already
+	// connected and loop closures end up spaced by at least the minimum
+	// graph distance. Without adaptive spacing (legacy behavior), it covers
+	// odometry links only and stays static during the call.
 	std::multimap<int, int> graphAdjacency;
 	if(minimumGraphDistance > 1)
 	{
 		for(std::multimap<int, Link>::iterator iter=links.begin(); iter!=links.end(); ++iter)
 		{
-			if(iter->second.from() != iter->second.to())
+			if(iter->second.from() != iter->second.to() &&
+			   (adaptiveSpacing ||
+				iter->second.type() == Link::kNeighbor ||
+				iter->second.type() == Link::kNeighborMerged))
 			{
 				graphAdjacency.insert(std::make_pair(iter->second.from(), iter->second.to()));
 				graphAdjacency.insert(std::make_pair(iter->second.to(), iter->second.from()));
@@ -4538,6 +4552,10 @@ void DatabaseViewer::detectMoreLoopClosures()
 	};
 	auto addLinkToAdjacency = [&](int from, int to)
 	{
+		if(!adaptiveSpacing)
+		{
+			return; // legacy behavior: static odometry-only distances
+		}
 		graphAdjacency.insert(std::make_pair(from, to));
 		graphAdjacency.insert(std::make_pair(to, from));
 	};
@@ -4552,6 +4570,7 @@ void DatabaseViewer::detectMoreLoopClosures()
 	float maxOptimizationError = uStr2Float(parameters.at(Parameters::kRGBDOptimizeMaxError()));
 	bool reextractVisualFeatures = uStr2Bool(parameters.at(Parameters::kRGBDLoopClosureReextractFeatures()));
 	bool parallelDetection =
+			ui_->checkBox_detectMore_parallel->isChecked() &&
 			maxOptimizationError == 0.0f &&
 			!reextractVisualFeatures &&
 			!reg->isScanRequired() &&
@@ -4737,7 +4756,7 @@ void DatabaseViewer::detectMoreLoopClosures()
 				{
 					// Loop closures accepted in previous chunks may have
 					// brought this pair within the minimum graph distance.
-					if(minimumGraphDistance > 1 && linkedWithinGraphDistance(candidates[k].first, candidates[k].second))
+					if(adaptiveSpacing && minimumGraphDistance > 1 && linkedWithinGraphDistance(candidates[k].first, candidates[k].second))
 					{
 						++i;
 						++suppressed;
@@ -4813,7 +4832,7 @@ void DatabaseViewer::detectMoreLoopClosures()
 						// A loop closure accepted just above (same chunk) may
 						// already connect this pair within the minimum graph
 						// distance; drop the link to keep the requested spacing.
-						if(minimumGraphDistance > 1 && linkedWithinGraphDistance(chunk[b].from, chunk[b].to))
+						if(adaptiveSpacing && minimumGraphDistance > 1 && linkedWithinGraphDistance(chunk[b].from, chunk[b].to))
 						{
 							++suppressed;
 							continue;
@@ -4867,15 +4886,15 @@ void DatabaseViewer::detectMoreLoopClosures()
 
 			if((((interSession && mapIdFrom != mapIdTo) || (intraSession && mapIdFrom == mapIdTo)) && selectedIds.empty()) || !selectedIds.empty())
 			{
-				// Only add new links. When the minimum graph distance drives
-				// the link density, nodes may participate in several loop
+				// Only add new links. When the adaptive spacing drives the
+				// link density, nodes may participate in several loop
 				// closures per iteration; otherwise limit to one per node per
 				// iteration.
 				if(rtabmap::graph::findLink(checkedLoopClosures, from, to) == checkedLoopClosures.end() &&
 				   !(minimumGraphDistance > 1 && linkedWithinGraphDistance(from, to)))
 				{
 					if(!findActiveLink(from, to).isValid() && !containsLink(linksRemoved_, from, to) &&
-					   (minimumGraphDistance > 1 ||
+					   ((adaptiveSpacing && minimumGraphDistance > 1) ||
 					    (addedLinks.find(from) == addedLinks.end() &&
 					     addedLinks.find(to) == addedLinks.end())))
 					{

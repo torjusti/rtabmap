@@ -6066,7 +6066,9 @@ int Rtabmap::detectMoreLoopClosures(
 		bool interSession,
 		const ProgressState * processState,
 		float clusterRadiusMin,
-		int toFromMapId)
+		int toFromMapId,
+		bool adaptiveSpacing,
+		bool parallelRegistration)
 {
 	UDEBUG("");
 	UASSERT(iterations>0);
@@ -6113,21 +6115,25 @@ int Rtabmap::detectMoreLoopClosures(
 		}
 	}
 
-	}
-
-	// Undirected adjacency over all current links (odometry, loop closures,
-	// landmarks), used to skip candidate pairs already connected within
-	// Mem/STMSize hops. Every accepted loop closure is inserted back into it,
-	// so the check adapts to how well the graph is already connected: loop
+	// Undirected adjacency used to check how far candidate pairs are in the
+	// graph (skip pairs already connected within Mem/STMSize hops). With
+	// adaptive spacing it covers all current links (odometry, loop closures,
+	// landmarks) and every accepted loop closure is inserted back into it, so
+	// the check adapts to how well the graph is already connected: loop
 	// closures end up spaced by at least Mem/STMSize hops instead of being
-	// limited to one per node per iteration.
+	// limited to one per node per iteration. Without adaptive spacing (legacy
+	// behavior), it covers odometry links only and stays static during the
+	// call.
 	int minimumGraphDistance = _memory->getMaxStMemSize();
 	std::multimap<int, int> graphAdjacency;
 	if(minimumGraphDistance > 1)
 	{
 		for(std::multimap<int, Link>::iterator iter=links.begin(); iter!=links.end(); ++iter)
 		{
-			if(iter->second.from() != iter->second.to())
+			if(iter->second.from() != iter->second.to() &&
+			   (adaptiveSpacing ||
+				iter->second.type() == Link::kNeighbor ||
+				iter->second.type() == Link::kNeighborMerged))
 			{
 				graphAdjacency.insert(std::make_pair(iter->second.from(), iter->second.to()));
 				graphAdjacency.insert(std::make_pair(iter->second.to(), iter->second.from()));
@@ -6171,6 +6177,10 @@ int Rtabmap::detectMoreLoopClosures(
 	};
 	auto addLinkToAdjacency = [&](int from, int to)
 	{
+		if(!adaptiveSpacing)
+		{
+			return; // legacy behavior: static odometry-only distances
+		}
 		graphAdjacency.insert(std::make_pair(from, to));
 		graphAdjacency.insert(std::make_pair(to, from));
 	};
@@ -6280,7 +6290,7 @@ int Rtabmap::detectMoreLoopClosures(
 		// and compute the registrations in parallel, in chunks to bound
 		// memory. This checks the same candidates in fewer iterations and
 		// accepts more links than the sequential one-link-per-node loop.
-		if(_optimizationMaxError == 0.0f)
+		if(parallelRegistration && _optimizationMaxError == 0.0f)
 		{
 			struct CandidateRegistration
 			{
@@ -6361,7 +6371,7 @@ int Rtabmap::detectMoreLoopClosures(
 				{
 					// Loop closures accepted in previous chunks may have
 					// brought this pair within the minimum graph distance.
-					if(minimumGraphDistance > 1 && linkedWithinGraphDistance(candidates[k].first, candidates[k].second))
+					if(adaptiveSpacing && minimumGraphDistance > 1 && linkedWithinGraphDistance(candidates[k].first, candidates[k].second))
 					{
 						continue;
 					}
@@ -6399,7 +6409,7 @@ int Rtabmap::detectMoreLoopClosures(
 					// A loop closure accepted just above (same chunk) may
 					// already connect this pair within the minimum graph
 					// distance; drop the link to keep the requested spacing.
-					if(minimumGraphDistance > 1 && linkedWithinGraphDistance(from, to))
+					if(adaptiveSpacing && minimumGraphDistance > 1 && linkedWithinGraphDistance(from, to))
 					{
 						continue;
 					}
@@ -6459,11 +6469,11 @@ int Rtabmap::detectMoreLoopClosures(
 				if(!alreadyChecked &&
 				   !(minimumGraphDistance > 1 && linkedWithinGraphDistance(from, to)))
 				{
-					// Only add new links. When the minimum graph distance
-					// drives the link density, nodes may participate in
-					// several loop closures per iteration; otherwise limit to
-					// one per node per iteration.
-					if((minimumGraphDistance > 1 ||
+					// Only add new links. When the adaptive spacing drives
+					// the link density, nodes may participate in several
+					// loop closures per iteration; otherwise limit to one
+					// per node per iteration.
+					if(((adaptiveSpacing && minimumGraphDistance > 1) ||
 						(addedLinks.find(from) == addedLinks.end() &&
 						 addedLinks.find(to) == addedLinks.end())) &&
 					   rtabmap::graph::findLink(links, from, to) == links.end())

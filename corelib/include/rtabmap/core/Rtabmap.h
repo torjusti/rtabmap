@@ -668,7 +668,9 @@ public:
 			bool interSession = true,
 			const ProgressState * state = 0,
 			float clusterRadiusMin = 0.0f,
-			int toFromMapId = -1);
+			int toFromMapId = -1,
+			bool adaptiveSpacing = true,
+			bool parallelRegistration = true);
 	/**
 	 * @brief Runs a global bundle adjustment over the optimized graph.
 	 *
