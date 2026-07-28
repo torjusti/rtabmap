@@ -72,6 +72,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <stdlib.h>
 #include <set>
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 #define LOG_F "LogF.txt"
 #define LOG_I "LogI.txt"
 
@@ -6109,6 +6113,22 @@ int Rtabmap::detectMoreLoopClosures(
 		}
 	}
 
+	// Number of threads for parallel candidate registration (used only with
+	// RGBD/OptimizeMaxError=0, see below). Registrations are independent, but
+	// fall back to a single thread when the registration pipeline may use
+	// shared components that are not thread-safe.
+	int regThreads = 1;
+#ifdef _OPENMP
+	bool reextractFeatures = Parameters::defaultRGBDLoopClosureReextractFeatures();
+	Parameters::parse(_parameters, Parameters::kRGBDLoopClosureReextractFeatures(), reextractFeatures);
+	int corNNType = Parameters::defaultVisCorNNType();
+	Parameters::parse(_parameters, Parameters::kVisCorNNType(), corNNType);
+	if(!reextractFeatures && corNNType != 4 && corNNType != 6) // 4=BruteForceGPU, 6=SuperGlue (python)
+	{
+		regThreads = omp_get_max_threads();
+	}
+#endif
+
 	for(int n=0; n<iterations; ++n)
 	{
 		UINFO("Looking for more loop closures, clustering poses... (iteration=%d/%d, radius=%f m angle=%f rad)",
@@ -6172,6 +6192,136 @@ int Rtabmap::detectMoreLoopClosures(
 
 		int i=0;
 		std::set<int> addedLinks;
+
+		// With RGBD/OptimizeMaxError=0 there is no per-candidate validation
+		// (see below), so accepted links do not feed back into the candidate
+		// checks and every candidate of the iteration is independent: check
+		// them all (instead of at most one new link per node per iteration)
+		// and compute the registrations in parallel, in chunks to bound
+		// memory. This checks the same candidates in fewer iterations and
+		// accepts more links than the sequential one-link-per-node loop.
+		if(_optimizationMaxError == 0.0f)
+		{
+			struct CandidateRegistration
+			{
+				int from;
+				int to;
+				Signature fromS;
+				Signature toS;
+				Transform guess;
+				Transform t;
+				RegistrationInfo info;
+			};
+			// Collect all candidates of this iteration.
+			std::vector<std::pair<int, int> > candidates;
+			for(std::multimap<int, int>::iterator iter=clusters.begin(); iter!= clusters.end(); ++iter)
+			{
+				int from = iter->first;
+				int to = iter->second;
+				if(from > to)
+				{
+					from = iter->second;
+					to = iter->first;
+				}
+				int mapIdFrom = uValue(mapIds, from, 0);
+				int mapIdTo = uValue(mapIds, to, 0);
+				if(!((interSession && mapIdFrom != mapIdTo) ||
+					 (intraSession && mapIdFrom == mapIdTo)))
+				{
+					continue;
+				}
+				bool alreadyChecked = false;
+				for(std::multimap<int, int>::iterator jter = checkedLoopClosures.lower_bound(from);
+					!alreadyChecked && jter!=checkedLoopClosures.end() && jter->first == from;
+					++jter)
+				{
+					if(to == jter->second)
+					{
+						alreadyChecked = true;
+					}
+				}
+				if(alreadyChecked)
+				{
+					continue;
+				}
+				if(rtabmap::graph::findLink(links, from, to) != links.end())
+				{
+					continue;
+				}
+				// Reverify if in the bounds with the current optimized graph
+				Transform delta = poses.at(from).inverse() * poses.at(to);
+				if(!(delta.getNorm() < clusterRadiusMax &&
+					 delta.getNorm() >= clusterRadiusMin))
+				{
+					continue;
+				}
+				checkedLoopClosures.insert(std::make_pair(from, to));
+				candidates.push_back(std::make_pair(from, to));
+			}
+			// Deterministic order (and better locality for signature loads).
+			std::sort(candidates.begin(), candidates.end());
+			UINFO("Iteration %d/%d: %ld candidates to register (%ld clusters)",
+					n+1, iterations, candidates.size(), clusters.size());
+
+			const size_t chunkSize = 256;
+			for(size_t c0=0; c0<candidates.size(); c0+=chunkSize)
+			{
+				if(processState && processState->isCanceled())
+				{
+					return -1;
+				}
+				size_t c1 = std::min(c0+chunkSize, candidates.size());
+				std::vector<CandidateRegistration> chunk(c1-c0);
+				for(size_t b=0; b<chunk.size(); ++b)
+				{
+					CandidateRegistration & candidate = chunk[b];
+					candidate.from = candidates[c0+b].first;
+					candidate.to = candidates[c0+b].second;
+					candidate.fromS = getSignatureCopy(candidate.from, false, true, false, false, true, false);
+					candidate.toS = getSignatureCopy(candidate.to, false, true, false, false, true, false);
+					UASSERT(candidate.fromS.getWeight()>=0);
+					UASSERT(candidate.toS.getWeight()>=0);
+					if(_proximityBySpace)
+					{
+						candidate.guess = poses.at(candidate.from).inverse() * poses.at(candidate.to);
+					}
+				}
+
+#ifdef _OPENMP
+				#pragma omp parallel for schedule(dynamic) num_threads(regThreads) if(regThreads > 1)
+#endif
+				for(int b=0; b<(int)chunk.size(); ++b)
+				{
+					// use signatures instead of IDs because some signatures may not be in WM
+					chunk[b].t = _memory->computeTransform(chunk[b].fromS, chunk[b].toS, chunk[b].guess, &chunk[b].info);
+				}
+
+				for(size_t b=0; b<chunk.size(); ++b)
+				{
+					if(chunk[b].t.isNull())
+					{
+						continue;
+					}
+					int from = chunk[b].from;
+					int to = chunk[b].to;
+					addedLinks.insert(from);
+					addedLinks.insert(to);
+					cv::Mat inf = getInformation(chunk[b].info.covariance);
+					links.insert(std::make_pair(from, Link(from, to, Link::kUserClosure, chunk[b].t, inf)));
+					loopClosuresAdded.push_back(Link(from, to, Link::kUserClosure, chunk[b].t, inf));
+					std::string msg = uFormat("Iteration %d/%d: Added loop closure %d->%d! (%d/%d)", n+1, iterations, from, to, (int)(c0+b)+1, (int)candidates.size());
+					UINFO(msg.c_str());
+					if(processState)
+					{
+						if(!processState->callback(msg))
+						{
+							return -1;
+						}
+					}
+				}
+			}
+		}
+		else
 		for(std::multimap<int, int>::iterator iter=clusters.begin(); iter!= clusters.end(); ++iter, ++i)
 		{
 			if(processState && processState->isCanceled())
