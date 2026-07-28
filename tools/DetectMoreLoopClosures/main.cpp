@@ -59,6 +59,11 @@ void showUsage()
 			"    --intra       Add only intra-session loop closures.\n"
 			"    --inter       Add only inter-session loop closures.\n"
 			"    --session #   Add loop closures only from/to that map session ID (use -1 for last session).\n"
+			"    --no_adaptive Legacy spacing behavior: the minimum graph distance (Mem/STMSize) is\n"
+			"                  measured over odometry links only (instead of all links including loop\n"
+			"                  closures accepted during detection) and at most one new loop closure is\n"
+			"                  accepted per node per iteration.\n"
+			"    --sequential  Register candidates sequentially even when RGBD/OptimizeMaxError=0.\n"
 			"\n%s", Parameters::showUsage());
 	exit(1);
 }
@@ -110,11 +115,21 @@ int main(int argc, char * argv[])
 	bool intraSession = false;
 	bool interSession = false;
 	int fromToMapId = -2;
+	bool adaptiveSpacing = true;
+	bool parallelRegistration = true;
 	for(int i=1; i<argc-1; ++i)
 	{
 		if(std::strcmp(argv[i], "--help") == 0)
 		{
 			showUsage();
+		}
+		else if(std::strcmp(argv[i], "--no_adaptive") == 0)
+		{
+			adaptiveSpacing = false;
+		}
+		else if(std::strcmp(argv[i], "--sequential") == 0)
+		{
+			parallelRegistration = false;
 		}
 		else if(std::strcmp(argv[i], "--intra") == 0)
 		{
@@ -277,7 +292,7 @@ int main(int argc, char * argv[])
 	}
 
 	printf("Detecting...\n");
-	int detected = rtabmap.detectMoreLoopClosures(clusterRadiusMax, clusterAngle, iterations, intraSession, interSession, &progress, clusterRadiusMin, fromToMapId);
+	int detected = rtabmap.detectMoreLoopClosures(clusterRadiusMax, clusterAngle, iterations, intraSession, interSession, &progress, clusterRadiusMin, fromToMapId, adaptiveSpacing, parallelRegistration);
 	if(detected < 0)
 	{
 		if(!g_loopForever)
