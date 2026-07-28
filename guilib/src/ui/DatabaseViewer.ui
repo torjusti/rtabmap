@@ -2957,7 +2957,7 @@
           </widget>
          </item>
          <item row="9" column="0">
-          <widget class="QCheckBox" name="checkBox_detectMore_adaptiveSpacing">
+          <widget class="QCheckBox" name="checkBox_detectMore_loopsInDistance">
            <property name="text">
             <string/>
            </property>
@@ -2967,9 +2967,12 @@
           </widget>
          </item>
          <item row="9" column="1">
-          <widget class="QLabel" name="label_detectMore_adaptiveSpacing">
+          <widget class="QLabel" name="label_detectMore_loopsInDistance">
            <property name="text">
-            <string>Adaptive spacing: the minimum graph distance is measured over all links including loop closures accepted during detection (new loop closures end up spaced by at least that distance), and a node can be part of several new loop closures per iteration. When unchecked, the distance is measured over odometry links only and at most one new loop closure is accepted per node per iteration.</string>
+            <string>Compute graph distance using loop closures (existing and accepted during detection)</string>
+           </property>
+           <property name="toolTip">
+            <string>Pairs within the minimum graph distance are not tested, so new loop closures end up spaced by at least that distance, and a node can be part of several new loop closures per iteration. When unchecked, the distance only counts odometry links and at most one new loop closure is accepted per node per iteration.</string>
            </property>
            <property name="wordWrap">
             <bool>true</bool>
@@ -2989,7 +2992,10 @@
          <item row="10" column="1">
           <widget class="QLabel" name="label_detectMore_parallel">
            <property name="text">
-            <string>Parallel registration of the candidates (requires RGBD/OptimizeMaxError=0). When unchecked, candidates are registered sequentially.</string>
+            <string>Parallel registration of the candidates (requires RGBD/OptimizeMaxError=0)</string>
+           </property>
+           <property name="toolTip">
+            <string>When unchecked, candidates are registered sequentially.</string>
            </property>
            <property name="wordWrap">
             <bool>true</bool>
