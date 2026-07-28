@@ -119,6 +119,13 @@ std::string getPythonTraceback()
 	Py_XDECREF(outStr);   // outStr may be NULL if PyObject_CallObject failed
 	Py_DECREF(mod);
 
+	// Release the exception: the traceback keeps the failed call's frames
+	// (and all their locals, e.g. GPU tensors) alive as long as it is
+	// referenced, so leaking it here can pin a huge amount of memory.
+	Py_XDECREF(type);
+	Py_XDECREF(value);
+	Py_XDECREF(traceback);
+
 	return pretty;
 }
 
