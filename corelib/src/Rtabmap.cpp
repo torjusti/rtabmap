@@ -6159,7 +6159,10 @@ int Rtabmap::detectMoreLoopClosures(
 	Parameters::parse(_parameters, Parameters::kRGBDLoopClosureReextractFeatures(), reextractFeatures);
 	int corNNType = Parameters::defaultVisCorNNType();
 	Parameters::parse(_parameters, Parameters::kVisCorNNType(), corNNType);
-	if(!reextractFeatures && corNNType != 4 && corNNType != 6) // 4=BruteForceGPU, 6=SuperGlue (python)
+	// 4=BruteForceGPU is not thread-safe. 6=Python matchers (e.g., SuperGlue)
+	// are thread-safe: PyMatcher batches concurrent calls in single GPU
+	// inferences.
+	if(!reextractFeatures && corNNType != 4)
 	{
 		regThreads = omp_get_max_threads();
 	}
