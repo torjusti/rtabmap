@@ -52,6 +52,10 @@ ProgressDialog::ProgressDialog(QWidget *parent, Qt::WindowFlags flags) :
 	_detailedText  = new QTextEdit(this);
 	_detailedText->setReadOnly(true);
 	_detailedText->setLineWrapMode(QTextEdit::NoWrap);
+	// appendText() scrolls to the bottom, which lays out the whole document:
+	// bound the number of kept lines so that appending stays cheap even when
+	// millions of lines are logged (oldest lines are dropped).
+	_detailedText->document()->setMaximumBlockCount(10000);
 	_closeButton = new QPushButton(this);
 	_closeButton->setText("Close");
 	_cancelButton = new QPushButton(this);
