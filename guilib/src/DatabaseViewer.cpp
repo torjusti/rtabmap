@@ -4731,7 +4731,7 @@ void DatabaseViewer::detectMoreLoopClosures()
 				}
 			}
 			progressDialog->setMaximumSteps(progressDialog->maximumSteps()-(int)clusters.size()+(int)candidates.size());
-			progressDialog->appendText(tr("Iteration %1/%2: registering %3 candidates on %4 thread(s)...").arg(n+1).arg(iterations).arg(candidates.size()).arg(regThreads));
+			progressDialog->appendText(tr("Iteration %1/%2: filtering kept %3 candidate pairs to register (out of %4 cluster pairs).").arg(n+1).arg(iterations).arg(candidates.size()).arg(clusters.size()));
 			QApplication::processEvents();
 
 			struct RegistrationTask
@@ -4863,9 +4863,9 @@ void DatabaseViewer::detectMoreLoopClosures()
 				// the text widget re-layout the whole (huge) log each time,
 				// which is O(n^2) and freezes the GUI.
 				double acceptTime = chunkTimer.ticks();
-				progressDialog->appendText(tr("Registered candidates %1/%2: detected %3 new loop closures (%4 total, %5 skipped as already connected). "
-						"Load=%6s, registration=%7s, accept=%8s.")
-						.arg(i).arg(candidates.size()).arg(added-addedBeforeChunk).arg(added).arg(suppressed-suppressedBeforeChunk)
+				progressDialog->appendText(tr("Registered %1/%2 candidates on %3 thread(s): detected %4 new loop closures (%5 total, %6 skipped as already connected). "
+						"Load=%7s, registration=%8s, accept=%9s.")
+						.arg(i).arg(candidates.size()).arg(regThreads).arg(added-addedBeforeChunk).arg(added).arg(suppressed-suppressedBeforeChunk)
 						.arg(loadTime, 0, 'f', 1).arg(matchTime, 0, 'f', 1).arg(acceptTime, 0, 'f', 3));
 				QApplication::processEvents();
 			}
