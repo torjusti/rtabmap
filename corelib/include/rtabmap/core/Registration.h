@@ -151,6 +151,8 @@ protected:
 private:
 	bool repeatOnce_;
 	bool force3DoF_;
+	double covarianceFloorLinVariance_;
+	double covarianceFloorAngVariance_;
 	Registration * child_;
 
 };
