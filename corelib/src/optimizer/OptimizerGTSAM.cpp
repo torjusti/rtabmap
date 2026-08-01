@@ -162,7 +162,7 @@ void OptimizerGTSAM::parseParameters(const ParametersMap & parameters)
 std::map<int, Transform> OptimizerGTSAM::optimize(
 		int rootId,
 		const std::map<int, Transform> & poses,
-		const std::multimap<int, Link> & edgeConstraints,
+		const std::multimap<int, Link> & edgeConstraintsIn,
 		cv::Mat & outputCovariance,
 		std::list<std::map<int, Transform> > * intermediateGraphes,
 		double * finalError,
@@ -171,6 +171,7 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 	outputCovariance = cv::Mat::eye(6,6,CV_64FC1);
 	std::map<int, Transform> optimizedPoses;
 #ifdef RTABMAP_GTSAM
+	std::multimap<int, Link> edgeConstraints = downweightRedundantLoopClosures(poses, edgeConstraintsIn);
 
 #ifndef RTABMAP_VERTIGO
 	if(this->isRobust())

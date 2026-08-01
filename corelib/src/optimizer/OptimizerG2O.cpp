@@ -223,7 +223,7 @@ void OptimizerG2O::parseParameters(const ParametersMap & parameters)
 std::map<int, Transform> OptimizerG2O::optimize(
 		int rootId,
 		const std::map<int, Transform> & poses,
-		const std::multimap<int, Link> & edgeConstraints,
+		const std::multimap<int, Link> & edgeConstraintsIn,
 		cv::Mat & outputCovariance,
 		std::list<std::map<int, Transform> > * intermediateGraphes,
 		double * finalError,
@@ -232,6 +232,7 @@ std::map<int, Transform> OptimizerG2O::optimize(
 	outputCovariance = cv::Mat::eye(6,6,CV_64FC1);
 	std::map<int, Transform> optimizedPoses;
 #ifdef RTABMAP_G2O
+	std::multimap<int, Link> edgeConstraints = downweightRedundantLoopClosures(poses, edgeConstraintsIn);
 	UDEBUG("Optimizing graph... (rootId=%d)", rootId);
 
 #ifndef RTABMAP_VERTIGO
