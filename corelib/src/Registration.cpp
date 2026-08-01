@@ -67,6 +67,8 @@ Registration * Registration::create(Registration::Type & type, const ParametersM
 Registration::Registration(const ParametersMap & parameters, Registration * child) :
 	repeatOnce_(Parameters::defaultRegRepeatOnce()),
 	force3DoF_(Parameters::defaultRegForce3DoF()),
+	covarianceFloorLinVariance_(Parameters::defaultRegCovarianceFloorLinVariance()),
+	covarianceFloorAngVariance_(Parameters::defaultRegCovarianceFloorAngVariance()),
 	child_(child)
 {
 	this->parseParameters(parameters);
@@ -80,6 +82,10 @@ void Registration::parseParameters(const ParametersMap & parameters)
 {
 	Parameters::parse(parameters, Parameters::kRegRepeatOnce(), repeatOnce_);
 	Parameters::parse(parameters, Parameters::kRegForce3DoF(), force3DoF_);
+	Parameters::parse(parameters, Parameters::kRegCovarianceFloorLinVariance(), covarianceFloorLinVariance_);
+	Parameters::parse(parameters, Parameters::kRegCovarianceFloorAngVariance(), covarianceFloorAngVariance_);
+	UASSERT(covarianceFloorLinVariance_ > 0.0);
+	UASSERT(covarianceFloorAngVariance_ > 0.0);
 
 	if(child_)
 	{
@@ -238,18 +244,18 @@ Transform Registration::computeTransformationMod(
 		info.covariance = cv::Mat::eye(6,6,CV_64FC1);
 	}
 
-	if(info.covariance.at<double>(0,0)<=COVARIANCE_LINEAR_EPSILON)
-		info.covariance.at<double>(0,0) = COVARIANCE_LINEAR_EPSILON; // epsilon if exact transform
-	if(info.covariance.at<double>(1,1)<=COVARIANCE_LINEAR_EPSILON)
-		info.covariance.at<double>(1,1) = COVARIANCE_LINEAR_EPSILON; // epsilon if exact transform
-	if(info.covariance.at<double>(2,2)<=COVARIANCE_LINEAR_EPSILON)
-		info.covariance.at<double>(2,2) = COVARIANCE_LINEAR_EPSILON; // epsilon if exact transform
-	if(info.covariance.at<double>(3,3)<=COVARIANCE_ANGULAR_EPSILON)
-		info.covariance.at<double>(3,3) = COVARIANCE_ANGULAR_EPSILON; // epsilon if exact transform
-	if(info.covariance.at<double>(4,4)<=COVARIANCE_ANGULAR_EPSILON)
-		info.covariance.at<double>(4,4) = COVARIANCE_ANGULAR_EPSILON; // epsilon if exact transform
-	if(info.covariance.at<double>(5,5)<=COVARIANCE_ANGULAR_EPSILON)
-		info.covariance.at<double>(5,5) = COVARIANCE_ANGULAR_EPSILON; // epsilon if exact transform
+	// Floor the covariance diagonal: at least the historical epsilons (exact
+	// transform case), or higher if configured to account for systematic
+	// registration errors (Reg/CovarianceFloorLinVariance/AngVariance).
+	double linFloor = covarianceFloorLinVariance_ > COVARIANCE_LINEAR_EPSILON ? covarianceFloorLinVariance_ : COVARIANCE_LINEAR_EPSILON;
+	double angFloor = covarianceFloorAngVariance_ > COVARIANCE_ANGULAR_EPSILON ? covarianceFloorAngVariance_ : COVARIANCE_ANGULAR_EPSILON;
+	for(int i=0; i<3; ++i)
+	{
+		if(info.covariance.at<double>(i,i)<=linFloor)
+			info.covariance.at<double>(i,i) = linFloor;
+		if(info.covariance.at<double>(i+3,i+3)<=angFloor)
+			info.covariance.at<double>(i+3,i+3) = angFloor;
+	}
 
 
 	if(infoOut)
