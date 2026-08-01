@@ -29,7 +29,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rtabmap/utilite/UStl.h>
 #include <rtabmap/utilite/UMath.h>
 #include <rtabmap/utilite/UConversion.h>
+#include <rtabmap/utilite/UTimer.h>
 #include <rtabmap/core/Optimizer.h>
+#include <algorithm>
 #include <rtabmap/core/Graph.h>
 #include <rtabmap/core/util3d_transforms.h>
 #include <rtabmap/core/RegistrationVis.h>
@@ -344,7 +346,9 @@ Optimizer::Optimizer(int iterations, bool slam2d, bool covarianceIgnored, double
 		robust_(robust),
 		priorsIgnored_(priorsIgnored),
 		landmarksIgnored_(landmarksIgnored),
-		gravitySigma_(gravitySigma)
+		gravitySigma_(gravitySigma),
+		loopRedundancyRadius_(Parameters::defaultOptimizerLoopRedundancyRadius()),
+		loopRedundancyRho_(Parameters::defaultOptimizerLoopRedundancyRho())
 {
 }
 
@@ -356,7 +360,9 @@ Optimizer::Optimizer(const ParametersMap & parameters) :
 		robust_(Parameters::defaultOptimizerRobust()),
 		priorsIgnored_(Parameters::defaultOptimizerPriorsIgnored()),
 		landmarksIgnored_(Parameters::defaultOptimizerLandmarksIgnored()),
-		gravitySigma_(Parameters::defaultOptimizerGravitySigma())
+		gravitySigma_(Parameters::defaultOptimizerGravitySigma()),
+		loopRedundancyRadius_(Parameters::defaultOptimizerLoopRedundancyRadius()),
+		loopRedundancyRho_(Parameters::defaultOptimizerLoopRedundancyRho())
 {
 	parseParameters(parameters);
 }
@@ -371,6 +377,140 @@ void Optimizer::parseParameters(const ParametersMap & parameters)
 	Parameters::parse(parameters, Parameters::kOptimizerPriorsIgnored(), priorsIgnored_);
 	Parameters::parse(parameters, Parameters::kOptimizerLandmarksIgnored(), landmarksIgnored_);
 	Parameters::parse(parameters, Parameters::kOptimizerGravitySigma(), gravitySigma_);
+	Parameters::parse(parameters, Parameters::kOptimizerLoopRedundancyRadius(), loopRedundancyRadius_);
+	Parameters::parse(parameters, Parameters::kOptimizerLoopRedundancyRho(), loopRedundancyRho_);
+	UASSERT(loopRedundancyRadius_ >= 0.0);
+	UASSERT(loopRedundancyRho_ >= 0.0 && loopRedundancyRho_ <= 1.0);
+}
+
+std::multimap<int, Link> Optimizer::downweightRedundantLoopClosures(
+		const std::map<int, Transform> & poses,
+		const std::multimap<int, Link> & linksIn) const
+{
+	if(loopRedundancyRadius_ <= 0.0 || loopRedundancyRho_ <= 0.0 || covarianceIgnored_)
+	{
+		return linksIn;
+	}
+	UTimer timer;
+
+	// Cumulative trajectory arc length at each node (in node id order). Nodes
+	// of different sessions end up far apart along this axis, so they never
+	// cluster together.
+	std::map<int, double> arcLength;
+	double s = 0.0;
+	const Transform * previous = 0;
+	for(std::map<int, Transform>::const_iterator iter=poses.lower_bound(1); iter!=poses.end(); ++iter)
+	{
+		if(previous)
+		{
+			s += previous->getDistance(iter->second);
+		}
+		arcLength.insert(std::make_pair(iter->first, s));
+		previous = &iter->second;
+	}
+
+	std::multimap<int, Link> links = linksIn;
+
+	// Collect loop closures with their endpoint positions along the trajectory,
+	// ordered so that sa <= sb (handles swapped link directions).
+	struct LoopRef
+	{
+		double sa;
+		double sb;
+		Link * link;
+	};
+	std::vector<LoopRef> loops;
+	for(std::multimap<int, Link>::iterator iter=links.begin(); iter!=links.end(); ++iter)
+	{
+		if(iter->second.type() == Link::kGlobalClosure ||
+		   iter->second.type() == Link::kLocalSpaceClosure ||
+		   iter->second.type() == Link::kLocalTimeClosure ||
+		   iter->second.type() == Link::kUserClosure)
+		{
+			std::map<int, double>::iterator fromIter = arcLength.find(iter->second.from());
+			std::map<int, double>::iterator toIter = arcLength.find(iter->second.to());
+			if(fromIter != arcLength.end() && toIter != arcLength.end())
+			{
+				LoopRef ref;
+				ref.sa = fromIter->second < toIter->second ? fromIter->second : toIter->second;
+				ref.sb = fromIter->second < toIter->second ? toIter->second : fromIter->second;
+				ref.link = &iter->second;
+				loops.push_back(ref);
+			}
+		}
+	}
+	if(loops.size() < 2)
+	{
+		return links;
+	}
+
+	// Union-find clustering: two loops are redundant if both endpoints are
+	// within the radius of each other along the trajectory.
+	std::vector<size_t> parent(loops.size());
+	for(size_t i=0; i<parent.size(); ++i)
+	{
+		parent[i] = i;
+	}
+	auto findRoot = [&parent](size_t i)
+	{
+		while(parent[i] != i)
+		{
+			parent[i] = parent[parent[i]]; // path halving
+			i = parent[i];
+		}
+		return i;
+	};
+
+	std::vector<size_t> order(loops.size());
+	for(size_t i=0; i<order.size(); ++i)
+	{
+		order[i] = i;
+	}
+	std::sort(order.begin(), order.end(), [&loops](size_t a, size_t b) {return loops[a].sa < loops[b].sa;});
+
+	for(size_t i=0; i<order.size(); ++i)
+	{
+		for(size_t j=i+1; j<order.size(); ++j)
+		{
+			if(loops[order[j]].sa - loops[order[i]].sa > loopRedundancyRadius_)
+			{
+				break; // sorted by sa: no further candidates for i
+			}
+			if(fabs(loops[order[j]].sb - loops[order[i]].sb) <= loopRedundancyRadius_)
+			{
+				parent[findRoot(order[i])] = findRoot(order[j]);
+			}
+		}
+	}
+
+	std::map<size_t, int> clusterSizes;
+	for(size_t i=0; i<loops.size(); ++i)
+	{
+		++clusterSizes[findRoot(i)];
+	}
+
+	int downweighted = 0;
+	int largest = 1;
+	for(size_t i=0; i<loops.size(); ++i)
+	{
+		int n = clusterSizes.at(findRoot(i));
+		if(n > 1)
+		{
+			// Equicorrelated measurements: n loops with pairwise correlation rho
+			// carry the information of a single loop scaled by n/(1+(n-1)*rho).
+			double factor = 1.0 + (n-1) * loopRedundancyRho_;
+			loops[i].link->setInfMatrix(loops[i].link->infMatrix() / factor);
+			++downweighted;
+			largest = n > largest ? n : largest;
+		}
+	}
+
+	UINFO("Loop closure redundancy down-weighting: %d loop closures in %d clusters (largest=%d), "
+		  "%d links down-weighted (radius=%.2f m, rho=%.2f, %.3fs)",
+			(int)loops.size(), (int)clusterSizes.size(), largest, downweighted,
+			loopRedundancyRadius_, loopRedundancyRho_, timer.ticks());
+
+	return links;
 }
 
 std::map<int, Transform> Optimizer::optimizeIncremental(
