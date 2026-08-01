@@ -123,7 +123,7 @@ void OptimizerCeres::parseParameters(const ParametersMap & parameters)
 std::map<int, Transform> OptimizerCeres::optimize(
 		int rootId,
 		const std::map<int, Transform> & poses,
-		const std::multimap<int, Link> & edgeConstraints,
+		const std::multimap<int, Link> & edgeConstraintsIn,
 		cv::Mat & outputCovariance,
 		std::list<std::map<int, Transform> > * intermediateGraphes, // contains poses after tree init to last one before the end
 		double * finalError,
@@ -132,6 +132,7 @@ std::map<int, Transform> OptimizerCeres::optimize(
 	outputCovariance = cv::Mat::eye(6,6,CV_64FC1);
 	std::map<int, Transform> optimizedPoses;
 #ifdef RTABMAP_CERES
+	std::multimap<int, Link> edgeConstraints = downweightRedundantLoopClosures(poses, edgeConstraintsIn);
 	UDEBUG("Optimizing graph (pose=%d constraints=%d)...", (int)poses.size(), (int)edgeConstraints.size());
 	if(edgeConstraints.size()>=1 && poses.size()>=2 && iterations() > 0)
 	{
