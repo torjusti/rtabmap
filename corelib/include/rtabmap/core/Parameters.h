@@ -740,6 +740,8 @@ class RTABMAP_CORE_EXPORT Parameters
     RTABMAP_PARAM(Reg, RepeatOnce,               bool, true,    "Do a second registration with the output of the first registration as guess. Only done if no guess was provided for the first registration (like on loop closure). It can be useful if the registration approach used can use a guess to get better matches.");
     RTABMAP_PARAM(Reg, Strategy,                 int, 0,        "0=Vis, 1=Icp, 2=VisIcp");
     RTABMAP_PARAM(Reg, Force3DoF,                bool, false,   "Force 3 degrees-of-freedom transform (3Dof: x,y and yaw). Parameters z, roll and pitch will be set to 0.");
+    RTABMAP_PARAM(Reg, CovarianceFloorLinVariance, double, 0.00000001, "Minimum linear variance (m^2) applied on the diagonal of the estimated registration covariance. Raise it to account for systematic registration errors not captured by the residual-based covariance estimation (e.g., depth calibration, time synchronization, rolling shutter), to avoid overconfident loop closure links. The default corresponds to the historical epsilon (0.1 mm std dev).");
+    RTABMAP_PARAM(Reg, CovarianceFloorAngVariance, double, 0.00000003, "Minimum angular variance (rad^2) applied on the diagonal of the estimated registration covariance. Raise it to account for systematic registration errors not captured by the residual-based covariance estimation, to avoid overconfident loop closure links. The default corresponds to the historical epsilon (0.01 deg std dev).");
 
     // Visual registration parameters
     RTABMAP_PARAM(Vis, EstimationType,           int,    1,     "Motion estimation approach: 0:3D->3D, 1:3D->2D (PnP), 2:2D->2D (Epipolar Geometry)");
