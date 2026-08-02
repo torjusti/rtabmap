@@ -347,8 +347,7 @@ Optimizer::Optimizer(int iterations, bool slam2d, bool covarianceIgnored, double
 		priorsIgnored_(priorsIgnored),
 		landmarksIgnored_(landmarksIgnored),
 		gravitySigma_(gravitySigma),
-		loopRedundancyRadius_(Parameters::defaultOptimizerLoopRedundancyRadius()),
-		loopRedundancyRho_(Parameters::defaultOptimizerLoopRedundancyRho())
+		loopRedundancyRadius_(Parameters::defaultOptimizerLoopRedundancyRadius())
 {
 }
 
@@ -361,8 +360,7 @@ Optimizer::Optimizer(const ParametersMap & parameters) :
 		priorsIgnored_(Parameters::defaultOptimizerPriorsIgnored()),
 		landmarksIgnored_(Parameters::defaultOptimizerLandmarksIgnored()),
 		gravitySigma_(Parameters::defaultOptimizerGravitySigma()),
-		loopRedundancyRadius_(Parameters::defaultOptimizerLoopRedundancyRadius()),
-		loopRedundancyRho_(Parameters::defaultOptimizerLoopRedundancyRho())
+		loopRedundancyRadius_(Parameters::defaultOptimizerLoopRedundancyRadius())
 {
 	parseParameters(parameters);
 }
@@ -378,16 +376,14 @@ void Optimizer::parseParameters(const ParametersMap & parameters)
 	Parameters::parse(parameters, Parameters::kOptimizerLandmarksIgnored(), landmarksIgnored_);
 	Parameters::parse(parameters, Parameters::kOptimizerGravitySigma(), gravitySigma_);
 	Parameters::parse(parameters, Parameters::kOptimizerLoopRedundancyRadius(), loopRedundancyRadius_);
-	Parameters::parse(parameters, Parameters::kOptimizerLoopRedundancyRho(), loopRedundancyRho_);
 	UASSERT(loopRedundancyRadius_ >= 0.0);
-	UASSERT(loopRedundancyRho_ >= 0.0 && loopRedundancyRho_ <= 1.0);
 }
 
 std::multimap<int, Link> Optimizer::downweightRedundantLoopClosures(
 		const std::map<int, Transform> & poses,
 		const std::multimap<int, Link> & linksIn) const
 {
-	if(loopRedundancyRadius_ <= 0.0 || loopRedundancyRho_ <= 0.0 || covarianceIgnored_)
+	if(loopRedundancyRadius_ <= 0.0 || covarianceIgnored_)
 	{
 		return linksIn;
 	}
@@ -444,23 +440,11 @@ std::multimap<int, Link> Optimizer::downweightRedundantLoopClosures(
 		return links;
 	}
 
-	// Union-find clustering: two loops are redundant if both endpoints are
-	// within the radius of each other along the trajectory.
-	std::vector<size_t> parent(loops.size());
-	for(size_t i=0; i<parent.size(); ++i)
-	{
-		parent[i] = i;
-	}
-	auto findRoot = [&parent](size_t i)
-	{
-		while(parent[i] != i)
-		{
-			parent[i] = parent[parent[i]]; // path halving
-			i = parent[i];
-		}
-		return i;
-	};
-
+	// Per-loop density: count for each loop closure how many loop closures
+	// (including itself) have both endpoints within the radius of its own
+	// endpoints along the trajectory, then divide its information by that
+	// count. Total information over a dense group thus saturates at about
+	// one loop closure per radius window.
 	std::vector<size_t> order(loops.size());
 	for(size_t i=0; i<order.size(); ++i)
 	{
@@ -468,6 +452,7 @@ std::multimap<int, Link> Optimizer::downweightRedundantLoopClosures(
 	}
 	std::sort(order.begin(), order.end(), [&loops](size_t a, size_t b) {return loops[a].sa < loops[b].sa;});
 
+	std::vector<int> counts(loops.size(), 1);
 	for(size_t i=0; i<order.size(); ++i)
 	{
 		for(size_t j=i+1; j<order.size(); ++j)
@@ -478,37 +463,28 @@ std::multimap<int, Link> Optimizer::downweightRedundantLoopClosures(
 			}
 			if(fabs(loops[order[j]].sb - loops[order[i]].sb) <= loopRedundancyRadius_)
 			{
-				parent[findRoot(order[i])] = findRoot(order[j]);
+				++counts[order[i]];
+				++counts[order[j]];
 			}
 		}
-	}
-
-	std::map<size_t, int> clusterSizes;
-	for(size_t i=0; i<loops.size(); ++i)
-	{
-		++clusterSizes[findRoot(i)];
 	}
 
 	int downweighted = 0;
 	int largest = 1;
 	for(size_t i=0; i<loops.size(); ++i)
 	{
-		int n = clusterSizes.at(findRoot(i));
-		if(n > 1)
+		if(counts[i] > 1)
 		{
-			// Equicorrelated measurements: n loops with pairwise correlation rho
-			// carry the information of a single loop scaled by n/(1+(n-1)*rho).
-			double factor = 1.0 + (n-1) * loopRedundancyRho_;
-			loops[i].link->setInfMatrix(loops[i].link->infMatrix() / factor);
+			loops[i].link->setInfMatrix(loops[i].link->infMatrix() / double(counts[i]));
 			++downweighted;
-			largest = n > largest ? n : largest;
+			largest = counts[i] > largest ? counts[i] : largest;
 		}
 	}
 
-	UINFO("Loop closure redundancy down-weighting: %d loop closures in %d clusters (largest=%d), "
-		  "%d links down-weighted (radius=%.2f m, rho=%.2f, %.3fs)",
-			(int)loops.size(), (int)clusterSizes.size(), largest, downweighted,
-			loopRedundancyRadius_, loopRedundancyRho_, timer.ticks());
+	UINFO("Loop closure redundancy down-weighting: %d/%d loop closures down-weighted "
+		  "(max neighbors=%d, radius=%.2f m, %.3fs)",
+			downweighted, (int)loops.size(), largest,
+			loopRedundancyRadius_, timer.ticks());
 
 	return links;
 }

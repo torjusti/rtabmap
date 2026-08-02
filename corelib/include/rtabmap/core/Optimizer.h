@@ -151,7 +151,6 @@ public:
 	bool landmarksIgnored() const {return landmarksIgnored_;}///< If true, landmark/marker observations are dropped.
 	float gravitySigma() const {return gravitySigma_;}       ///< Std-dev (rad) of the gravity prior on roll/pitch; 0 disables it.
 	double loopRedundancyRadius() const {return loopRedundancyRadius_;} ///< Trajectory arc-length radius (m) for loop redundancy down-weighting; 0 disables.
-	double loopRedundancyRho() const {return loopRedundancyRho_;} ///< Intra-cluster correlation for loop redundancy down-weighting.
 	/// @}
 
 	/// @name Setters mirroring the corresponding getters.
@@ -165,12 +164,13 @@ public:
 	void setLandmarksIgnored(bool enabled) {landmarksIgnored_ = enabled;}
 	void setGravitySigma(float value) {gravitySigma_ = value;}
 	void setLoopRedundancyRadius(double radius) {loopRedundancyRadius_ = radius;}
-	void setLoopRedundancyRho(double rho) {loopRedundancyRho_ = rho;}
 	/// @}
 
-	// Down-weight clusters of redundant/correlated loop closures before
-	// optimization (see Optimizer/LoopRedundancyRadius). Returns the input
-	// links with scaled information matrices; no-op if disabled.
+	// Density-based down-weighting of redundant loop closures before
+	// optimization: each loop closure's information is divided by the number
+	// of loop closures whose endpoints lie within Optimizer/LoopRedundancyRadius
+	// along the trajectory. Returns the input links with scaled information
+	// matrices; no-op if disabled.
 	std::multimap<int, Link> downweightRedundantLoopClosures(
 			const std::map<int, Transform> & poses,
 			const std::multimap<int, Link> & links) const;
@@ -366,7 +366,6 @@ private:
 	bool landmarksIgnored_;
 	float gravitySigma_;
 	double loopRedundancyRadius_;
-	double loopRedundancyRho_;
 };
 
 } /* namespace rtabmap */
