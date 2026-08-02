@@ -241,6 +241,8 @@ const std::map<std::string, std::pair<bool, std::string> > & Parameters::getRemo
 	{
 		// removed parameters
 
+		removedParameters_.insert(std::make_pair("Optimizer/LoopRedundancyRho", std::make_pair(false, "")));
+
 		// 0.23.7
 		removedParameters_.insert(std::make_pair("Marker/CornerRefinementMethod", std::make_pair(true, Parameters::kMarkerOpenCVCornerRefinementMethod())));
 
