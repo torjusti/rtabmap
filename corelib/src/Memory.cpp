@@ -62,10 +62,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <pcl/io/pcd_io.h>
 #include <pcl/common/common.h>
 #include <rtabmap/core/MarkerDetector.h>
+#include <opencv2/imgproc/types_c.h>
 #include <rtabmap/core/LocalGridMaker.h>
-#if CV_MAJOR_VERSION >=5
-#include <opencv2/geometry.hpp>
-#endif
 
 namespace rtabmap {
 
@@ -133,15 +131,12 @@ Memory::Memory(const ParametersMap & parameters) :
 	_memoryChanged(false),
 	_linksChanged(false),
 	_signaturesAdded(0),
-	_workingMemIntermediateNodesCount(0),
-	_stMemIntermediateNodesCount(0),
 	_allNodesInWM(true),
 	_receivingOdometryFeatures(false),
 	_badSignRatio(Parameters::defaultKpBadSignRatio()),
 	_tfIdfLikelihoodUsed(Parameters::defaultKpTfIdfLikelihoodUsed()),
 	_parallelized(Parameters::defaultKpParallelized()),
-	_registrationVis(0),
-	_dummyDictionary(false)
+	_registrationVis(0)
 {
 	_feature2D = Feature2D::create(parameters);
 	_vwd = new VWDictionary(parameters);
@@ -164,7 +159,7 @@ Memory::Memory(const ParametersMap & parameters) :
 	if(corRatio >= 0.5)
 	{
 		UWARN(	"%s is >=0.5, which sets correspondence ratio for proximity detection using "
-			"laser scans to 100%% (2 x Ratio). You may lower the ratio to accept proximity "
+			"laser scans to 100% (2 x Ratio). You may lower the ratio to accept proximity "
 			"detection with not full scans overlapping.", Parameters::kIcpCorrespondenceRatio().c_str());
 	}
 	_registrationIcpMulti = new RegistrationIcp(paramsMulti);
@@ -272,10 +267,6 @@ void Memory::loadDataFromDb(bool postInitClosingEvents)
 				//       global loop closures.
 				_signatures.insert(std::pair<int, Signature *>((*iter)->id(), *iter));
 				_workingMem.insert(std::make_pair((*iter)->id(), UTimer::now()));
-				if((*iter)->getWeight() == -1)
-				{
-					++_workingMemIntermediateNodesCount;
-				}
 				if(!(*iter)->getGroundTruthPose().isNull()) {
 					_groundTruths.insert(std::make_pair((*iter)->id(), (*iter)->getGroundTruthPose()));
 				}
@@ -414,63 +405,31 @@ void Memory::loadDataFromDb(bool postInitClosingEvents)
 			{
 				if(wordIds.size())
 				{
-					if(_dummyDictionary)
+					std::list<VisualWord*> words;
+					_dbDriver->loadWords(wordIds, words);
+					for(std::list<VisualWord*>::iterator iter = words.begin(); iter!=words.end(); ++iter)
 					{
-						for(std::set<int>::iterator iter = wordIds.begin(); iter!=wordIds.end(); ++iter)
-						{
-							VisualWord * w  = new VisualWord(*iter, cv::Mat());
-							w->setSaved(true);
-							_vwd->addWord(w); // placeholder descriptor
-						}
-					}
-					else
-					{
-						std::list<VisualWord*> words;
-						_dbDriver->loadWords(wordIds, words);
-						for(std::list<VisualWord*>::iterator iter = words.begin(); iter!=words.end(); ++iter)
-						{
-							_vwd->addWord(*iter);
-						}
+						_vwd->addWord(*iter);
 					}
 					// Get Last word id
 					int id = 0;
 					_dbDriver->getLastWordId(id);
 					_vwd->setLastWordId(id);
 				}
-				else {
-					_dummyDictionary = false;
-				}
 			}
 			else
 			{
-				_dbDriver->load(*_vwd, false, _dummyDictionary);
-				if(_dummyDictionary && _vwd->getVisualWords().empty())
-				{
-					_dummyDictionary = false;
-				}
+				_dbDriver->load(*_vwd, false);
 			}
 		}
 		else
 		{
 			UDEBUG("load words");
 			// load the last dictionary
-			_dbDriver->load(*_vwd, _vwd->isIncremental(), _dummyDictionary);
-			if(_dummyDictionary && _vwd->getVisualWords().empty())
-			{
-				_dummyDictionary = false;
-			}
+			_dbDriver->load(*_vwd, _vwd->isIncremental());
 		}
-		UDEBUG("%d words loaded! (type=%s, dim=%d)",
-			_vwd->getUnusedWordsSize(),
-			_vwd->getVisualWords().empty()?"NA":_vwd->getVisualWords().begin()->second->getDescriptor().empty()?"dummy":_vwd->getVisualWords().begin()->second->getDescriptor().type() == CV_32FC1?"float":"binary",
-			_vwd->getVisualWords().empty()?0:_vwd->getVisualWords().begin()->second->getDescriptor().cols);
-		UDEBUG("Dictionary memory usage: %ld Bytes (%ld MB)", _vwd->getMemoryUsed(), _vwd->getMemoryUsed()/(1024*1024));
-		if(!_dummyDictionary)	{
-			_vwd->update();
-		}
-		else {
-			UDEBUG("Dictionary update skipped (dummy dictionary is enabled)");
-		}
+		UDEBUG("%d words loaded!", _vwd->getUnusedWordsSize());
+		_vwd->update();
 		if(postInitClosingEvents) UEventsManager::post(new RtabmapEventInit(uFormat("Loading dictionary, done! (%d words)", (int)_vwd->getUnusedWordsSize())));
 
 		if(postInitClosingEvents) UEventsManager::post(new RtabmapEventInit(std::string("Adding word references...")));
@@ -530,24 +489,6 @@ void Memory::loadDataFromDb(bool postInitClosingEvents)
 					signatures.size());
 				UWARN("%s", msg.c_str());
 				if(postInitClosingEvents) UEventsManager::post(new RtabmapEventInit(msg));
-
-				if(_dummyDictionary)
-				{
-					UWARN("Dummy dictionary cannot be used when repairing the dictionary, disabling dummy dictionary.");
-					for(std::map<int, Signature *>::const_iterator i=signatures.begin(); i!=signatures.end(); ++i)
-					{
-						Signature * s = this->_getSignature(i->first);
-						UASSERT(s != 0);
-						if(!s->isEnabled())
-						{
-							break;
-						}
-						this->disableWordsRef(s->id());
-					}
-					_vwd->deleteUnusedWords();
-					_vwd->clear();
-					_dummyDictionary = false;
-				}
 
 				//remove all words ref
 
@@ -614,12 +555,7 @@ void Memory::loadDataFromDb(bool postInitClosingEvents)
 				UWARN("%s", msg.c_str());
 				if(postInitClosingEvents) UEventsManager::post(new RtabmapEventInit(msg));
 				_memoryChanged = true; // This will force rtabmap to save back the dictionary even if we don't process any new data
-				// Re-index from scratch instead of adding the words above to the
-				// index already built: the index would then contain them in a
-				// different order than the words loaded from the database, which
-				// makes the index saved on close (see saveFlannIndex()) rejected
-				// when it is deserialized on next load.
-				_vwd->rebuildIndex();
+				_vwd->update();
 			}
 		}
 
@@ -651,21 +587,6 @@ void Memory::loadDataFromDb(bool postInitClosingEvents)
 
 	UDEBUG("ids start with %d", _idCount+1);
 	UDEBUG("map ids start with %d", _idMapCount);
-}
-
-void Memory::setDummyDictionary(bool enabled)
-{
-	if(_dbDriver != 0) {
-		UERROR("Dummy dictionary can only be set if the memory is not yet initialized. Ignoring.");
-		return;
-	}
-	if(enabled) {
-		UINFO("Dummy dictionary enabled.");
-	}
-	else {
-		UINFO("Dummy dictionary disabled.");
-	}
-	_dummyDictionary = enabled;
 }
 
 void Memory::saveFlannIndex(bool postInitClosingEvents)
@@ -719,21 +640,12 @@ void Memory::close(bool databaseSaved, bool postInitClosingEvents, const std::st
 		UINFO("No changes added to database.");
 		if(_dbDriver)
 		{
-			if(this->isReadOnly())
-			{
-				if(_memoryChanged || _linksChanged || databaseNameChanged)
-				{
-					UWARN("Memory has been modified (nodes=%s links=%s name=%s) but the database is read-only, changes are not saved to database.",
-						_memoryChanged?"true":"false", _linksChanged?"true":"false", databaseNameChanged?"true":"false");
-				}
-			}
-			else if(databaseSaved)
-			{
+			if(!this->isReadOnly()) {
 				saveFlannIndex(postInitClosingEvents);
 			}
 			else if(_memoryChanged || _linksChanged || databaseNameChanged)
 			{
-				UWARN("Memory has been modified (nodes=%s links=%s name=%s) but databaseSaved=false, changes are not saved to database.",
+				UWARN("Memory has been modified (nodes=%s links=%s name=%s) but the database is read-only, changes are not saved to database.",
 					_memoryChanged?"true":"false", _linksChanged?"true":"false", databaseNameChanged?"true":"false");
 			}
 			if(postInitClosingEvents) UEventsManager::post(new RtabmapEventInit(uFormat("Closing database \"%s\"...", _dbDriver->getUrl().c_str())));
@@ -750,10 +662,8 @@ void Memory::close(bool databaseSaved, bool postInitClosingEvents, const std::st
 	{
 		UINFO("Saving memory...");
 		if(postInitClosingEvents) UEventsManager::post(new RtabmapEventInit("Saving memory..."));
-		if(_dbDriver)
+		if(!_memoryChanged && _dbDriver)
 		{
-			// Must be done before clear(), which clears the dictionary.
-			// saveFlannIndex() saves only if the dictionary has been modified.
 			saveFlannIndex(postInitClosingEvents);
 		}
 		this->clear();
@@ -1001,7 +911,7 @@ void Memory::parseParameters(const ParametersMap & parameters)
 			if(corRatio >= 0.5)
 			{
 				UWARN(	"%s is >=0.5, which sets correspondence ratio for proximity detection using "
-					"laser scans to 100%% (2 x Ratio). You may lower the ratio to accept proximity "
+					"laser scans to 100% (2 x Ratio). You may lower the ratio to accept proximity "
 					"detection with not full scans overlapping.", Parameters::kIcpCorrespondenceRatio().c_str());
 			}
 			_registrationIcpMulti->parseParameters(paramsMulti);
@@ -1169,7 +1079,7 @@ bool Memory::update(
 	}
 	else
 	{
-		if(this->getWorkingMemSize(true) == 0)
+		if(_workingMem.size() <= 1)
 		{
 			UWARN("The working memory is empty and the memory is not "
 				  "incremental (Mem/IncrementalMemory=False), no loop closure "
@@ -1345,16 +1255,12 @@ void Memory::addSignatureToStm(Signature * signature, const cv::Mat & covariance
 
 		_signatures.insert(_signatures.end(), std::pair<int, Signature *>(signature->id(), signature));
 		_stMem.insert(_stMem.end(), signature->id());
-		if(signature->getWeight() == -1)
-		{
-			++_stMemIntermediateNodesCount;
-		}
 		if(!signature->getGroundTruthPose().isNull()) {
 			_groundTruths.insert(std::make_pair(signature->id(), signature->getGroundTruthPose()));
 		}
 		++_signaturesAdded;
 
-		UDEBUG("%d words ref for the signature %d (weight=%d)", (int)signature->getWords().size(), signature->id(), signature->getWeight());
+		UDEBUG("%d words ref for the signature %d (weight=%d)", signature->getWords().size(), signature->id(), signature->getWeight());
 		if(signature->getWords().size())
 		{
 			signature->setEnabled(true);
@@ -1370,10 +1276,6 @@ void Memory::addSignatureToWmFromLTM(Signature * signature)
 	{
 		UDEBUG("Inserting node %d in WM...", signature->id());
 		_workingMem.insert(std::make_pair(signature->id(), UTimer::now()));
-		if(signature->getWeight() == -1)
-		{
-			++_workingMemIntermediateNodesCount;
-		}
 		_signatures.insert(std::pair<int, Signature*>(signature->id(), signature));
 		if(!signature->getGroundTruthPose().isNull()) {
 			_groundTruths.insert(std::make_pair(signature->id(), signature->getGroundTruthPose()));
@@ -1408,11 +1310,6 @@ int Memory::reduceNode(int id, float maxDistance, bool keepLinkedInDb, int direc
 		UWARN("Node %d is not in WM/STM, cannot reduce it.", id);
 		return 0;
 	}
-	else if(s->getWeight() == -1)
-	{
-		UWARN("Cannot reduce intermediate node %d (not supported).", id);
-		return 0;
-	}
 
 	if(!s->getLabel().empty())
 	{
@@ -1429,11 +1326,6 @@ int Memory::reduceNode(int id, float maxDistance, bool keepLinkedInDb, int direc
 		{
 			float distance = iter->second.transform().getNorm();
 			reducedTo = iter->second.to();
-			if(this->_getSignature(reducedTo) == 0)
-			{
-				UWARN("Node %d is not in WM/STM, cannot reduce %d to it.", reducedTo, id);
-				return 0;
-			}
 			UDEBUG("Reduce %d to %d (distance=%f)",
 				s->id(), iter->second.to(), distance);
 		}
@@ -1441,18 +1333,6 @@ int Memory::reduceNode(int id, float maxDistance, bool keepLinkedInDb, int direc
 		if(iter->second.type() == Link::kNeighbor)
 		{
 			neighbors.insert(*iter);
-			// neighbors should not be intermediate nodes
-			Signature * sTo = this->_getSignature(iter->first);
-			if(sTo == 0)
-			{
-				UWARN("Neighbor node %d is not in WM/STM, cannot reduce %d.", iter->first, id);
-				return 0;
-			}
-			else if(sTo->getWeight() == -1)
-			{
-				UWARN("Neighbor node %d is an intermediate node (not supported), cannot reduce %d.", iter->first, id);
-				return 0;
-			}
 		}
 	}
 	if(reducedTo>0)
@@ -1561,10 +1441,10 @@ void Memory::moveSignatureToWMFromSTM(int id, int * reducedToOut)
 		else
 		{
 			std::multimap<int, Link> links = s->getLinks();
-			// Setting keepLinkedInDb=true to make sure we save all visual
+			// Setting true to make sure we save all visual
 			// words that could be referenced in a previously
 			// transferred node in LTM (#979)
-			reducedId = reduceNode(s->id(), 0, /*keepLinkedInDb*/ true);
+			reducedId = reduceNode(s->id(), 0, true);
 			if(reducedToOut) {
 				*reducedToOut = reducedId;
 			}
@@ -1586,11 +1466,6 @@ void Memory::moveSignatureToWMFromSTM(int id, int * reducedToOut)
 	if(reducedId == 0)
 	{
 		_workingMem.insert(_workingMem.end(), std::make_pair(*_stMem.begin(), UTimer::now()));
-		if(this->_getSignature(*_stMem.begin())->getWeight() == -1)
-		{
-			++_workingMemIntermediateNodesCount;
-			--_stMemIntermediateNodesCount;
-		}
 		_stMem.erase(*_stMem.begin());
 	}
 	// else already removed from STM/WM in reduceNode()
@@ -1609,19 +1484,6 @@ Signature * Memory::_getSignature(int id) const
 const VWDictionary * Memory::getVWDictionary() const
 {
 	return _vwd;
-}
-
-size_t Memory::getWorkingMemSize(bool ignoreIntermediateNodes) const
-{
-	// -1 removes the virtual place
-	if(!ignoreIntermediateNodes)
-	{
-		return _workingMem.size() - 1;
-	}
-	else
-	{
-		return _workingMem.size() - 1 - _workingMemIntermediateNodesCount;
-	}
 }
 
 std::multimap<int, Link> Memory::getNeighborLinks(
@@ -2157,10 +2019,9 @@ void Memory::clear()
 	}
 	if(_stMem.size() != 0)
 	{
-		ULOGGER_ERROR("_stMem must be empty here, size=%d", (int)_stMem.size());
+		ULOGGER_ERROR("_stMem must be empty here, size=%d", _stMem.size());
 	}
 	_stMem.clear();
-	_stMemIntermediateNodesCount = 0;
 
 	this->cleanUnusedWords();
 
@@ -2177,15 +2038,18 @@ void Memory::clear()
 	}
 
 	// Save some stats to the db, save only when the mem is not empty
-	size_t workingMemSize = this->getWorkingMemSize(false);
-	if(_dbDriver && (_stMem.size() || workingMemSize))
+	if(_dbDriver && (_stMem.size() || _workingMem.size()))
 	{
-		unsigned int memSize = workingMemSize + _stMem.size();
+		unsigned int memSize = (unsigned int)(_workingMem.size() + _stMem.size());
+		if(_workingMem.size() && _workingMem.begin()->first < 0)
+		{
+			--memSize;
+		}
 
 		// this is only a safe check...not supposed to occur.
 		UASSERT_MSG(memSize == _signatures.size(),
 				uFormat("The number of signatures don't match! _workingMem=%d, _stMem=%d, _signatures=%d",
-						(int)workingMemSize, (int)_stMem.size(), (int)_signatures.size()).c_str());
+						_workingMem.size(), _stMem.size(), _signatures.size()).c_str());
 
 		UDEBUG("Adding statistics after run...");
 		if(_memoryChanged)
@@ -2229,13 +2093,12 @@ void Memory::clear()
 
 	if(_workingMem.size() != 0 && !(_workingMem.size() == 1 && _workingMem.begin()->first == kIdVirtual))
 	{
-		ULOGGER_ERROR("_workingMem must be empty here, size=%d", (int)_workingMem.size());
+		ULOGGER_ERROR("_workingMem must be empty here, size=%d", _workingMem.size());
 	}
 	_workingMem.clear();
-	_workingMemIntermediateNodesCount = 0;
 	if(_signatures.size()!=0)
 	{
-		ULOGGER_ERROR("_signatures must be empty here, size=%d", (int)_signatures.size());
+		ULOGGER_ERROR("_signatures must be empty here, size=%d", _signatures.size());
 	}
 	_signatures.clear();
 
@@ -2619,7 +2482,7 @@ std::map<int, Transform> Memory::loadOptimizedPoses(Transform * lastlocalization
 				  "poses to force re-update. If you want to use the "
 				  "saved optimized poses, set %s to true",
 				  (int)poses.size(),
-				  (int)this->getWorkingMemSize(false),
+				  (int)_workingMem.size()-1, // less virtual place
 				  Parameters::kMemInitWMWithAllNodes().c_str());
 			return std::map<int, Transform>();
 		}
@@ -2631,15 +2494,9 @@ std::map<int, Transform> Memory::loadOptimizedPoses(Transform * lastlocalization
 
 void Memory::save2DMap(const cv::Mat & map, float xMin, float yMin, float cellSize) const
 {
-	if(_dbDriver && !this->isReadOnly())
+	if(_dbDriver)
 	{
 		_dbDriver->save2DMap(map, xMin, yMin, cellSize);
-	}
-	else
-	{
-		UERROR("Attempting to write back 2D map but the database "
-			"is opened in read-only mode (%s=true), skipping.",
-			Parameters::kMemLocalizationReadOnly().c_str());
 	}
 }
 
@@ -2731,25 +2588,20 @@ public:
 		}
 		return false;
 	}
-	int weight;
-	double age;
-	int id;
+	int weight, age, id;
 };
-
 std::list<Signature *> Memory::getRemovableSignatures(int count, const std::set<int> & ignoredIds)
 {
 	//UDEBUG("");
 	std::list<Signature *> removableSignatures;
 	std::map<WeightAgeIdKey, Signature *> weightAgeIdMap;
 
-	size_t workingMemSize = this->getWorkingMemSize(true);
-
 	// Find the last index to check...
-	UDEBUG("mem.size()=%d, ignoredIds.size()=%d", (int)workingMemSize, (int)ignoredIds.size());
+	UDEBUG("mem.size()=%d, ignoredIds.size()=%d", (int)_workingMem.size(), (int)ignoredIds.size());
 
-	if(workingMemSize > 0)
+	if(_workingMem.size())
 	{
-		int recentWmMaxSize = _recentWmRatio * float(workingMemSize);
+		int recentWmMaxSize = _recentWmRatio * float(_workingMem.size());
 		bool recentWmImmunized = false;
 		// look for the position of the lastLoopClosureId in WM
 		int currentRecentWmSize = 0;
@@ -2766,7 +2618,7 @@ std::list<Signature *> Memory::getRemovableSignatures(int count, const std::set<
 			{
 				recentWmImmunized = true;
 			}
-			else if(currentRecentWmSize == 0)
+			else if(currentRecentWmSize == 0 && _workingMem.size() > 1)
 			{
 				UERROR("Last loop closure id not found in WM (%d)", _lastGlobalLoopClosureId);
 			}
@@ -2875,20 +2727,6 @@ void Memory::moveToTrash(Signature * s, bool keepLinkedToGraph, std::list<int> *
 	//UDEBUG("id=%d", s?s->id():0);
 	if(s)
 	{
-		// Keep the WM/STM intermediate-node counters in sync now, before the weight
-		// may be set to -9 below.
-		if(s->getWeight() == -1)
-		{
-			if(this->isInWM(s->id()))
-			{
-				--_workingMemIntermediateNodesCount;
-			}
-			else if(this->isInSTM(s->id()))
-			{
-				--_stMemIntermediateNodesCount;
-			}
-		}
-
 		// Cleanup landmark indexes
 		if(!s->getLandmarks().empty())
 		{
@@ -3205,7 +3043,7 @@ bool Memory::setUserData(int id, const cv::Mat & data)
 	}
 	else
 	{
-		UERROR("Node %d not found in RAM, failed to set user data (size=%d)!", id, (int)data.total());
+		UERROR("Node %d not found in RAM, failed to set user data (size=%d)!", id, data.total());
 	}
 	return false;
 }
@@ -3216,19 +3054,6 @@ void Memory::convertToIntermediate(int locationId)
 	Signature * location = _getSignature(locationId);
 	if(location)
 	{
-		// Keep the WM/STM intermediate-node counters in sync if the node is
-		// converted while already resident in memory.
-		if(location->getWeight() >= 0)
-		{
-			if(this->isInWM(locationId))
-			{
-				++_workingMemIntermediateNodesCount;
-			}
-			else if(this->isInSTM(locationId))
-			{
-				++_stMemIntermediateNodesCount;
-			}
-		}
 		location->setWeight(-1);
 		location->sensorData().setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), cv::Mat());
 		this->disableWordsRef(locationId); // won't be used for loop closure detection anymore
@@ -3246,18 +3071,13 @@ void Memory::convertToIntermediate(int locationId)
 	}
 }
 
-void Memory::deleteLocation(int locationId, std::list<int> * deletedWords, bool keepLinkedInDb)
+void Memory::deleteLocation(int locationId, std::list<int> * deletedWords)
 {
-	UDEBUG("Deleting location %d (keepLinkedInDb=%s)", locationId, keepLinkedInDb?"true":"false");
+	UDEBUG("Deleting location %d", locationId);
 	Signature * location = _getSignature(locationId);
 	if(location)
 	{
-		this->moveToTrash(location, keepLinkedInDb, deletedWords);
-		_memoryChanged = true;
-	}
-	else
-	{
-		UWARN("Location %d has not been found in STM/WM, cannot delete it.", locationId);
+		this->moveToTrash(location, false, deletedWords);
 	}
 }
 
@@ -3394,7 +3214,7 @@ Transform Memory::computeTransform(
 		{
 			info->rejectedMsg = msg;
 		}
-		UWARN("%s", msg.c_str());
+		UWARN(msg.c_str());
 	}
 	return transform;
 }
@@ -3711,7 +3531,7 @@ Transform Memory::computeTransform(
 
 				UDEBUG("sba...start");
 				// set root negative to fix all other poses
-				BAOutliers sbaOutliers;
+				std::set<int> sbaOutliers;
 				UTimer bundleTimer;
 				OptimizerG2O sba(parameters_);
 				sba.setIterations(5);
@@ -3719,34 +3539,24 @@ Transform Memory::computeTransform(
 				bundlePoses = sba.optimizeBA(-toS.id(), bundlePoses, bundleLinks, bundleModels, points3DMap, wordReferences, &sbaOutliers);
 				UDEBUG("sba...end");
 
-				int sbaOutliersCount = 0;
-				for(unsigned int i=0; i<info->inliersIDs.size(); ++i)
-				{
-					BAOutliers::const_iterator iter = sbaOutliers.find(info->inliersIDs[i]);
-					if(iter != sbaOutliers.end() && iter->second.find(toS.id()) != iter->second.end())
-					{
-						++sbaOutliersCount;
-					}
-				}
-				UDEBUG("bundleTime=%fs (poses=%d wordRef=%d outliers=%d)", bundleTime.ticks(), (int)bundlePoses.size(), totalWordReferences, sbaOutliersCount);
+				UDEBUG("bundleTime=%fs (poses=%d wordRef=%d outliers=%d)", bundleTime.ticks(), (int)bundlePoses.size(), totalWordReferences, (int)sbaOutliers.size());
 
 				UDEBUG("Local Bundle Adjustment Before: %s", transform.prettyPrint().c_str());
 				if(!bundlePoses.rbegin()->second.isNull())
 				{
-					if(sbaOutliersCount)
+					if(sbaOutliers.size())
 					{
 						std::vector<int> newInliers(info->inliersIDs.size());
 						int oi=0;
 						for(unsigned int i=0; i<info->inliersIDs.size(); ++i)
 						{
-							BAOutliers::const_iterator iter = sbaOutliers.find(info->inliersIDs[i]);
-							if(iter == sbaOutliers.end() || iter->second.find(toS.id()) == iter->second.end())
+							if(sbaOutliers.find(info->inliersIDs[i]) == sbaOutliers.end())
 							{
 								newInliers[oi++] = info->inliersIDs[i];
 							}
 						}
 						newInliers.resize(oi);
-						UDEBUG("BA outliers ratio %f", float(sbaOutliersCount)/float(info->inliersIDs.size()));
+						UDEBUG("BA outliers ratio %f", float(sbaOutliers.size())/float(info->inliersIDs.size()));
 						info->inliers = (int)newInliers.size();
 						info->inliersIDs = newInliers;
 					}
@@ -3783,7 +3593,7 @@ Transform Memory::computeTransform(
 		{
 			info->rejectedMsg = msg;
 		}
-		UWARN("%s", msg.c_str());
+		UWARN(msg.c_str());
 	}
 	return transform;
 }
@@ -3860,12 +3670,7 @@ Transform Memory::computeIcpTransformMulti(
 			guessNorm > fromScan.rangeMax() + toScan.rangeMax())
 		{
 			// stop right known,it is impossible that scans overlay.
-			const std::string rejected = uFormat("Too far scans between %d and %d to compute transformation: guessNorm=%f, scan range from=%f to=%f", fromId, toId, guessNorm, fromScan.rangeMax(), toScan.rangeMax());
-			UINFO("%s", rejected.c_str());
-			if(info)
-			{
-				info->rejectedMsg = rejected;
-			}
+			UINFO("Too far scans between %d and %d to compute transformation: guessNorm=%f, scan range from=%f to=%f", fromId, toId, guessNorm, fromScan.rangeMax(), toScan.rangeMax());
 			return t;
 		}
 
@@ -4003,12 +3808,6 @@ Transform Memory::computeIcpTransformMulti(
 		{
 			t = t.inverse();
 		}
-	}
-	else if(info)
-	{
-		info->rejectedMsg = uFormat("Node %d (scan %s) or %d (scan %s) has no laser scan, cannot compute ICP transform.",
-				fromId, fromScan.isEmpty()?"empty":"ok",
-				toId, toScan.isEmpty()?"empty":"ok");
 	}
 
 	return t;
@@ -5171,7 +4970,7 @@ Signature * Memory::createSignature(const SensorData & inputData, const Transfor
 
 	if(this->getSignatures().empty() && isIntermediateNode)
 	{
-		UWARN("Ignoring input data with stamp %f because the first node in memory cannot be an intermediate node.", inputData.stamp());
+		UWARN("Ignoring input data with stamp %s because the first node in memory cannot be an intermediate node.", inputData.stamp());
 		return 0;
 	}
 
@@ -5232,7 +5031,6 @@ Signature * Memory::createSignature(const SensorData & inputData, const Transfor
 						data.depthOrRightRaw().rows,
 						data.depthOrRightRaw().type(),
 						CV_16UC1, CV_32FC1, CV_8UC1, CV_8UC3).c_str());
-	UASSERT_MSG(!_dummyDictionary, "Memory::createSignature() cannot be called if the memory has been initialized with a dummy dictionary.");
 
 	if(!data.depthOrRightRaw().empty() &&
 		data.cameraModels().empty() &&
@@ -5396,21 +5194,11 @@ Signature * Memory::createSignature(const SensorData & inputData, const Transfor
 		UDEBUG("time rectification = %fs", t);
 	}
 
-	int notIntermediateNodesCount = 0;
-	for(std::set<int>::iterator iter=_stMem.begin(); iter!=_stMem.end(); ++iter)
-	{
-		const Signature * s = this->getSignature(*iter);
-		UASSERT(s != 0);
-		if(s->getWeight() >= 0)
-		{
-			++notIntermediateNodesCount;
-		}
-	}
-	int treeSize= int(this->getWorkingMemSize(true) + notIntermediateNodesCount);
+	int treeSize= int(_workingMem.size() + _stMem.size());
 	int meanWordsPerLocation = _feature2D->getMaxFeatures()>0?_feature2D->getMaxFeatures():0;
-	if(meanWordsPerLocation==0 && treeSize > 0)
+	if(meanWordsPerLocation==0 && treeSize > 1)
 	{
-		meanWordsPerLocation = _vwd->getTotalActiveReferences() / treeSize;
+		meanWordsPerLocation = _vwd->getTotalActiveReferences() / (treeSize-1); // ignore virtual signature
 	}
 	else if(_useOdometryFeatures) {
 		// To not detect first image as bad signature if odometry 
@@ -5462,7 +5250,7 @@ Signature * Memory::createSignature(const SensorData & inputData, const Transfor
 				      "with the first camera (rgb=%dx%d, depth=%dx%d). Aborting upside up rotation, "
 					  "will use original image orientation. Set parameter %s to false to avoid "
 					  "this warning.",
-						(int)i,
+						i,
 						rgb.cols, rgb.rows,
 						depth.cols, depth.rows,
 						subOutputImageWidth, rotatedColorImages.rows,
@@ -5585,7 +5373,7 @@ Signature * Memory::createSignature(const SensorData & inputData, const Transfor
 			cv::Mat imageMono;
 			if(decimatedData.imageRaw().channels() == 3)
 			{
-				cv::cvtColor(decimatedData.imageRaw(), imageMono, cv::COLOR_BGR2GRAY);
+				cv::cvtColor(decimatedData.imageRaw(), imageMono, CV_BGR2GRAY);
 			}
 			else
 			{
@@ -5893,7 +5681,7 @@ Signature * Memory::createSignature(const SensorData & inputData, const Transfor
 				cv::Mat imageMono;
 				if(data.imageRaw().channels() == 3)
 				{
-					cv::cvtColor(data.imageRaw(), imageMono, cv::COLOR_BGR2GRAY);
+					cv::cvtColor(data.imageRaw(), imageMono, CV_BGR2GRAY);
 				}
 				else
 				{
@@ -6289,7 +6077,7 @@ Signature * Memory::createSignature(const SensorData & inputData, const Transfor
 						{
 							// Bearing/Range in 2D, set X as bearing and Y as range (see OptimizerGTSAM)
 							covariance(cv::Range(0,1), cv::Range(0,1)) *= _markerAngVariance;
-							covariance(cv::Range(1,2), cv::Range(1,2)) *= _markerLinVariance;
+							covariance(cv::Range(1,3), cv::Range(1,3)) *= _markerLinVariance;
 						}
 						else
 						{
@@ -7040,7 +6828,7 @@ void Memory::disableWordsRef(int signatureId)
 void Memory::cleanUnusedWords()
 {
 	std::vector<VisualWord*> removedWords = _vwd->getUnusedWords();
-	UDEBUG("Removing %d words (dictionary size=%d)...", (int)removedWords.size(), (int)_vwd->getVisualWords().size());
+	UDEBUG("Removing %d words (dictionary size=%d)...", removedWords.size(), _vwd->getVisualWords().size());
 	if(removedWords.size())
 	{
 		// remove them from the dictionary
@@ -7062,7 +6850,7 @@ void Memory::cleanUnusedWords()
 
 void Memory::enableWordsRef(const std::list<int> & signatureIds)
 {
-	UDEBUG("size=%d", (int)signatureIds.size());
+	UDEBUG("size=%d", signatureIds.size());
 	UTimer timer;
 	timer.start();
 
@@ -7094,7 +6882,7 @@ void Memory::enableWordsRef(const std::list<int> & signatureIds)
 		UWARN("Dictionary is fixed, but some words retrieved have not been found!?");
 	}
 
-	UDEBUG("oldWordIds.size()=%d, getOldIds time=%fs", (int)oldWordIds.size(), timer.ticks());
+	UDEBUG("oldWordIds.size()=%d, getOldIds time=%fs", oldWordIds.size(), timer.ticks());
 
 	// the words were deleted, so try to match it with an active word
 	std::list<VisualWord *> vws;
@@ -7103,14 +6891,14 @@ void Memory::enableWordsRef(const std::list<int> & signatureIds)
 		// get the descriptors
 		_dbDriver->loadWords(oldWordIds, vws);
 	}
-	UDEBUG("loading words(%d) time=%fs", (int)oldWordIds.size(), timer.ticks());
+	UDEBUG("loading words(%d) time=%fs", oldWordIds.size(), timer.ticks());
 
 
 	if(vws.size())
 	{
 		//Search in the dictionary
 		std::vector<int> vwActiveIds = _vwd->findNN(vws);
-		UDEBUG("find active ids (number=%d) time=%fs", (int)vws.size(), timer.ticks());
+		UDEBUG("find active ids (number=%d) time=%fs", vws.size(), timer.ticks());
 		int i=0;
 		for(std::list<VisualWord *>::iterator iterVws=vws.begin(); iterVws!=vws.end(); ++iterVws)
 		{
@@ -7134,7 +6922,7 @@ void Memory::enableWordsRef(const std::list<int> & signatureIds)
 			}
 			++i;
 		}
-		UDEBUG("Added %d to dictionary, time=%fs", (int)(vws.size()-refsToChange.size()), timer.ticks());
+		UDEBUG("Added %d to dictionary, time=%fs", vws.size()-refsToChange.size(), timer.ticks());
 
 		//update the global references map and update the signatures reactivated
 		for(std::map<int, int>::const_iterator iter=refsToChange.begin(); iter != refsToChange.end(); ++iter)
@@ -7145,7 +6933,7 @@ void Memory::enableWordsRef(const std::list<int> & signatureIds)
 				(*j)->changeWordsRef(iter->first, iter->second);
 			}
 		}
-		UDEBUG("changing ref, total=%d, time=%fs", (int)refsToChange.size(), timer.ticks());
+		UDEBUG("changing ref, total=%d, time=%fs", refsToChange.size(), timer.ticks());
 	}
 
 	int count = _vwd->getTotalActiveReferences();
@@ -7172,7 +6960,7 @@ void Memory::enableWordsRef(const std::list<int> & signatureIds)
 	}
 
 	count = _vwd->getTotalActiveReferences() - count;
-	UDEBUG("%d words total ref added from %d signatures, time=%fs...", count, (int)surfSigns.size(), timer.ticks());
+	UDEBUG("%d words total ref added from %d signatures, time=%fs...", count, surfSigns.size(), timer.ticks());
 }
 
 std::set<int> Memory::reactivateSignatures(const std::list<int> & ids, unsigned int maxLoaded, double & timeDbAccess)

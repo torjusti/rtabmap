@@ -68,6 +68,70 @@ void RTABMAP_CORE_EXPORT setRansacDeterministicSeed(bool enable);
 bool RTABMAP_CORE_EXPORT ransacDeterministicSeedEnabled();
 
 /**
+ * @brief Computes the covariance of the estimated camera pose.
+ *
+ * This function computes the covariance of the camera pose estimated by estimateMotion3DTo2D.
+ * Several strategies are available to compute the covariance, depending on the provided parameters.
+ * At the moment, this function is only implemented for the 3D->2D case, and only used in the single-camera setup.
+ * 
+ * @param computeFullCovariance Whether to compute the full covariance matrix.
+ * @param useInlierCovariance Whether to use inlier covariances.
+ * @param objectPoints 3D points in the world coordinate system.
+ * @param imagePoints 2D points in the image coordinate system.
+ * @param inliers Indices of the inliers.
+ * @param matches Feature matches between the two frames.
+ * @param cameraModel Camera model with intrinsic parameters.
+ * @param transform Estimated camera transform.
+ * @param rvec Rotation vector (Rodrigues).
+ * @param tvec Translation vector.
+ * @param covariances3A Covariances for 3D points in frame A.
+ * @param covariances3B Covariances for 3D points in frame B.
+ * @param words3B 3D points in frame B, indexed by feature ID.
+ * @param splitLinearCovarianceComponents Whether to split linear covariance components.
+ * @param varianceMedianRatio Index divisor used to select the robust variance threshold from sorted error residuals.
+ * @param pixelVariance Variance of pixel coordinates.
+ * @param depthVariance Variance of depth values.
+ *
+ * @return The computed pose covariance matrix.
+ *
+ * @note
+ * If `computeFullCovariance` is true, the 2d reprojection derivatives are calculated using
+ * cv::reprojectPoints. Then, the covariance is computed using the Jacobian of the reprojection 
+ * error with respect to the pose parameters. There are several ways to do that described below.
+ * 	- If `useInlierCovariance` is false, the final pose covariance is computed in the classical way.
+ *    If it is true, feature covariance are used inside the pose covariance formula.
+ * 	- If pixelVariance and depthVariance are provided, they can serve as the typical covariance value 
+ *    for a given feature, which is then propagated to compute the final pose covariance.
+ * 	- If `covariances3A` and `covariances3B` are provided, they will be used instead of the default
+ *    pixelVariance and depthVariance to compute the pose covariance.
+ * 	- If `splitLinearCovarianceComponents` is true, the linear components of the covariance are split.
+ * If `computeFullCovariance` is false, we compute a heuristic covariance 
+ *  - If `words3B` is provided, 3D variance is computed by comparing reprojected points to actual transformed points.
+ *  - If `words3B` is empty, variance is estimated using reprojection error only.
+ *  - For either strategy, if additionally `useInlierCovariance` is true, the covariance of the inliers is used to weigh 
+ *    the error values. Covariance values used will be either `covariances3A` or `covariances3B` if provided, or 
+ *    calculated from `pixelVariance` and `depthVariance` otherwise.
+ */
+cv::Mat RTABMAP_CORE_EXPORT computePoseCovariance(
+    bool computeFullCovariance, 
+    bool useInlierCovariance,
+    const std::vector<cv::Point3f>& objectPoints,
+    const std::vector<cv::Point2f>& imagePoints,
+    const std::vector<int>& inliers,
+    const std::vector<int>& matches,
+    const CameraModel& cameraModel,
+    const Transform& transform,
+    const cv::Mat& rvec,
+    const cv::Mat& tvec,
+    const std::map<int, cv::Matx33f>& covariances3A,
+    const std::map<int, cv::Matx33f>& covariances3B,
+    const std::map<int, cv::Point3f>& words3B,
+    bool splitLinearCovarianceComponents,
+    int varianceMedianRatio,
+    float pixelVariance,
+    float depthVariance);
+
+/**
  * @brief Estimates a 6-DOF camera transform from 3D-2D point correspondences using PnP RANSAC.
  *
  * This function estimates the motion (transform) between two views by solving the Perspective-n-Point (PnP)
@@ -91,16 +155,27 @@ bool RTABMAP_CORE_EXPORT ransacDeterministicSeedEnabled();
  * @param matchesOut Optional output vector of all matched IDs used (regardless of inlier status).
  * @param inliersOut Optional output vector of matched IDs that were determined to be inliers.
  * @param splitLinearCovarianceComponents Whether to split and compute variance for X, Y, Z components separately.
- *
+ * @param covariances3A Optional map of 3D point covariances in frame A, indexed by feature ID.
+ * @param covariances3B Optional map of 3D point covariances in frame B, indexed by feature ID.
+ * @param useMsac If true, uses MSAC instead of RANSAC for robust estimation.
+ * @param pixelVariance Default variance of pixel coordinates (typically used if `covariances3A` and `covariances3B` are not provided).
+ * @param depthVariance Default variance of depth values (typically used if `covariances3A` and `covariances3B` are not provided).
+ * @param computeFullCovariance If true, computes the exact covariance matrix of the estimated pose
+ * @param useInlierVariance If true, uses the covariance of inliers to weigh the error values when computing pose covariance.
+ * 
  * @return The estimated transformation from frame B to frame A. If estimation fails or is rejected due to variance,
  *         a null transform is returned (i.e., `transform.isNull()` will be true).
  *
  * @note
- * - If `words3B` is provided, 3D variance is computed by comparing reprojected points to actual transformed points.
- * - If `words3B` is empty, variance is estimated using reprojection error only.
  * - The function assumes the camera model's local transform is known and factored into the pose estimation.
- *
- * @see cv::solvePnPRansac
+ * - The function uses either OpenCV's `cv::solvePnPRansac` or OpenGV's multi-camera PnP solver depending on the input.
+ * - As an experimental feature, a custom implementation of an Msac solver is available for PnP, which can be enabled with `useMsac=true`.
+ *   The Msac branch is able to leverage 3d covariance information of features, using Mahalanobis distances for the cost function of the sample	consensus.
+ *   The classical Msac strategy is used when either one of depthVariance or pixelVariance is set to 0, otherwise the covariance-aware Msac strategy is used.
+ *   Note that the Msac implementation is not compatible with the multi-camera setup, is still experimental and may not be as robust as the standard RANSAC implementation.
+ *   Lastly, pixelVariance needs to be carefully chosen as underestimating it will lead to degenerate solutions.
+ * 
+ * @see computePoseCovariance, cv::solvePnPRansac, cv::custom::solvePnPMsac
  */
 Transform RTABMAP_CORE_EXPORT estimateMotion3DTo2D(
 			const std::map<int, cv::Point3f> & words3A,
@@ -118,7 +193,14 @@ Transform RTABMAP_CORE_EXPORT estimateMotion3DTo2D(
 			cv::Mat * covariance = 0, // mean reproj error if words3B is not set
 			std::vector<int> * matchesOut = 0,
 			std::vector<int> * inliersOut = 0,
-			bool splitLinearCovarianceComponents = false);
+			bool splitLinearCovarianceComponents = false,
+			const std::map<int, cv::Matx33f>& covariances3A = std::map<int, cv::Matx33f>(),
+			const std::map<int, cv::Matx33f>& covariances3B = std::map<int, cv::Matx33f>(),
+			bool useMsac = false,
+			float pixelVariance = 2 * 2,
+			float depthVariance = 0.05 * 0.05,
+			bool computeFullCovariance = false, 
+			bool useInlierVariance = false);
 
 /**
  * @brief Estimates the 3D-to-2D motion (pose) transformation between a set of 3D points and their corresponding 2D keypoints using the OpenGV library.
@@ -194,7 +276,7 @@ Transform RTABMAP_CORE_EXPORT estimateMotion3DTo2D(
 			std::vector<int> * matchesOut = 0,
 			std::vector<int> * inliersOut = 0,
 			bool splitLinearCovarianceComponents = false);
-
+			
 /**
  * @brief Estimates the 3D rigid transformation between two sets of 3D points.
  *

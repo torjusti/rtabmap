@@ -54,6 +54,19 @@ namespace util3d
 std::vector<cv::Point3f> generateKeypoints3DDepth(
 		const std::vector<cv::KeyPoint> & keypoints,
 		const cv::Mat & depth,
+		const CameraModel & cameraModel,
+		float minDepth,
+		float maxDepth)
+{
+	UASSERT(cameraModel.isValidForProjection());
+	std::vector<CameraModel> models;
+	models.push_back(cameraModel);
+	return generateKeypoints3DDepth(keypoints, depth, models, minDepth, maxDepth);
+}
+
+std::vector<cv::Point3f> generateKeypoints3DDepth(
+		const std::vector<cv::KeyPoint> & keypoints,
+		const cv::Mat & depth,
 		const std::vector<CameraModel> & cameraModels,
 		float minDepth,
 		float maxDepth)
@@ -117,6 +130,51 @@ std::vector<cv::Point3f> generateKeypoints3DDepth(
 	std::vector<CameraModel> models;
 	models.push_back(cameraModel);
 	return generateKeypoints3DDepth(keypoints, depth, models, minDepth, maxDepth);
+}
+
+std::map<int, int> generateKeypoints3DConfidence(
+    const std::map<int, int> & uniqueWords,
+    const std::vector<cv::KeyPoint> & keypoints,
+    const std::vector<cv::Point3f> & points3D,
+    const cv::Mat & confidence,
+    const std::vector<CameraModel> & cameraModels)
+{
+    std::map<int, int> confidences;
+    if(confidence.empty() || cameraModels.empty()) return confidences;
+
+    float subImageWidth = static_cast<float>(confidence.cols) / static_cast<float>(cameraModels.size());
+    float rgbToDepthFactorX = 1.0f / (cameraModels[0].imageWidth() > 0 ? float(cameraModels[0].imageWidth()) / subImageWidth : 1.0f);
+    float rgbToDepthFactorY = 1.0f / (cameraModels[0].imageHeight() > 0 ? float(cameraModels[0].imageHeight()) / float(confidence.rows) : 1.0f);
+
+    for(std::map<int, int>::const_iterator iter = uniqueWords.begin(); iter != uniqueWords.end(); ++iter)
+    {
+        int id = iter->first;
+        int index = iter->second;
+        
+        if(index < (int)points3D.size() && util3d::isFinite(points3D[index]))
+        {
+            const cv::KeyPoint & kpt = keypoints[index];
+            float x = kpt.pt.x * rgbToDepthFactorX;
+            float y = kpt.pt.y * rgbToDepthFactorY;
+            int cameraIndex = int(x / subImageWidth);
+            
+            float confVal = util2d::getConfidence(
+                cameraModels.size() == 1 ? confidence : cv::Mat(confidence, cv::Range::all(), cv::Range(static_cast<int>(subImageWidth * cameraIndex), static_cast<int>(subImageWidth * (cameraIndex + 1)))),
+                x - subImageWidth * cameraIndex,
+                y,
+                true);
+
+            int confidenceScore = 0;
+            if(confVal >= 0.0f)
+            {
+                confidenceScore = int(confVal * 100.0f);
+                if(confidenceScore < 0) confidenceScore = 0;
+                else if(confidenceScore > 100) confidenceScore = 100;
+            }
+            confidences[id] = confidenceScore;
+        }
+    }
+    return confidences;
 }
 
 std::vector<cv::Point3f> generateKeypoints3DDisparity(

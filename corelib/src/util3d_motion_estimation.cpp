@@ -39,6 +39,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <pcl/common/common.h>
 
 #include "opencv/solvepnp.h"
+#include "opencv/solvepnp_msac.h"
 
 #ifdef RTABMAP_OPENGV
 #include <opengv/absolute_pose/methods.hpp>
@@ -75,35 +76,43 @@ bool ransacDeterministicSeedEnabled()
 }
 
 Transform estimateMotion3DTo2D(
-			const std::map<int, cv::Point3f> & words3A,
-			const std::map<int, cv::KeyPoint> & words2B,
-			const CameraModel & cameraModel,
-			int minInliers,
-			int iterations,
-			double reprojError,
-			int flagsPnP,
-			int refineIterations,
-			int varianceMedianRatio,
-			float maxVariance,
-			const Transform & guess,
-			const std::map<int, cv::Point3f> & words3B,
-			cv::Mat * covariance,
-			std::vector<int> * matchesOut,
-			std::vector<int> * inliersOut,
-			bool splitLinearCovarianceComponents)
+    const std::map<int, cv::Point3f> & words3A,
+    const std::map<int, cv::KeyPoint> & words2B,
+    const CameraModel & cameraModel,
+    int minInliers,
+    int iterations,
+    double reprojError,
+    int flagsPnP,
+    int refineIterations,
+    int varianceMedianRatio,
+    float maxVariance,
+    const Transform & guess,
+    const std::map<int, cv::Point3f> & words3B,
+    cv::Mat * covariance,
+    std::vector<int> * matchesOut,
+    std::vector<int> * inliersOut,
+    bool splitLinearCovarianceComponents,
+    const std::map<int, cv::Matx33f>& covariances3A,
+    const std::map<int, cv::Matx33f>& covariances3B,
+    bool useMsac,
+    float pixelVariance,
+    float depthVariance,
+    bool computeFullCovariance, 
+    bool useInlierVariance)
 {
 	UASSERT(cameraModel.isValidForProjection());
 	UASSERT(!guess.isNull());
 	UASSERT(varianceMedianRatio>1);
-	Transform transform;
+
+    Transform transform;
 	std::vector<int> matches, inliers;
+    
+    if(covariance)
+    {
+        *covariance = cv::Mat::eye(6,6,CV_64FC1);
+    }
 
-	if(covariance)
-	{
-		*covariance = cv::Mat::eye(6,6,CV_64FC1);
-	}
-
-	// find correspondences
+    // find correspondences
 	std::vector<int> ids = uKeys(words2B);
 	std::vector<cv::Point3f> objectPoints(ids.size());
 	std::vector<cv::Point2f> imagePoints(ids.size());
@@ -127,27 +136,87 @@ Transform estimateMotion3DTo2D(
 	imagePoints.resize(oi);
 	matches.resize(oi);
 
-	UDEBUG("words3A=%d words2B=%d matches=%d words3B=%d guess=%s reprojError=%f iterations=%d",
-			(int)words3A.size(), (int)words2B.size(), (int)matches.size(), (int)words3B.size(),
-			guess.prettyPrint().c_str(), reprojError, iterations);
+	UDEBUG("words3A=%d words2B=%d matches=%d words3B=%d guess=%s reprojError=%f iterations=%d useMsac=%d",
+		(int)words3A.size(), (int)words2B.size(), (int)matches.size(), (int)words3B.size(),
+		guess.prettyPrint().c_str(), reprojError, iterations, useMsac?1:0);
 
 	if((int)matches.size() >= minInliers)
-	{
-		//PnPRansac
-		cv::Mat K = cameraModel.K();
-		cv::Mat D = cameraModel.D();
-		Transform guessCameraFrame = (guess * cameraModel.localTransform()).inverse();
-		cv::Mat R = (cv::Mat_<double>(3,3) <<
-				(double)guessCameraFrame.r11(), (double)guessCameraFrame.r12(), (double)guessCameraFrame.r13(),
-				(double)guessCameraFrame.r21(), (double)guessCameraFrame.r22(), (double)guessCameraFrame.r23(),
-				(double)guessCameraFrame.r31(), (double)guessCameraFrame.r32(), (double)guessCameraFrame.r33());
+    {
+		//PnPRansac - PnPMsac
+        cv::Mat K = cameraModel.K();
+        cv::Mat D = cameraModel.D();
+        Transform guessCameraFrame = (guess * cameraModel.localTransform()).inverse();
+        cv::Mat R = (cv::Mat_<double>(3,3) <<
+                (double)guessCameraFrame.r11(), (double)guessCameraFrame.r12(), (double)guessCameraFrame.r13(),
+                (double)guessCameraFrame.r21(), (double)guessCameraFrame.r22(), (double)guessCameraFrame.r23(),
+                (double)guessCameraFrame.r31(), (double)guessCameraFrame.r32(), (double)guessCameraFrame.r33());
 
-		cv::Mat rvec(3,1, CV_64FC1);
-		cv::Rodrigues(R, rvec);
-		cv::Mat tvec = (cv::Mat_<double>(3,1) <<
-				(double)guessCameraFrame.x(), (double)guessCameraFrame.y(), (double)guessCameraFrame.z());
+        cv::Mat rvec(3,1, CV_64FC1);
+        cv::Rodrigues(R, rvec);
+        cv::Mat tvec = (cv::Mat_<double>(3,1) <<
+                (double)guessCameraFrame.x(), (double)guessCameraFrame.y(), (double)guessCameraFrame.z());
 
-		util3d::solvePnPRansac(
+        cv::Mat msacCovariance;
+
+		if(useMsac)
+		{
+			bool covarianceAwareMsac = (pixelVariance > 0 && depthVariance > 0);
+			if(!covarianceAwareMsac && (computeFullCovariance || useInlierVariance))
+			{
+				UWARN("Vis/PnPPixelVariance or Vis/PnPDepthVariance is set to 0 (defaulting to classical Msac), hence Vis/PnPComputeFullCovariance and Vis/PnPUseInlierVariance will be ignored!");
+			}
+
+			std::vector<cv::Matx33f> objectCovariances;
+			if(covarianceAwareMsac)
+			{
+				int covAvailableCount = 0;
+				objectCovariances.resize(objectPoints.size());
+				double fx = K.at<double>(0,0);
+				double fy = K.at<double>(1,1);
+				double d_pixelVar = static_cast<double>(pixelVariance);
+				double d_depthVar = static_cast<double>(depthVariance);
+
+				for(size_t i = 0; i < objectPoints.size(); ++i)
+				{
+					auto iter = covariances3A.find(matches[i]);
+					if(iter != covariances3A.end())
+					{
+						objectCovariances[i] = iter->second;
+						covAvailableCount++;
+					}
+					else
+					{
+						double Z = static_cast<double>(objectPoints[i].z);
+						double var_x = Z*Z * d_pixelVar / (fx*fx);
+						double var_y = Z*Z * d_pixelVar / (fy*fy);
+						double var_z = d_depthVar;
+						objectCovariances[i] = cv::Matx33f(
+							static_cast<float>(var_x), 0.0f, 0.0f, 
+							0.0f, static_cast<float>(var_y), 0.0f, 
+							0.0f, 0.0f, static_cast<float>(var_z));
+					}
+				}
+				if(covAvailableCount != (int)objectPoints.size())
+				{
+					UDEBUG("Covariance-aware PnPMsac: Not all object points have covariance available from sensor data! %d/%d points have covariance, others will be given default covariances", 
+						covAvailableCount, (int)objectPoints.size());
+				}
+			}
+
+			cv_custom::solvePnPMsac(
+				objectPoints,
+				imagePoints,
+				K, D,
+				objectCovariances,
+				rvec, tvec, 
+				!guessCameraFrame.isNull(), 
+				iterations, reprojError, minInliers, 
+				0.99, pixelVariance, inliers, flagsPnP, refineIterations, 3.0f, false,
+				msacCovariance);
+		}
+		else
+		{
+			util3d::solvePnPRansac(
 				objectPoints,
 				imagePoints,
 				K,
@@ -161,131 +230,55 @@ Transform estimateMotion3DTo2D(
 				inliers,
 				flagsPnP,
 				refineIterations);
+		}
 
 		if((int)inliers.size() >= minInliers)
 		{
 			cv::Rodrigues(rvec, R);
 			Transform pnp(R.at<double>(0,0), R.at<double>(0,1), R.at<double>(0,2), tvec.at<double>(0),
-						   R.at<double>(1,0), R.at<double>(1,1), R.at<double>(1,2), tvec.at<double>(1),
-						   R.at<double>(2,0), R.at<double>(2,1), R.at<double>(2,2), tvec.at<double>(2));
+							R.at<double>(1,0), R.at<double>(1,1), R.at<double>(1,2), tvec.at<double>(1),
+							R.at<double>(2,0), R.at<double>(2,1), R.at<double>(2,2), tvec.at<double>(2));
 
 			transform = (cameraModel.localTransform() * pnp).inverse();
 
-			// compute variance (like in PCL computeVariance() method of sac_model.h)
-			if(covariance && (!words3B.empty() || cameraModel.imageSize() != cv::Size()))
+			if(covariance)
 			{
-				std::vector<float> errorSqrdDists(inliers.size());
-				std::vector<float> errorSqrdX;
-				std::vector<float> errorSqrdY;
-				std::vector<float> errorSqrdZ;
-				if(splitLinearCovarianceComponents)
+				if (useMsac && computeFullCovariance) 
 				{
-					errorSqrdX.resize(inliers.size());
-					errorSqrdY.resize(inliers.size());
-					errorSqrdZ.resize(inliers.size());
-				}
-				std::vector<float> errorSqrdAngles(inliers.size());
-				Transform localTransformInv = cameraModel.localTransform().inverse();
-				Transform transformCameraFrame = transform * cameraModel.localTransform();
-				Transform transformCameraFrameInv = transformCameraFrame.inverse();
-				for(unsigned int i=0; i<inliers.size(); ++i)
-				{
-					cv::Point3f objPt = objectPoints[inliers[i]];
-
-					// Get 3D point from cameraB base frame in cameraA base frame
-					std::map<int, cv::Point3f>::const_iterator iter = words3B.find(matches[inliers[i]]);
-					cv::Point3f newPt;
-					if(iter!=words3B.end() && util3d::isFinite(iter->second))
+					// solvePnPMsac already computed the covariance
+					if (msacCovariance.empty())
 					{
-						newPt = util3d::transformPoint(iter->second, transform);
+						UERROR("Covariance-aware PnPMsac failed to compute covariance! Falling back to standard PnPRansac covariance computation.");
+						computeFullCovariance = false;
 					}
-					else
-					{
-
-						// Project obj point from base frame of cameraA in cameraB frame (z+ in front of the cameraB)
-						cv::Point3f objPtCamBFrame = util3d::transformPoint(objPt, transformCameraFrameInv);
-
-						//compute from projection
-						Eigen::Vector3f ray = projectDepthTo3DRay(
-								cameraModel.imageSize(),
-								imagePoints.at(inliers[i]).x,
-								imagePoints.at(inliers[i]).y,
-								cameraModel.cx(),
-								cameraModel.cy(),
-								cameraModel.fx(),
-								cameraModel.fy());
-						// transform in camera B frame
-						newPt = cv::Point3f(ray.x(), ray.y(), ray.z()) * objPtCamBFrame.z*1.1; // Add 10 % error
-
-						//transform back into cameraA base frame
-						newPt = util3d::transformPoint(newPt, transformCameraFrame);
-					}
-
-					if(splitLinearCovarianceComponents)
-					{
-						double errorX = objPt.x-newPt.x;
-						double errorY = objPt.y-newPt.y;
-						double errorZ = objPt.z-newPt.z;
-						errorSqrdX[i] = errorX * errorX;
-						errorSqrdY[i] = errorY * errorY;
-						errorSqrdZ[i] = errorZ * errorZ;
-					}
-
-					errorSqrdDists[i] = uNormSquared(objPt.x-newPt.x, objPt.y-newPt.y, objPt.z-newPt.z);
-
-					Eigen::Vector4f v1(objPt.x, objPt.y, objPt.z, 0);
-					Eigen::Vector4f v2(newPt.x, newPt.y, newPt.z, 0);
-					errorSqrdAngles[i] = pcl::getAngle3D(v1, v2);
-				}
-
-				std::sort(errorSqrdDists.begin(), errorSqrdDists.end());
-				//divide by 4 instead of 2 to ignore very very far features (stereo)
-				double median_error_sqr_lin = 2.1981 * (double)errorSqrdDists[errorSqrdDists.size () / varianceMedianRatio];
-				UASSERT(uIsFinite(median_error_sqr_lin));
-				(*covariance)(cv::Range(0,3), cv::Range(0,3)) *= median_error_sqr_lin + 1e-6;
-				std::sort(errorSqrdAngles.begin(), errorSqrdAngles.end());
-				double median_error_sqr_ang = 2.1981 * (double)errorSqrdAngles[errorSqrdAngles.size () / varianceMedianRatio];
-				UASSERT(uIsFinite(median_error_sqr_ang));
-				(*covariance)(cv::Range(3,6), cv::Range(3,6)) *= median_error_sqr_ang + 1e-6;
-
-				if(splitLinearCovarianceComponents)
+					*covariance = msacCovariance;
+				} 
+				if (!useMsac || !computeFullCovariance) 
 				{
-					std::sort(errorSqrdX.begin(), errorSqrdX.end());
-					double median_error_sqr_x = 2.1981 * (double)errorSqrdX[errorSqrdX.size () / varianceMedianRatio];
-					std::sort(errorSqrdY.begin(), errorSqrdY.end());
-					double median_error_sqr_y = 2.1981 * (double)errorSqrdY[errorSqrdY.size () / varianceMedianRatio];
-					std::sort(errorSqrdZ.begin(), errorSqrdZ.end());
-					double median_error_sqr_z = 2.1981 * (double)errorSqrdZ[errorSqrdZ.size () / varianceMedianRatio];
-					
-					UASSERT(uIsFinite(median_error_sqr_x));
-					UASSERT(uIsFinite(median_error_sqr_y));
-					UASSERT(uIsFinite(median_error_sqr_z));
-					covariance->at<double>(0,0) = median_error_sqr_x + 1e-6;
-					covariance->at<double>(1,1) = median_error_sqr_y + 1e-6;
-					covariance->at<double>(2,2) = median_error_sqr_z + 1e-6;
-
-					median_error_sqr_lin = uMax3(median_error_sqr_x, median_error_sqr_y, median_error_sqr_z);
-				}
-
-				if(maxVariance > 0 && median_error_sqr_lin > maxVariance)
-				{
-					UWARN("Rejected PnP transform, variance is too high! %f > %f!", median_error_sqr_lin, maxVariance);
-					*covariance = cv::Mat::eye(6,6,CV_64FC1);
-					transform.setNull();
+					*covariance = computePoseCovariance(
+						computeFullCovariance, 
+						useInlierVariance,
+						objectPoints, imagePoints, inliers, matches,
+						cameraModel, transform, rvec, tvec,
+						covariances3A, covariances3B, words3B,
+						splitLinearCovarianceComponents,
+						varianceMedianRatio, 
+						pixelVariance, depthVariance
+					);
 				}
 			}
-			else if(covariance)
+
+			double max_var_lin = uMax3(
+				covariance->at<double>(0,0), 
+				covariance->at<double>(1,1), 
+				covariance->at<double>(2,2)
+			);
+					
+			if(maxVariance > 0 && max_var_lin > maxVariance)
 			{
-				// compute variance, which is the rms of reprojection errors
-				std::vector<cv::Point2f> imagePointsReproj;
-				cv::projectPoints(objectPoints, rvec, tvec, K, cv::Mat(), imagePointsReproj);
-				float err = 0.0f;
-				for(unsigned int i=0; i<inliers.size(); ++i)
-				{
-					err += uNormSquared(imagePoints.at(inliers[i]).x - imagePointsReproj.at(inliers[i]).x, imagePoints.at(inliers[i]).y - imagePointsReproj.at(inliers[i]).y);
-				}
-				UASSERT(uIsFinite(err));
-				*covariance *= std::sqrt(err/float(inliers.size())) + 1e-6;
+				UWARN("Rejected PnP transform, variance is too high! %f > %f!", max_var_lin, maxVariance);
+				*covariance = cv::Mat::eye(6,6,CV_64FC1);
+				transform.setNull();
 			}
 		}
 	}
@@ -303,7 +296,307 @@ Transform estimateMotion3DTo2D(
 		}
 	}
 
-	return transform;
+    return transform;
+}
+
+// Computes the 6-DoF pose covariance matrix for PnPRansac and PnPMsac
+// covarianceStrategy: 1=exact, 2=3d errors, 3=2d errors
+cv::Mat computePoseCovariance(
+    bool computeFullCovariance, 
+    bool useInlierCovariance,
+    const std::vector<cv::Point3f>& objectPoints,
+    const std::vector<cv::Point2f>& imagePoints,
+    const std::vector<int>& inliers,
+    const std::vector<int>& matches,
+    const CameraModel& cameraModel,
+    const Transform& transform,
+    const cv::Mat& rvec,
+    const cv::Mat& tvec,
+    const std::map<int, cv::Matx33f>& covariances3A,
+    const std::map<int, cv::Matx33f>& covariances3B,
+    const std::map<int, cv::Point3f>& words3B,
+    bool splitLinearCovarianceComponents,
+    int varianceMedianRatio,
+    float pixelVariance,
+    float depthVariance)
+{
+    cv::Mat covariance = cv::Mat::eye(6, 6, CV_64FC1);
+    if(inliers.size() < 4)
+    {
+        return covariance;
+    }
+
+    cv::Mat R_mat;
+    cv::Rodrigues(rvec, R_mat);
+    cv::Matx33d R_x33(R_mat);
+    cv::Mat K = cameraModel.K();
+    
+    double fx = K.at<double>(0,0);
+    double fy = K.at<double>(1,1);
+
+    UDEBUG("Computing pose covariance (computeFullCovariance=%d, useInlierCovariance=%d, inliers=%d)", 
+        computeFullCovariance?1:0, useInlierCovariance?1:0, (int)inliers.size());
+
+    // compute variance (like in PCL computeVariance() method of sac_model.h)
+    if(computeFullCovariance)
+    {
+        cv::Mat J_pose;
+
+		std::vector<cv::Point3f> inlierObjPts(inliers.size());
+		for(size_t i = 0; i < inliers.size(); ++i)
+		{
+			inlierObjPts[i] = objectPoints[inliers[i]];
+		}
+		std::vector<cv::Point2f> reprojectedPts;
+		cv::Mat jacobianFull;
+		cv::projectPoints(inlierObjPts, rvec, tvec, K, cameraModel.D(), reprojectedPts, jacobianFull);
+		jacobianFull.colRange(0, 6).convertTo(J_pose, CV_64FC1);
+
+
+        cv::Mat H = cv::Mat::zeros(6, 6, CV_64FC1);
+
+        for(size_t i = 0; i < inliers.size(); ++i)
+        {
+            int idx = inliers[i];
+            cv::Point3f pt3d = objectPoints[idx];
+
+            cv::Matx31d ptB = R_x33 * cv::Matx31d(pt3d.x, pt3d.y, pt3d.z) + cv::Matx31d(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
+            double Z = std::max(ptB(2,0), 1e-5); 
+
+            cv::Matx22d cov2D = cv::Matx22d::eye() * (double)pixelVariance;
+            cv::Matx23d J_pi(fx/Z, 0.0, -fx*ptB(0,0)/(Z*Z),
+                             0.0, fy/Z, -fy*ptB(1,0)/(Z*Z));
+
+            if(useInlierCovariance && covariances3A.find(matches[idx]) != covariances3A.end())
+            {
+                cv::Matx33d cov3D(covariances3A.at(matches[idx]));
+                cov2D += J_pi * (R_x33 * cov3D * R_x33.t()) * J_pi.t();
+            }
+            else if(!useInlierCovariance && depthVariance > 0.0f)
+            {
+                double var_x = Z*Z * (double)pixelVariance / (fx*fx);
+                double var_y = Z*Z * (double)pixelVariance / (fy*fy);
+                double var_z = (double)depthVariance;
+                cv::Matx33d cov3D_default(var_x, 0.0, 0.0, 
+                                          0.0, var_y, 0.0, 
+                                          0.0, 0.0, var_z);
+                cov2D += J_pi * cov3D_default * J_pi.t(); 
+            }
+
+            cv::Mat J_i = J_pose.rowRange(static_cast<int>(i)*2, static_cast<int>(i)*2 + 2);
+            cv::Mat cov2D_mat(cov2D);
+            H += J_i.t() * cov2D_mat.inv(cv::DECOMP_SVD) * J_i;
+        }
+
+        cv::Mat cov_LM;
+        if(cv::invert(H, cov_LM, cv::DECOMP_SVD) != 0)
+        {
+            cv_custom::poseCovarianceRodriguesToRPY(rvec, cov_LM).copyTo(covariance);
+        }
+        else 
+        {
+            UWARN("Failed to invert Hessian matrix (H) for exact covariance calculation! Falling back to unscaled initialization.");
+        }
+    }
+    else if(!words3B.empty() || cameraModel.imageSize() != cv::Size())
+    {
+        std::vector<float> errorSqrdDists(inliers.size());
+        std::vector<float> errorSqrdX;
+        std::vector<float> errorSqrdY;
+        std::vector<float> errorSqrdZ;
+        if(splitLinearCovarianceComponents)
+        {
+            errorSqrdX.resize(inliers.size());
+            errorSqrdY.resize(inliers.size());
+            errorSqrdZ.resize(inliers.size());
+        }
+        std::vector<float> errorSqrdAngles(inliers.size());
+        Transform localTransformInv = cameraModel.localTransform().inverse();
+        Transform transformCameraFrame = transform * cameraModel.localTransform();
+        Transform transformCameraFrameInv = transformCameraFrame.inverse();
+        for(unsigned int i=0; i<inliers.size(); ++i)
+        {
+            cv::Point3f objPt = objectPoints[inliers[i]];
+
+            // Get 3D point from cameraB base frame in cameraA base frame
+            std::map<int, cv::Point3f>::const_iterator iter = words3B.find(matches[inliers[i]]);
+            cv::Point3f newPt;
+            if(iter!=words3B.end() && util3d::isFinite(iter->second))
+            {
+                newPt = util3d::transformPoint(iter->second, transform);
+            }
+            else
+            {
+
+                // Project obj point from base frame of cameraA in cameraB frame (z+ in front of the cameraB)
+                cv::Point3f objPtCamBFrame = util3d::transformPoint(objPt, transformCameraFrameInv);
+
+                //compute from projection
+                Eigen::Vector3f ray = projectDepthTo3DRay(
+                        cameraModel.imageSize(),
+                        imagePoints.at(inliers[i]).x,
+                        imagePoints.at(inliers[i]).y,
+                        cameraModel.cx(),
+                        cameraModel.cy(),
+                        cameraModel.fx(),
+                        cameraModel.fy());
+                // transform in camera B frame
+                newPt = cv::Point3f(ray.x(), ray.y(), ray.z()) * objPtCamBFrame.z*1.1; // Add 10 % error
+
+                //transform back into cameraA base frame
+                newPt = util3d::transformPoint(newPt, transformCameraFrame);
+            }
+
+            if(useInlierCovariance && covariances3A.find(matches[inliers[i]]) != covariances3A.end())
+            {
+                // Option 1: Weighted 3D
+                cv::Matx31d diff(objPt.x - newPt.x, objPt.y - newPt.y, objPt.z - newPt.z);
+                cv::Matx33d cov3D_total(covariances3A.at(matches[inliers[i]]));
+                
+                if(covariances3B.find(matches[inliers[i]]) != covariances3B.end()) 
+                {
+                    cv::Matx33d cov3D_B(covariances3B.at(matches[inliers[i]]));
+                    cov3D_total += R_x33.t() * cov3D_B * R_x33;
+                }
+
+                cv::Matx33d cov3D_inv = cov3D_total.inv(cv::DECOMP_SVD);
+                double mahal = (diff.t() * cov3D_inv * diff)(0,0);
+                
+                double virtual_scale = (depthVariance > 0.0f) ? (double)depthVariance : (0.05 * 0.05);
+                double errSq_metric = mahal * virtual_scale;
+
+                if(splitLinearCovarianceComponents)
+                {
+                    double rawSq = uNormSquared(objPt.x-newPt.x, objPt.y-newPt.y, objPt.z-newPt.z);
+                    double scale = (rawSq > 1e-6) ? (errSq_metric / rawSq) : 1.0;
+                    
+                    errorSqrdX[i] = (objPt.x-newPt.x) * (objPt.x-newPt.x) * scale;
+                    errorSqrdY[i] = (objPt.y-newPt.y) * (objPt.y-newPt.y) * scale;
+                    errorSqrdZ[i] = (objPt.z-newPt.z) * (objPt.z-newPt.z) * scale;
+                }
+                errorSqrdDists[i] = (float)errSq_metric;
+            }
+            else
+            {
+                // Option 3: Classical 3D
+                if(splitLinearCovarianceComponents)
+                {
+                    double errorX = objPt.x-newPt.x;
+                    double errorY = objPt.y-newPt.y;
+                    double errorZ = objPt.z-newPt.z;
+                    errorSqrdX[i] = errorX * errorX;
+                    errorSqrdY[i] = errorY * errorY;
+                    errorSqrdZ[i] = errorZ * errorZ;
+                }
+
+                errorSqrdDists[i] = uNormSquared(objPt.x-newPt.x, objPt.y-newPt.y, objPt.z-newPt.z);
+            }
+
+            Eigen::Vector4f v1(objPt.x, objPt.y, objPt.z, 0);
+            Eigen::Vector4f v2(newPt.x, newPt.y, newPt.z, 0);
+            float angle = pcl::getAngle3D(v1, v2);
+            errorSqrdAngles[i] = angle * angle; // squared angle, was originally unsquared (why ?)
+        }
+
+        std::sort(errorSqrdDists.begin(), errorSqrdDists.end());
+        //divide by 4 instead of 2 to ignore very very far features (stereo)
+        double median_error_sqr_lin = 2.1981 * (double)errorSqrdDists[errorSqrdDists.size () / varianceMedianRatio];
+        UASSERT(uIsFinite(median_error_sqr_lin));
+        covariance(cv::Range(0,3), cv::Range(0,3)) *= median_error_sqr_lin + 1e-6;
+        std::sort(errorSqrdAngles.begin(), errorSqrdAngles.end());
+        double median_error_sqr_ang = 2.1981 * (double)errorSqrdAngles[errorSqrdAngles.size () / varianceMedianRatio];
+        UASSERT(uIsFinite(median_error_sqr_ang));
+        covariance(cv::Range(3,6), cv::Range(3,6)) *= median_error_sqr_ang + 1e-6;
+
+        if(splitLinearCovarianceComponents)
+        {
+            std::sort(errorSqrdX.begin(), errorSqrdX.end());
+            double median_error_sqr_x = 2.1981 * (double)errorSqrdX[errorSqrdX.size () / varianceMedianRatio];
+            std::sort(errorSqrdY.begin(), errorSqrdY.end());
+            double median_error_sqr_y = 2.1981 * (double)errorSqrdY[errorSqrdY.size () / varianceMedianRatio];
+            std::sort(errorSqrdZ.begin(), errorSqrdZ.end());
+            double median_error_sqr_z = 2.1981 * (double)errorSqrdZ[errorSqrdZ.size () / varianceMedianRatio];
+            
+            UASSERT(uIsFinite(median_error_sqr_x));
+            UASSERT(uIsFinite(median_error_sqr_y));
+            UASSERT(uIsFinite(median_error_sqr_z));
+            covariance.at<double>(0,0) = median_error_sqr_x + 1e-6;
+            covariance.at<double>(1,1) = median_error_sqr_y + 1e-6;
+            covariance.at<double>(2,2) = median_error_sqr_z + 1e-6;
+        }
+    }
+    else
+    {
+        // compute variance, which is the rms of reprojection errors
+        std::vector<cv::Point2f> imagePointsReproj;
+        cv::projectPoints(objectPoints, rvec, tvec, K, cv::Mat(), imagePointsReproj);
+        float err = 0.0f;
+        
+		// If pixelVariance = 0 or depthVariance = 0, we fall back to the original computations
+		// otherwise, we make all covariances metric instead of pixel-based
+        bool makeMetric2D = (pixelVariance > 0.0f && depthVariance > 0.0f);
+
+        for(unsigned int i=0; i<inliers.size(); ++i)
+        {
+            int idx = inliers[i];
+            double ex = static_cast<double>(imagePoints.at(idx).x) - static_cast<double>(imagePointsReproj.at(idx).x);
+            double ey = static_cast<double>(imagePoints.at(idx).y) - static_cast<double>(imagePointsReproj.at(idx).y);
+            
+            // Depth of A projected in frame B using the transform (rvec/tvec)
+            cv::Matx31d pt3d_mat(objectPoints[idx].x, objectPoints[idx].y, objectPoints[idx].z);
+            cv::Matx31d ptB = R_x33 * pt3d_mat + cv::Matx31d(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
+            double Z = std::max(ptB(2,0), 1e-5);
+            
+            if(useInlierCovariance)
+            {
+                if(covariances3A.find(matches[idx]) != covariances3A.end()) 
+                {
+                    // Option 2: Weighted 2D translated to strictly metric
+                    cv::Matx33d cov3D(covariances3A.at(matches[idx]));
+                    cv::Matx23d J_pi(fx/Z, 0.0, -fx*ptB(0,0)/(Z*Z),
+                                     0.0, fy/Z, -fy*ptB(1,0)/(Z*Z));
+                    
+                    double varPx = pixelVariance > 0.0f ? (double)pixelVariance : 1.0;
+                    cv::Matx22d cov2D = J_pi * (R_x33 * cov3D * R_x33.t()) * J_pi.t() + cv::Matx22d::eye() * varPx;
+                    cv::Matx22d cov2D_inv = cov2D.inv(cv::DECOMP_SVD);
+                    
+                    cv::Matx21d diff(ex, ey);
+                    double mahal = (diff.t() * cov2D_inv * diff)(0,0);
+                    
+                    double metricScale = (Z * Z * varPx) / (fx * fy);
+                    err += (float)(mahal * metricScale);
+                } 
+                else 
+                {
+                    // Fallback, but strictly forced to metric since useInlierCovariances is true
+                    double metricEx = ex * Z / fx;
+                    double metricEy = ey * Z / fy;
+                    err += (float)(metricEx * metricEx + metricEy * metricEy);
+                }
+            }
+            else
+            {
+                if(makeMetric2D)
+                {
+                    // Option 4: Metric 2D
+                    double metricEx = ex * Z / fx;
+                    double metricEy = ey * Z / fy;
+                    err += (float)(metricEx * metricEx + metricEy * metricEy);
+                }
+                else
+                {
+                    // Option 5: Classical 2D (Original RTAB-Map heuristic - pixel cov)
+                    err += (float)(ex * ex + ey * ey);
+                }
+            }
+        }
+        
+        UASSERT(uIsFinite(err));
+        covariance *= std::sqrt(err/float(inliers.size())) + 1e-6;
+    }
+    
+    
+    return covariance;
 }
 
 Transform estimateMotion3DTo2D(

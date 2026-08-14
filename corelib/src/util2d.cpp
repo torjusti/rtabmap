@@ -1107,6 +1107,62 @@ float getDepth(
 	return depth;
 }
 
+int getConfidence(
+    const cv::Mat & confidenceImage,
+    float x, float y,
+    bool smoothing)
+{
+    if(confidenceImage.empty() || confidenceImage.type() != CV_8UC1)
+    {
+        return -1;
+    }
+
+    int u = int(x + 0.5f);
+    int v = int(y + 0.5f);
+    
+    // Bounds checking mirroring getDepth
+    if(u == confidenceImage.cols && x < float(confidenceImage.cols)) u = confidenceImage.cols - 1;
+    if(v == confidenceImage.rows && y < float(confidenceImage.rows)) v = confidenceImage.rows - 1;
+
+    if(!(u >= 0 && u < confidenceImage.cols && v >= 0 && v < confidenceImage.rows))
+    {
+        return -1;
+    }
+
+    int confidence = float(confidenceImage.at<unsigned char>(v, u));
+
+    if(smoothing && confidence >= 0.0f)
+    {
+        int u_start = std::max(u - 1, 0);
+        int v_start = std::max(v - 1, 0);
+        int u_end = std::min(u + 1, confidenceImage.cols - 1);
+        int v_end = std::min(v + 1, confidenceImage.rows - 1);
+
+        float sumWeights = 0.0f;
+        float sumConf = 0.0f;
+        for(int uu = u_start; uu <= u_end; ++uu)
+        {
+            for(int vv = v_start; vv <= v_end; ++vv)
+            {
+                if(!(uu == u && vv == v))
+                {
+                    float c = float(confidenceImage.at<unsigned char>(vv, uu));
+                    if(c >= 0.0f)
+                    {
+                        float weight = (uu == u || vv == v) ? 2.0f : 1.0f;
+                        sumWeights += weight;
+                        sumConf += c * weight;
+                    }
+                }
+            }
+        }
+        confidence *= 4.0f;
+        sumWeights += 4.0f;
+        confidence = (confidence + sumConf) / sumWeights;
+    }
+    return (int)confidence;
+}
+
 cv::Rect computeRoi(const cv::Mat & image, const std::string & roiRatios)
 {
 	return computeRoi(image.size(), roiRatios);

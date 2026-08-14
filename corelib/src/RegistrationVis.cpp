@@ -79,6 +79,12 @@ RegistrationVis::RegistrationVis(const ParametersMap & parameters, Registration 
 		_PnPVarMedianRatio(Parameters::defaultVisPnPVarianceMedianRatio()),
 		_PnPMaxVar(Parameters::defaultVisPnPMaxVariance()),
 		_PnPSplitLinearCovarianceComponents(Parameters::defaultVisPnPSplitLinearCovComponents()),
+		_PnPUseMsac(Parameters::defaultVisPnPUseMsac()),
+		_PnPMinConfidence(Parameters::defaultVisPnPMinConfidence()),
+		_PnPPixelVariance(Parameters::defaultVisPnPPixelVariance()),
+		_PnPDepthVariance(Parameters::defaultVisPnPDepthVariance()),
+		_PnPComputeFullCovariance(Parameters::defaultVisPnPComputeFullCovariance()),
+		_PnPUseInlierVariance(Parameters::defaultVisPnPUseInlierVariance()),
 		_multiSamplingPolicy(Parameters::defaultVisPnPSamplingPolicy()),
 		_correspondencesApproach(Parameters::defaultVisCorType()),
 		_flowWinSize(Parameters::defaultVisCorFlowWinSize()),
@@ -143,6 +149,12 @@ void RegistrationVis::parseParameters(const ParametersMap & parameters)
 	Parameters::parse(parameters, Parameters::kVisPnPVarianceMedianRatio(), _PnPVarMedianRatio);
 	Parameters::parse(parameters, Parameters::kVisPnPMaxVariance(), _PnPMaxVar);
 	Parameters::parse(parameters, Parameters::kVisPnPSplitLinearCovComponents(), _PnPSplitLinearCovarianceComponents);
+	Parameters::parse(parameters, Parameters::kVisPnPUseMsac(), _PnPUseMsac);
+	Parameters::parse(parameters, Parameters::kVisPnPMinConfidence(), _PnPMinConfidence);
+	Parameters::parse(parameters, Parameters::kVisPnPPixelVariance(), _PnPPixelVariance);
+	Parameters::parse(parameters, Parameters::kVisPnPDepthVariance(), _PnPDepthVariance);
+	Parameters::parse(parameters, Parameters::kVisPnPComputeFullCovariance(), _PnPComputeFullCovariance);
+	Parameters::parse(parameters, Parameters::kVisPnPUseInlierVariance(), _PnPUseInlierVariance);
 	Parameters::parse(parameters, Parameters::kVisPnPSamplingPolicy(), _multiSamplingPolicy);
 	Parameters::parse(parameters, Parameters::kVisCorType(), _correspondencesApproach);
 	Parameters::parse(parameters, Parameters::kVisCorFlowWinSize(), _flowWinSize);
@@ -329,6 +341,12 @@ Transform RegistrationVis::computeTransformationImpl(
 	UDEBUG("%s=%d", Parameters::kVisPnPFlags().c_str(), _PnPFlags);
 	UDEBUG("%s=%f", Parameters::kVisPnPMaxVariance().c_str(), _PnPMaxVar);
 	UDEBUG("%s=%f", Parameters::kVisPnPSplitLinearCovComponents().c_str(), (double)_PnPSplitLinearCovarianceComponents);
+	UDEBUG("%s=%d", Parameters::kVisPnPUseMsac().c_str(), _PnPUseMsac?1:0);
+	UDEBUG("%s=%d", Parameters::kVisPnPMinConfidence().c_str(), _PnPMinConfidence);
+	UDEBUG("%s=%f", Parameters::kVisPnPPixelVariance().c_str(), _PnPPixelVariance);
+	UDEBUG("%s=%f", Parameters::kVisPnPDepthVariance().c_str(), _PnPDepthVariance);
+	UDEBUG("%s=%d", Parameters::kVisPnPComputeFullCovariance().c_str(), _PnPComputeFullCovariance?1:0);
+	UDEBUG("%s=%d", Parameters::kVisPnPUseInlierVariance().c_str(), _PnPUseInlierVariance?1:0);
 	UDEBUG("%s=%f", Parameters::kVisPnPVarianceMedianRatio().c_str(), (double)_PnPVarMedianRatio);
 	UDEBUG("%s=%d", Parameters::kVisCorType().c_str(), _correspondencesApproach);
 	UDEBUG("%s=%d", Parameters::kVisCorFlowWinSize().c_str(), _flowWinSize);
@@ -507,6 +525,8 @@ Transform RegistrationVis::computeTransformationImpl(
 		std::vector<cv::KeyPoint> wordsKptsTo;
 		std::vector<cv::Point3f> words3From;
 		std::vector<cv::Point3f> words3To;
+		std::vector<int> wordsConfFrom;
+		std::vector<int> wordsConfTo;
 		cv::Mat wordsDescFrom;
 		cv::Mat wordsDescTo;
 		if(_correspondencesApproach == 1) //Optical Flow
@@ -580,6 +600,22 @@ Transform RegistrationVis::computeTransformationImpl(
 			{
 				kptsFrom3D = _detectorFrom->generateKeypoints3D(fromSignature.sensorData(), kptsFrom);
 			}
+
+			/* Uncomment if confidence ever get used for optical flow
+			std::vector<int> kptsFromConfidence;
+			if(kptsFrom.size() == fromSignature.getWords3Confidence().size())
+			{
+				kptsFromConfidence = fromSignature.getWords3Confidence();
+			}
+			else if(kptsFrom.size() == fromSignature.sensorData().keypointsConfidence().size())
+			{
+				kptsFromConfidence = fromSignature.sensorData().keypointsConfidence();
+			}
+			else
+			{
+				kptsFromConfidence = _detectorFrom->generateKeypointsConfidence(fromSignature.sensorData(), kptsFrom);
+			}
+			*/
 
 			if(!imageFrom.empty() && !imageTo.empty())
 			{
@@ -704,6 +740,7 @@ Transform RegistrationVis::computeTransformationImpl(
 				UASSERT(kptsFrom.size() == kptsFrom3D.size());
 				std::vector<cv::KeyPoint> kptsTo(kptsFrom.size());
 				std::vector<cv::Point3f> kptsFrom3DKept(kptsFrom3D.size());
+				//std::vector<int> kptsFromConfKept(kptsFromConfidence.size());
 				std::vector<int> orignalWordsFromIdsCpy = orignalWordsFromIds;
 				int ki = 0;
 				UASSERT((status.empty() || cornersTo.size() == status.size()) &&
@@ -721,6 +758,11 @@ Transform RegistrationVis::computeTransformationImpl(
 						}
 						kptsFrom[ki] = cv::KeyPoint(cornersFrom[i], 1);
 						kptsFrom3DKept[ki] = kptsFrom3D[i];
+						/*
+						if(!kptsFromConfidence.empty()) {
+							kptsFromConfKept[ki] = kptsFromConfidence[i];
+						}
+						*/
 						kptsTo[ki++] = cv::KeyPoint(cornersTo[i], 1);
 					}
 				}
@@ -732,11 +774,20 @@ Transform RegistrationVis::computeTransformationImpl(
 				kptsTo.resize(ki);
 				kptsFrom3DKept.resize(ki);
 				kptsFrom3D = kptsFrom3DKept;
+				/*
+				if(!kptsFromConfidence.empty()) 
+				{
+					kptsFromConfKept.resize(ki);
+					kptsFromConfidence = kptsFromConfKept;
+				}
+				*/
 
 				std::vector<cv::Point3f> kptsTo3D;
+				//std::vector<int> kptsToConfidence;
 				if(_estimationType == 0 || _estimationType == 1)
 				{
 					kptsTo3D = _detectorTo->generateKeypoints3D(toSignature.sensorData(), kptsTo);
+					//kptsToConfidence = _detectorTo->generateKeypointsConfidence(toSignature.sensorData(), kptsTo);
 				}
 
 				UASSERT(kptsFrom.size() == kptsFrom3DKept.size());
@@ -748,6 +799,12 @@ Transform RegistrationVis::computeTransformationImpl(
 					wordsFrom.insert(wordsFrom.end(), std::make_pair(id, wordsFrom.size()));
 					wordsKptsFrom.push_back(kptsFrom[i]);
 					words3From.push_back(kptsFrom3DKept[i]);
+					/*
+					if(!kptsFromConfidence.empty())
+					{
+						wordsConfFrom.push_back(kptsFromConfidence[i]);
+					}
+					*/
 
 					wordsTo.insert(wordsTo.end(), std::make_pair(id, wordsTo.size()));
 					wordsKptsTo.push_back(kptsTo[i]);
@@ -755,6 +812,12 @@ Transform RegistrationVis::computeTransformationImpl(
 					{
 						words3To.push_back(kptsTo3D[i]);
 					}
+					/*
+					if(!kptsToConfidence.empty())
+					{
+						wordsConfTo.push_back(kptsToConfidence[i]);
+					}
+					*/
 				}
 				toSignature.sensorData().setFeatures(kptsTo, kptsTo3D, cv::Mat());
 			}
@@ -773,6 +836,12 @@ Transform RegistrationVis::computeTransformationImpl(
 						wordsFrom.insert(wordsFrom.end(), std::make_pair(id, wordsFrom.size()));
 						wordsKptsFrom.push_back(kptsFrom[i]);
 						words3From.push_back(kptsFrom3D[i]);
+						/*
+						if(!kptsFromConfidence.empty())
+						{
+							wordsConfFrom.push_back(kptsFromConfidence[i]);
+						}
+						*/
 					}
 				}
 				toSignature.sensorData().setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), cv::Mat());
@@ -929,11 +998,25 @@ Transform RegistrationVis::computeTransformationImpl(
 				UDEBUG("generated kptsFrom3D=%d", (int)kptsFrom3D.size());
 			}
 
+			std::vector<int> kptsFromConfidence;
+			if(kptsFromSource == 2 && kptsFrom.size() == fromSignature.getWords3Confidence().size())
+			{
+				kptsFromConfidence = fromSignature.getWords3Confidence();
+			}
+			else if(kptsFromSource == 1 && kptsFrom.size() == fromSignature.sensorData().keypointsConfidence().size())
+			{
+				kptsFromConfidence = fromSignature.sensorData().keypointsConfidence();
+			}
+			else
+			{
+				kptsFromConfidence = _detectorFrom->generateKeypointsConfidence(fromSignature.sensorData(), kptsFrom);
+			}
+
 			if(!kptsFrom3D.empty() &&
 			   (_detectorFrom->getMinDepth() > 0.0f || _detectorFrom->getMaxDepth() > 0.0f) &&
 			   (!fromSignature.sensorData().cameraModels().empty() || !fromSignature.sensorData().stereoCameraModels().empty())) // Ignore local map from OdometryF2M
 			{
-				_detectorFrom->filterKeypointsByDepth(kptsFrom, descriptorsFrom, kptsFrom3D, _detectorFrom->getMinDepth(), _detectorFrom->getMaxDepth());
+				_detectorFrom->filterKeypointsByDepth(kptsFrom, descriptorsFrom, kptsFrom3D, kptsFromConfidence, _detectorFrom->getMinDepth(), _detectorFrom->getMaxDepth());
 			}
 
 			if(kptsToSource == 2 && kptsTo.size() == toSignature.getWords3().size())
@@ -962,6 +1045,20 @@ Transform RegistrationVis::computeTransformationImpl(
 						   (int)toSignature.sensorData().keypoints3D().size());
 				}
 				kptsTo3D = _detectorTo->generateKeypoints3D(toSignature.sensorData(), kptsTo);
+			}
+
+			std::vector<int> kptsToConfidence;
+			if(kptsToSource == 2 && kptsTo.size() == toSignature.getWords3Confidence().size())
+			{
+				kptsToConfidence = toSignature.getWords3Confidence();
+			}
+			else if(kptsToSource == 1 && kptsTo.size() == toSignature.sensorData().keypointsConfidence().size())
+			{
+				kptsToConfidence = toSignature.sensorData().keypointsConfidence();
+			}
+			else
+			{
+				kptsToConfidence = _detectorTo->generateKeypointsConfidence(toSignature.sensorData(), kptsTo);
 			}
 
 			if(kptsTo3D.size() &&
@@ -1174,6 +1271,10 @@ Transform RegistrationVis::computeTransformationImpl(
 											wordsKptsFrom.push_back(kptsFrom[matchedIndex]);
 										}
 										words3From.push_back(kptsFrom3D[matchedIndex]);
+										if(!kptsFromConfidence.empty())
+										{
+											wordsConfFrom.push_back(kptsFromConfidence[matchedIndex]);
+										}
 										wordsDescFrom.push_back(descriptorsFrom.row(matchedIndex));
 									}
 
@@ -1184,6 +1285,10 @@ Transform RegistrationVis::computeTransformationImpl(
 									{
 										words3To.push_back(kptsTo3D[i]);
 									}
+									if(!kptsToConfidence.empty())
+									{
+										wordsConfTo.push_back(kptsToConfidence[i]);
+ 									}
 								}
 								else
 								{
@@ -1195,6 +1300,10 @@ Transform RegistrationVis::computeTransformationImpl(
 									{
 										words3To.push_back(kptsTo3D[i]);
 									}
+									if(!kptsToConfidence.empty())
+									{
+										wordsConfTo.push_back(kptsToConfidence[i]);
+ 									}
 
 									++newToId;
 									++newWords;
@@ -1215,6 +1324,10 @@ Transform RegistrationVis::computeTransformationImpl(
 									wordsKptsFrom.push_back(kptsFrom[i]);
 									wordsDescFrom.push_back(descriptorsFrom.row(i));
 									words3From.push_back(kptsFrom3D[i]);
+									if(!kptsFromConfidence.empty())
+									{
+										wordsConfFrom.push_back(kptsFromConfidence[i]);
+									}
 
 									++addWordsFromNotMatched;
 								}
@@ -1316,6 +1429,10 @@ Transform RegistrationVis::computeTransformationImpl(
 										wordsKptsFrom.push_back(kptsFrom[matchedIndexFrom]);
 									}
 									words3From.push_back(kptsFrom3D[matchedIndexFrom]);
+									if(!kptsFromConfidence.empty())
+									{
+										wordsConfFrom.push_back(kptsFromConfidence[matchedIndexFrom]);
+									}
 									wordsDescFrom.push_back(descriptorsFrom.row(matchedIndexFrom));
 
 									if(	matchedIndexTo >= 0 &&
@@ -1329,6 +1446,10 @@ Transform RegistrationVis::computeTransformationImpl(
 										if(!kptsTo3D.empty())
 										{
 											words3To.push_back(kptsTo3D[matchedIndexTo]);
+										}
+										if(!kptsToConfidence.empty())
+										{
+											wordsConfTo.push_back(kptsToConfidence[matchedIndexTo]);
 										}
 									}
 								}
@@ -1345,6 +1466,10 @@ Transform RegistrationVis::computeTransformationImpl(
 									wordsKptsFrom.push_back(kptsFrom[i]);
 									wordsDescFrom.push_back(descriptorsFrom.row(i));
 									words3From.push_back(kptsFrom3D[i]);
+									if(!kptsFromConfidence.empty())
+									{
+										wordsConfFrom.push_back(kptsFromConfidence[i]);
+									}
 								}
 							}
 
@@ -1359,6 +1484,10 @@ Transform RegistrationVis::computeTransformationImpl(
 									if(!kptsTo3D.empty())
 									{
 										words3To.push_back(kptsTo3D[i]);
+									}
+									if(!kptsToConfidence.empty())
+									{
+										wordsConfTo.push_back(kptsToConfidence[i]);
 									}
 									++newToId;
 								}
@@ -1496,7 +1625,7 @@ Transform RegistrationVis::computeTransformationImpl(
 								fromWordIds.push_back(id);
 							}
 						}
-
+						
 						if(descriptorsTo.rows)
 						{
 							dictionary.update();
@@ -1504,10 +1633,10 @@ Transform RegistrationVis::computeTransformationImpl(
 						}
 						dictionary.clear(false);
 					}
-
+					
 					std::multiset<int> fromWordIdsSet(fromWordIds.begin(), fromWordIds.end());
 					std::multiset<int> toWordIdsSet(toWordIds.begin(), toWordIds.end());
-
+					
 					UASSERT(kptsFrom3D.empty() || fromWordIds.size() == kptsFrom3D.size());
 					UASSERT(int(fromWordIds.size()) == descriptorsFrom.rows);
 					int i=0;
@@ -1523,6 +1652,10 @@ Transform RegistrationVis::computeTransformationImpl(
 							if(!kptsFrom3D.empty())
 							{
 								words3From.push_back(kptsFrom3D[i]);
+							}
+							if(!kptsFromConfidence.empty())
+							{
+								wordsConfFrom.push_back(kptsFromConfidence[i]);
 							}
 							wordsDescFrom.push_back(descriptorsFrom.row(i));
 						}
@@ -1543,6 +1676,10 @@ Transform RegistrationVis::computeTransformationImpl(
 							{
 								words3To.push_back(kptsTo3D[i]);
 							}
+							if(!kptsToConfidence.empty())
+							{
+								wordsConfTo.push_back(kptsToConfidence[i]);
+							}
 						}
 						++i;
 					}
@@ -1561,12 +1698,16 @@ Transform RegistrationVis::computeTransformationImpl(
 					{
 						words3From.push_back(kptsFrom3D[i]);
 					}
+					if(!kptsFromConfidence.empty())
+					{
+						wordsConfFrom.push_back(kptsFromConfidence[i]);
+					}
 				}
 			}
 		}
 
-		fromSignature.setWords(wordsFrom, wordsKptsFrom, words3From, wordsDescFrom);
-		toSignature.setWords(wordsTo, wordsKptsTo, words3To, wordsDescTo);
+		fromSignature.setWords(wordsFrom, wordsKptsFrom, words3From, wordsConfFrom, wordsDescFrom);
+		toSignature.setWords(wordsTo, wordsKptsTo, words3To, wordsConfTo, wordsDescTo);
 	}
 
 	/////////////////////
@@ -1707,10 +1848,19 @@ Transform RegistrationVis::computeTransformationImpl(
 					std::map<int, int> uniqueWordsB = uMultimapToMapUnique(toSignature.getWords());
 					std::map<int, cv::Point3f> words3A;
 					std::map<int, cv::Point3f> words3B;
+					std::map<int, int> confidences3A;
+					std::map<int, int> confidences3B;
+					std::map<int, cv::Matx33f> covariances3A;
+					std::map<int, cv::Matx33f> covariances3B;
 					std::map<int, cv::KeyPoint> wordsB;
+					
 					for(std::map<int, int>::iterator iter=uniqueWordsA.begin(); iter!=uniqueWordsA.end(); ++iter)
 					{
 						words3A.insert(std::make_pair(iter->first, fromSignature.getWords3()[iter->second]));
+						if(!fromSignature.getWords3Confidence().empty())
+						{
+							confidences3A.insert(std::make_pair(iter->first, fromSignature.getWords3Confidence()[iter->second]));
+						}
 					}
 					for(std::map<int, int>::iterator iter=uniqueWordsB.begin(); iter!=uniqueWordsB.end(); ++iter)
 					{
@@ -1718,6 +1868,10 @@ Transform RegistrationVis::computeTransformationImpl(
 						if(!toSignature.getWords3().empty())
 						{
 							words3B.insert(std::make_pair(iter->first, toSignature.getWords3()[iter->second]));
+						}
+						if(!toSignature.getWords3Confidence().empty())
+						{
+							confidences3B.insert(std::make_pair(iter->first, toSignature.getWords3Confidence()[iter->second]));
 						}
 					}
 
@@ -1738,6 +1892,11 @@ Transform RegistrationVis::computeTransformationImpl(
 					{
 						// Multi-Camera
 						UASSERT(models[0].isValidForProjection());
+
+						if(_PnPUseMsac || _PnPComputeFullCovariance || _PnPUseInlierVariance)
+						{
+							UWARN("PnP MSAC / 6DoF covariance from Jacobian matrices are not supported for multi-camera, using RANSAC instead.");
+						}
 
 						std::vector<std::vector<int> > matchesPerCam;
 						std::vector<std::vector<int> > inliersPerCam;
@@ -1778,6 +1937,77 @@ Transform RegistrationVis::computeTransformationImpl(
 					{
 						UASSERT(models.size() == 1 && models[0].isValidForProjection());
 
+						if(_PnPUseMsac && !confidences3A.empty())
+						{
+							UASSERT(!fromSignature.sensorData().cameraModels().empty());
+							const auto &camera = fromSignature.sensorData().cameraModels()[0];
+							float fx = camera.fx();
+							float fy = camera.fy();
+							
+							for(std::map<int, int>::const_iterator iter=confidences3A.begin(); iter!=confidences3A.end(); ++iter)
+							{
+								int id = iter->first;
+								std::map<int, cv::Point3f>::const_iterator ptIt = words3A.find(id);
+								if(ptIt == words3A.end()) continue;
+
+								float Z = std::max(ptIt->second.z, 10e-6f); // clamp for division
+								int conf = iter->second;
+
+								/////////////////////////////////////////////////////////////
+								// TEMP: FOR DEVELOPMENT
+								// Heuristic for depth standard deviation based on confidence
+								// Thought for ARKit confidence values
+								float var_z = 0.07f * 0.07f; // 0.07m stddev for medium confidence
+								if(conf >= 66)     var_z = 0.04f * 0.04f; // 0.04m stddev for high confidence
+								else if(conf < 33) var_z = 0.2f * 0.2f;	// 0.2m stddev for low confidence
+								/////////////////////////////////////////////////////////////
+
+								float var_x = (Z / fx) * (Z / fx) * _PnPPixelVariance;
+								float var_y = (Z / fy) * (Z / fy) * _PnPPixelVariance;
+
+								cv::Matx33f cov(
+									var_x, 0.0f,         0.0f,
+									0.0f,        var_y,  0.0f,
+									0.0f,        0.0f,   var_z);
+								covariances3A[id] = cov;
+							}
+						}
+						if(_PnPUseMsac && !confidences3B.empty())
+						{
+							UASSERT(!toSignature.sensorData().cameraModels().empty());
+							const auto &camera = toSignature.sensorData().cameraModels()[0];
+							float fx = camera.fx();
+							float fy = camera.fy();
+							
+							for(std::map<int, int>::const_iterator iter=confidences3B.begin(); iter!=confidences3B.end(); ++iter)
+							{
+								int id = iter->first;
+								std::map<int, cv::Point3f>::const_iterator ptIt = words3B.find(id);
+								if(ptIt == words3B.end()) continue;
+
+								float Z = std::max(ptIt->second.z, 10e-6f);
+								float conf = float(iter->second) / 100.0f;
+
+								/////////////////////////////////////////////////////////////
+								// TEMP: FOR DEVELOPMENT
+								// Heuristic for depth standard deviation based on confidence
+								// Thought for ARKit confidence values
+								float var_z = 0.07f * 0.07f; // 0.07m stddev for medium confidence
+								if(conf >= 0.66f)     var_z = 0.04f * 0.04f; // 0.04m stddev for high confidence
+								else if(conf < 0.33f) var_z = 0.2f * 0.2f;	// 0.2m stddev for low confidence
+								/////////////////////////////////////////////////////////////
+
+								float var_x = (Z / fx) * (Z / fx) * _PnPPixelVariance;
+								float var_y = (Z / fy) * (Z / fy) * _PnPPixelVariance;
+
+								cv::Matx33f cov(
+									var_x, 0.0f,         0.0f,
+									0.0f,        var_y,  0.0f,
+									0.0f,        0.0f,   var_z);
+								covariances3B[id] = cov;
+							}
+						}
+
 						transform = util3d::estimateMotion3DTo2D(
 								words3A,
 								wordsB,
@@ -1794,7 +2024,14 @@ Transform RegistrationVis::computeTransformationImpl(
 								&covariance,
 								&matchesV,
 								&inliersV,
-								_PnPSplitLinearCovarianceComponents);
+								_PnPSplitLinearCovarianceComponents,
+								covariances3A,
+								covariances3B,
+								_PnPUseMsac,
+								_PnPPixelVariance,
+								_PnPDepthVariance,
+								_PnPComputeFullCovariance, // use the true 6dof covariance coming from the reprojection jacobian
+								_PnPUseInlierVariance); // use the inlier variance to scale the covariance
 						inliers = inliersV;
 						matches = matchesV;
 					}

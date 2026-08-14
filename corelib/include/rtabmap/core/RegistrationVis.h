@@ -107,6 +107,12 @@ private:
 	int  _PnPVarMedianRatio;
 	float _PnPMaxVar;
 	bool _PnPSplitLinearCovarianceComponents;
+	bool _PnPUseMsac;
+	int _PnPMinConfidence;
+	float _PnPPixelVariance;
+	float _PnPDepthVariance;
+	bool _PnPComputeFullCovariance;
+	bool _PnPUseInlierVariance;
 	unsigned int _multiSamplingPolicy;
 	int _correspondencesApproach;
 	int _flowWinSize;

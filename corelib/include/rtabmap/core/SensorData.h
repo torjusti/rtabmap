@@ -1052,6 +1052,7 @@ private:
 	// Visual features
 	std::vector<cv::KeyPoint> _keypoints; ///< 2D keypoints in image coordinates
 	std::vector<cv::Point3f> _keypoints3D; ///< 3D points corresponding to keypoints (in base_link frame)
+	std::vector<int> _keypointsConfidence; ///< Confidence values of each keypoint's 3d depth (hence camera frame) (0-100)
 	cv::Mat _descriptors; ///< Feature descriptors matrix (one row per keypoint)
 
 	// Global descriptors

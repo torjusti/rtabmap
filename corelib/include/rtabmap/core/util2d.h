@@ -405,6 +405,29 @@ float RTABMAP_CORE_EXPORT getDepth(
 		bool estWithNeighborsIfNull = false);
 
 /**
+ * @brief Retrieves a confidence value from a confidence image at a subpixel coordinate.
+ * 
+ * This function samples the confidence value from a confidence image at a floating-point (x, y) 
+ * coordinate. The value can be optionally smoothed using a weighted neighborhood.
+ * 
+ * @param confidenceImage Input confidence image.
+ * @param x The subpixel X-coordinate in the image.
+ * @param y The subpixel Y-coordinate in the image.
+ * @param smoothing If true, apply a weighted 3x3 smoothing around the pixel.
+ * 
+ * @return The confidence value at the given (x, y) location, or -1 if it cannot be determined.
+ *
+ * @note 
+ * - The function applies bounds checking on the input coordinates.
+ * - If `smoothing` is enabled, a weighted average using a 3x3 kernel is computed.
+ * - Pixels with invalid (-1) confidence are ignored in estimation and smoothing.
+ */
+int RTABMAP_CORE_EXPORT getConfidence(
+    const cv::Mat & confidenceImage,
+    float x, float y,
+    bool smoothing);
+
+/**
  * @defgroup RoiComputation Region of Interest (ROI) Computation
  * Functions to compute the ROI in an image using ratio-based cropping.
  * @{

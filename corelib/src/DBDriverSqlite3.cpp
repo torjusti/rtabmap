@@ -881,7 +881,12 @@ long DBDriverSqlite3::getFeaturesMemoryUsedQuery() const
 	if(_ppDb)
 	{
 		std::string query;
-		if(uStrNumCmp(_version, "0.13.0") >= 0)
+		if(uStrNumCmp(_version, "0.24.0") >= 0)
+		{
+			query = "SELECT sum(length(node_id) + length(word_id) + length(pos_x) + length(pos_y) + length(size) + length(dir) + length(response) + length(octave) + ifnull(length(depth_x),0) + ifnull(length(depth_y),0) + ifnull(length(depth_z),0) + ifnull(length(depth_confidence),0) + ifnull(length(descriptor_size),0) + ifnull(length(descriptor),0)) "
+					 "FROM Feature";
+		}
+		else if(uStrNumCmp(_version, "0.13.0") >= 0)
 		{
 			query = "SELECT sum(length(node_id) + length(word_id) + length(pos_x) + length(pos_y) + length(size) + length(dir) + length(response) + length(octave) + ifnull(length(depth_x),0) + ifnull(length(depth_y),0) + ifnull(length(depth_z),0) + ifnull(length(descriptor_size),0) + ifnull(length(descriptor),0)) "
 					 "FROM Feature";
@@ -3588,26 +3593,26 @@ void DBDriverSqlite3::loadQuery(VWDictionary & dictionary, bool lastStateOnly, b
 
 			cv::Mat d;
 			if(!idsOnly) {
-				descriptorSize = sqlite3_column_int(ppStmt, index++); // VisualWord descriptor size
-				descriptor = sqlite3_column_blob(ppStmt, index); 	// VisualWord descriptor array
-				dRealSize = sqlite3_column_bytes(ppStmt, index++);
+			descriptorSize = sqlite3_column_int(ppStmt, index++); // VisualWord descriptor size
+			descriptor = sqlite3_column_blob(ppStmt, index); 	// VisualWord descriptor array
+			dRealSize = sqlite3_column_bytes(ppStmt, index++);
 
-				if(dRealSize == descriptorSize)
-				{
-					// CV_8U binary descriptors
-					d = cv::Mat(1, descriptorSize, CV_8U);
-				}
-				else if(dRealSize/int(sizeof(float)) == descriptorSize)
-				{
-					// CV_32F
-					d = cv::Mat(1, descriptorSize, CV_32F);
-				}
-				else
-				{
-					UFATAL("Saved buffer size (%d bytes) is not the same as descriptor size (%d)", dRealSize, descriptorSize);
-				}
+			if(dRealSize == descriptorSize)
+			{
+				// CV_8U binary descriptors
+				d = cv::Mat(1, descriptorSize, CV_8U);
+			}
+			else if(dRealSize/int(sizeof(float)) == descriptorSize)
+			{
+				// CV_32F
+				d = cv::Mat(1, descriptorSize, CV_32F);
+			}
+			else
+			{
+				UFATAL("Saved buffer size (%d bytes) is not the same as descriptor size (%d)", dRealSize, descriptorSize);
+			}
 
-				memcpy(d.data, descriptor, dRealSize);
+			memcpy(d.data, descriptor, dRealSize);
 			}
 			VisualWord * vw = new VisualWord(id, d);
 			vw->setSaved(true);
@@ -3843,8 +3848,8 @@ void DBDriverSqlite3::loadWordIdsQuery(std::list<Signature *> & signatures) cons
 			}
 			else
 			{
-				(*iter)->setWords(visualWords, std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), cv::Mat());
-				//ULOGGER_DEBUG("Add %d keypoints, %d 3d points and %d descriptors to node %d", (int)visualWords.size(), allWords3NaN?0:(int)visualWords3.size(), (int)descriptors.rows, (*iter)->id());
+				(*iter)->setWords(visualWords, std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), std::vector<int>(), cv::Mat());
+				//ULOGGER_DEBUG("Add %d keypoints, %d 3d points, %d 3d confidence values and %d descriptors to node %d", (int)visualWords.size(), allWords3NaN?0:(int)visualWords3.size(), (int)visualWords3Confidence.size(), (int)descriptors.rows, (*iter)->id());
 			}
 
 			//reset
@@ -3866,7 +3871,13 @@ void DBDriverSqlite3::loadWordsQuery(std::list<Signature *> & signatures) const
 		sqlite3_stmt * ppStmt = 0;
 		std::stringstream query;
 
-		if(uStrNumCmp(_version, "0.13.0") >= 0)
+		if(uStrNumCmp(_version, "0.24.0") >= 0)
+		{
+			query << "SELECT word_id, pos_x, pos_y, size, dir, response, octave, depth_x, depth_y, depth_z, depth_confidence, descriptor_size, descriptor "
+					 "FROM Feature "
+					 "WHERE node_id = ? ";
+		}
+		else if(uStrNumCmp(_version, "0.13.0") >= 0)
 		{
 			query << "SELECT word_id, pos_x, pos_y, size, dir, response, octave, depth_x, depth_y, depth_z, descriptor_size, descriptor "
 					 "FROM Feature "
@@ -3914,8 +3925,10 @@ void DBDriverSqlite3::loadWordsQuery(std::list<Signature *> & signatures) const
 			std::multimap<int, int> visualWords;
 			std::vector<cv::KeyPoint> visualWordsKpts;
 			std::vector<cv::Point3f> visualWords3;
+			std::vector<int> visualWords3Confidence;
 			cv::Mat descriptors;
 			bool allWords3NaN = true;
+			bool allConfUndef = true;
 			cv::Point3f depth(0,0,0);
 
 			// Process the result if one
@@ -3968,6 +3981,24 @@ void DBDriverSqlite3::loadWordsQuery(std::list<Signature *> & signatures) const
 				visualWords.insert(visualWords.end(), std::make_pair(visualWordId, visualWordsKpts.size()-1));
 				visualWords3.push_back(depth);
 
+				int conf = -1;
+				if(uStrNumCmp(_version, "0.24.0") >= 0)
+				{
+					if(sqlite3_column_type(ppStmt, index) == SQLITE_NULL)
+					{
+						++index;
+					}
+					else
+					{
+						conf = sqlite3_column_double(ppStmt, index++);
+					}
+					visualWords3Confidence.push_back(conf);
+					if(allConfUndef && conf >= 0)
+					{
+						allConfUndef = false;
+					}
+				}
+
 				if(allWords3NaN && util3d::isFinite(depth))
 				{
 					allWords3NaN = false;
@@ -4017,8 +4048,12 @@ void DBDriverSqlite3::loadWordsQuery(std::list<Signature *> & signatures) const
 				{
 					visualWords3.clear();
 				}
-				(*iter)->setWords(visualWords, visualWordsKpts, visualWords3, descriptors);
-				//ULOGGER_DEBUG("Add %d keypoints, %d 3d points and %d descriptors to node %d", (int)visualWords.size(), allWords3NaN?0:(int)visualWords3.size(), (int)descriptors.rows, (*iter)->id());
+				if(allConfUndef)
+				{
+					visualWords3Confidence.clear();
+				}
+				(*iter)->setWords(visualWords, visualWordsKpts, visualWords3, visualWords3Confidence, descriptors);
+				//ULOGGER_DEBUG("Add %d keypoints, %d 3d points, %d 3d confidence values and %d descriptors to node %d", (int)visualWords.size(), allWords3NaN?0:(int)visualWords3.size(), (int)visualWords3Confidence.size(), (int)descriptors.rows, (*iter)->id());
 			}
 
 			//reset
@@ -4624,13 +4659,19 @@ void DBDriverSqlite3::saveQuery(const std::list<Signature *> & signatures)
 					pt = (*i)->getWords3()[w->second];
 				}
 
+				int conf = -1;
+				if(!(*i)->getWords3Confidence().empty())
+				{
+					conf = (*i)->getWords3Confidence()[w->second];
+				}
+
 				cv::Mat descriptor;
 				if(!(*i)->getWordsDescriptors().empty())
 				{
 					descriptor = (*i)->getWordsDescriptors().row(w->second);
 				}
 
-				stepKeypoint(ppStmt, (*i)->id(), w->first, (*i)->getWordsKpts()[w->second], pt, descriptor);
+				stepKeypoint(ppStmt, (*i)->id(), w->first, (*i)->getWordsKpts()[w->second], pt, conf, descriptor);
 			}
 		}
 		// Finalize (delete) the statement
@@ -6915,7 +6956,11 @@ void DBDriverSqlite3::stepWordsChanged(sqlite3_stmt * ppStmt, int nodeId, int ol
 
 std::string DBDriverSqlite3::queryStepKeypoint() const
 {
-	if(uStrNumCmp(_version, "0.13.0") >= 0)
+	if(uStrNumCmp(_version, "0.24.0") >= 0)
+	{
+		return "INSERT INTO Feature(node_id, word_id, pos_x, pos_y, size, dir, response, octave, depth_x, depth_y, depth_z, depth_confidence, descriptor_size, descriptor) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?);";
+	}
+	else if(uStrNumCmp(_version, "0.13.0") >= 0)
 	{
 		return "INSERT INTO Feature(node_id, word_id, pos_x, pos_y, size, dir, response, octave, depth_x, depth_y, depth_z, descriptor_size, descriptor) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?);";
 	}
@@ -6934,6 +6979,7 @@ void DBDriverSqlite3::stepKeypoint(sqlite3_stmt * ppStmt,
 		int wordId,
 		const cv::KeyPoint & kp,
 		const cv::Point3f & pt,
+		int depth_confidence,
 		const cv::Mat & descriptor) const
 {
 	if(!ppStmt)
@@ -6993,6 +7039,20 @@ void DBDriverSqlite3::stepKeypoint(sqlite3_stmt * ppStmt,
 	{
 		rc = sqlite3_bind_null(ppStmt, index++);
 		UASSERT_MSG(rc == SQLITE_OK, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
+	}
+
+	if(uStrNumCmp(_version, "0.24.0") >= 0)
+	{
+		if(depth_confidence > 0)
+		{
+			rc = sqlite3_bind_int(ppStmt, index++, depth_confidence);
+			UASSERT_MSG(rc == SQLITE_OK, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
+		}
+		else
+		{
+			rc = sqlite3_bind_null(ppStmt, index++);
+			UASSERT_MSG(rc == SQLITE_OK, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
+		}
 	}
 
 	//descriptor

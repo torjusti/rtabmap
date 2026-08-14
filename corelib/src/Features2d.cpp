@@ -210,6 +210,65 @@ void Feature2D::filterKeypointsByDepth(
 	}
 }
 
+void Feature2D::filterKeypointsByDepth(
+		std::vector<cv::KeyPoint> & keypoints,
+		cv::Mat & descriptors,
+		std::vector<cv::Point3f> & keypoints3D,
+		std::vector<int> & keypointsConfidence,
+		float minDepth,
+		float maxDepth)
+{
+	UDEBUG("");
+	//remove all keypoints/descriptors with no valid 3D points
+	UASSERT(((int)keypoints.size() == descriptors.rows || descriptors.empty()) &&
+			keypoints3D.size() == keypoints.size() &&
+			(keypointsConfidence.empty() || keypointsConfidence.size() == keypoints.size()));
+	std::vector<cv::KeyPoint> validKeypoints(keypoints.size());
+	std::vector<cv::Point3f> validKeypoints3D(keypoints.size());
+	std::vector<int> validKeypointsConfidence(keypointsConfidence.size());
+	cv::Mat validDescriptors(descriptors.size(), descriptors.type());
+
+	int oi=0;
+	float minDepthSqr = minDepth * minDepth;
+	float maxDepthSqr = maxDepth * maxDepth;
+	for(unsigned int i=0; i<keypoints3D.size(); ++i)
+	{
+		cv::Point3f & pt = keypoints3D[i];
+		if(util3d::isFinite(pt))
+		{
+			float distSqr = pt.x*pt.x+pt.y*pt.y+pt.z*pt.z;
+			if(distSqr >= minDepthSqr && (maxDepthSqr==0.0f || distSqr <= maxDepthSqr))
+			{
+				validKeypoints[oi] = keypoints[i];
+				validKeypoints3D[oi] = pt;
+				if(!keypointsConfidence.empty())
+				{
+					validKeypointsConfidence[oi] = keypointsConfidence[i];
+				}
+				if(!descriptors.empty())
+				{
+					descriptors.row(i).copyTo(validDescriptors.row(oi));
+				}
+				++oi;
+			}
+		}
+	}
+	UDEBUG("Removed %d invalid 3D points", (int)keypoints3D.size()-oi);
+	validKeypoints.resize(oi);
+	validKeypoints3D.resize(oi);
+	keypoints = validKeypoints;
+	keypoints3D = validKeypoints3D;
+	if(!keypointsConfidence.empty())
+	{
+		validKeypointsConfidence.resize(oi);
+		keypointsConfidence = validKeypointsConfidence;
+	}
+	if(!descriptors.empty())
+	{
+		descriptors = validDescriptors.rowRange(0, oi).clone();
+	}
+}
+
 void Feature2D::filterKeypointsByDisparity(
 		std::vector<cv::KeyPoint> & keypoints,
 		const cv::Mat & disparity,
@@ -401,6 +460,147 @@ void Feature2D::limitKeypoints(std::vector<cv::KeyPoint> & keypoints, std::vecto
 		ULOGGER_DEBUG("removing words time = %f s", timer.ticks());
 		keypoints = kptsTmp;
 		keypoints3D = kpts3DTmp;
+		if(descriptors.rows)
+		{
+			descriptors = descriptorsTmp;
+		}
+	}
+}
+
+void Feature2D::limitKeypoints(std::vector<cv::KeyPoint> & keypoints, std::vector<cv::Point3f> & keypoints3D, cv::Mat & descriptors, std::vector<int> & keypointsConfidence, int maxKeypoints, const cv::Size & imageSize, bool ssc)
+{
+	UASSERT_MSG((int)keypoints.size() == descriptors.rows || descriptors.rows == 0, uFormat("keypoints=%d descriptors=%d", (int)keypoints.size(), descriptors.rows).c_str());
+	UASSERT_MSG(keypoints.size() == keypoints3D.size() || keypoints3D.size() == 0, uFormat("keypoints=%d keypoints3D=%d", (int)keypoints.size(), (int)keypoints3D.size()).c_str());
+	UASSERT_MSG(keypoints.size() == keypointsConfidence.size() || keypointsConfidence.size() == 0, uFormat("keypoints=%d keypointsConfidence=%d", (int)keypoints.size(), (int)keypointsConfidence.size()).c_str());
+	if(maxKeypoints > 0 && (int)keypoints.size() > maxKeypoints)
+	{
+		UTimer timer;
+		int removed;
+		std::vector<cv::KeyPoint> kptsTmp;
+		std::vector<cv::Point3f> kpts3DTmp;
+		std::vector<int> kptsConfTmp;
+		cv::Mat descriptorsTmp;
+		if(ssc)
+		{
+			ULOGGER_DEBUG("too much words (%d), removing words with SSC", keypoints.size());
+
+			// Sorting keypoints by deacreasing order of strength
+			std::vector<float> responseVector;
+			for (unsigned int i = 0; i < keypoints.size(); i++)
+			{
+				responseVector.push_back(keypoints[i].response);
+			}
+			std::vector<int> indx(responseVector.size());
+			std::iota(std::begin(indx), std::end(indx), 0);
+
+#if CV_MAJOR_VERSION >= 4
+			cv::sortIdx(responseVector, indx, cv::SORT_DESCENDING);
+#else
+			cv::sortIdx(responseVector, indx, CV_SORT_DESCENDING);
+#endif
+
+			static constexpr float tolerance = 0.1;
+			auto ResultVec = util2d::SSC(keypoints, maxKeypoints, tolerance, imageSize.width, imageSize.height, indx);
+			removed = keypoints.size()-ResultVec.size();
+			// retrieve final keypoints
+			kptsTmp.resize(ResultVec.size());
+			if(!keypoints3D.empty())
+			{
+				kpts3DTmp.resize(ResultVec.size());
+			}
+			if(!keypointsConfidence.empty())
+			{
+				kptsConfTmp.resize(ResultVec.size());
+			}
+			if(descriptors.rows)
+			{
+				descriptorsTmp = cv::Mat(ResultVec.size(), descriptors.cols, descriptors.type());
+			}
+			for(unsigned int k=0; k<ResultVec.size(); ++k)
+			{
+				kptsTmp[k] = keypoints[ResultVec[k]];
+				if(keypoints3D.size())
+				{
+					kpts3DTmp[k] = keypoints3D[ResultVec[k]];
+				}
+				if(keypointsConfidence.size())
+				{
+					kptsConfTmp[k] = keypointsConfidence[ResultVec[k]];
+				}
+				if(descriptors.rows)
+				{
+					if(descriptors.type() == CV_32FC1)
+					{
+						memcpy(descriptorsTmp.ptr<float>(k), descriptors.ptr<float>(ResultVec[k]), descriptors.cols*sizeof(float));
+					}
+					else
+					{
+						memcpy(descriptorsTmp.ptr<char>(k), descriptors.ptr<char>(ResultVec[k]), descriptors.cols*sizeof(char));
+					}
+				}
+			}
+		}
+		else
+		{
+			ULOGGER_DEBUG("too many words (%d), removing words with the hessian threshold", keypoints.size());
+			// Remove words under the new hessian threshold
+
+			// Sort words by hessian
+			std::multimap<float, int> hessianMap; // <hessian,id>
+			for(unsigned int i = 0; i <keypoints.size(); ++i)
+			{
+				//Keep track of the data, to be easier to manage the data in the next step
+				hessianMap.insert(std::pair<float, int>(fabs(keypoints[i].response), i));
+			}
+
+			// Remove them from the signature
+			removed = (int)hessianMap.size()-maxKeypoints;
+			std::multimap<float, int>::reverse_iterator iter = hessianMap.rbegin();
+			kptsTmp.resize(maxKeypoints);
+			if(!keypoints3D.empty())
+			{
+				kpts3DTmp.resize(maxKeypoints);
+			}
+			if(!keypointsConfidence.empty())
+			{
+				kptsConfTmp.resize(maxKeypoints);
+			}
+			if(descriptors.rows)
+			{
+				descriptorsTmp = cv::Mat(maxKeypoints, descriptors.cols, descriptors.type());
+			}
+			for(unsigned int k=0; k<kptsTmp.size() && iter!=hessianMap.rend(); ++k, ++iter)
+			{
+				kptsTmp[k] = keypoints[iter->second];
+				if(keypoints3D.size())
+				{
+					kpts3DTmp[k] = keypoints3D[iter->second];
+				}
+				if(keypointsConfidence.size())
+				{
+					kptsConfTmp[k] = keypointsConfidence[iter->second];
+				}
+				if(descriptors.rows)
+				{
+					if(descriptors.type() == CV_32FC1)
+					{
+						memcpy(descriptorsTmp.ptr<float>(k), descriptors.ptr<float>(iter->second), descriptors.cols*sizeof(float));
+					}
+					else
+					{
+						memcpy(descriptorsTmp.ptr<char>(k), descriptors.ptr<char>(iter->second), descriptors.cols*sizeof(char));
+					}
+				}
+			}
+		}
+		ULOGGER_DEBUG("%d keypoints removed, (kept %d), minimum response=%f", removed, (int)kptsTmp.size(), !ssc&&kptsTmp.size()?kptsTmp.back().response:0.0f);
+		ULOGGER_DEBUG("removing words time = %f s", timer.ticks());
+		keypoints = kptsTmp;
+		keypoints3D = kpts3DTmp;
+		if(!keypointsConfidence.empty())
+		{
+			keypointsConfidence = kptsConfTmp;
+		}
 		if(descriptors.rows)
 		{
 			descriptors = descriptorsTmp;
@@ -1175,6 +1375,53 @@ std::vector<cv::Point3f> Feature2D::generateKeypoints3D(
 	}
 
 	return keypoints3D;
+}
+	
+std::vector<int> Feature2D::generateKeypointsConfidence(
+		const SensorData & data,
+		const std::vector<cv::KeyPoint> & keypoints) const
+{
+	std::vector<int> keypointsConfidence;
+	
+	if(keypoints.size())
+	{
+		keypointsConfidence.resize(keypoints.size(), 0); 
+		
+		const cv::Mat & depthConfidence = data.depthConfidenceRaw();
+		const std::vector<CameraModel> & cameraModels = data.cameraModels();
+
+		if(!depthConfidence.empty() && cameraModels.size() > 0)
+		{
+            // Mirroring the depth extraction logic from util3d_features.cpp
+			UASSERT(int((depthConfidence.cols/cameraModels.size())*cameraModels.size()) == depthConfidence.cols);
+			float subImageWidth = depthConfidence.cols/cameraModels.size();
+			
+			float rgbToDepthFactorX = 1.0f/(cameraModels[0].imageWidth()>0?float(cameraModels[0].imageWidth())/subImageWidth:1.0f);
+			float rgbToDepthFactorY = 1.0f/(cameraModels[0].imageHeight()>0?float(cameraModels[0].imageHeight())/float(depthConfidence.rows):1.0f);
+
+			for(unsigned int i=0; i<keypoints.size(); ++i)
+			{
+				float x = keypoints[i].pt.x*rgbToDepthFactorX;
+				float y = keypoints[i].pt.y*rgbToDepthFactorY;
+				
+				int pixelX = int(x);
+				int pixelY = int(y);
+				
+				if(pixelY >= 0 && pixelY < depthConfidence.rows && pixelX >= 0 && pixelX < depthConfidence.cols)
+				{
+                    // Supporting both 32-bit float and 16-bit unsigned standard formats
+					if(depthConfidence.type() == CV_32FC1) {
+						keypointsConfidence.at(i) = depthConfidence.at<int>(pixelY, pixelX);
+					} else if(depthConfidence.type() == CV_16UC1) {
+						// Assuming standard mm to meter conversion or direct use depending on your sensor config
+						keypointsConfidence.at(i) = depthConfidence.at<int>(pixelY, pixelX); 
+					}
+				}
+			}
+		}
+	}
+	
+	return keypointsConfidence;
 }
 
 //////////////////////////
@@ -2281,7 +2528,7 @@ std::vector<cv::KeyPoint> GFTT::generateKeypointsImpl(const cv::Mat & image, con
 	{
 		_gftt->detect(imgRoi, keypoints, maskRoi); // Opencv keypoints
 	}
-
+	
 	if(!_useHarrisDetector && _qualityLevel>0.0)
 	{
 		std::vector<cv::KeyPoint> bestKeypoints;
