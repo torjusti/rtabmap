@@ -13,6 +13,9 @@ tags
 build_*
 *.bak
 build-*
+build2
+fulldiff*
+unit_test*
 
 # Coverage (coverage-report.sh / .github/workflows/coverage.yml)
 coverage-html/
