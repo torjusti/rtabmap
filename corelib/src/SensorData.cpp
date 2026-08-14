@@ -990,12 +990,14 @@ void SensorData::uncompressDataConst(
 	}
 }
 
-void SensorData::setFeatures(const std::vector<cv::KeyPoint> & keypoints, const std::vector<cv::Point3f> & keypoints3D, const cv::Mat & descriptors)
+void SensorData::setFeatures(const std::vector<cv::KeyPoint> & keypoints, const std::vector<cv::Point3f> & keypoints3D, const std::vector<int> & keypoints3DConfidence, const cv::Mat & descriptors)
 {
 	UASSERT_MSG(keypoints3D.empty() || keypoints.size() == keypoints3D.size(), uFormat("keypoints=%d keypoints3D=%d", (int)keypoints.size(), (int)keypoints3D.size()).c_str());
+	UASSERT_MSG(keypoints3DConfidence.empty() || keypoints.size() == keypoints3DConfidence.size(), uFormat("keypoints=%d keypoints3DConfidence=%d", (int)keypoints.size(), (int)keypoints3DConfidence.size()).c_str());
 	UASSERT_MSG(descriptors.empty() || (int)keypoints.size() == descriptors.rows, uFormat("keypoints=%d descriptors=%d", (int)keypoints.size(), descriptors.rows).c_str());
 	_keypoints = keypoints;
 	_keypoints3D = keypoints3D;
+	_keypoints3DConfidence = keypoints3DConfidence;
 	_descriptors = descriptors;
 }
 
@@ -1036,6 +1038,7 @@ unsigned long SensorData::getMemoryUsed() const // Return memory usage in Bytes
 			(_emptyCellsRaw.empty()?0:_emptyCellsRaw.total()*_emptyCellsRaw.elemSize())+
 			_keypoints.size() * sizeof(cv::KeyPoint) +
 			_keypoints3D.size() * sizeof(cv::Point3f) +
+			_keypoints3DConfidence.size() * sizeof(int) +
 			(_descriptors.empty()?0:_descriptors.total()*_descriptors.elemSize());
 }
 

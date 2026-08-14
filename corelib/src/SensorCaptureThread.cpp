@@ -702,7 +702,7 @@ void SensorCaptureThread::postUpdate(SensorData * dataPtr, SensorCaptureInfo * i
 				kpts[i].size /= _imageDecimation;
 				kpts[i].octave -= log2value;
 			}
-			data.setFeatures(kpts, data.keypoints3D(), data.descriptors());
+			data.setFeatures(kpts, data.keypoints3D(), data.keypoints3DConfidence(), data.descriptors());
 		}
 		if(info) info->timeImageDecimation = timer.ticks();
 	}
@@ -1039,16 +1039,21 @@ void SensorCaptureThread::postUpdate(SensorData * dataPtr, SensorCaptureInfo * i
 		std::vector<cv::KeyPoint> keypoints = _featureDetector->generateKeypoints(grayScaleImg, depthMask);
 		cv::Mat descriptors;
 		std::vector<cv::Point3f> keypoints3D;
+		std::vector<int> keypoints3DConfidence;
 		if(!keypoints.empty())
 		{
 			descriptors = _featureDetector->generateDescriptors(grayScaleImg, keypoints);
-			if(!keypoints.empty())
+			if(!keypoints3D.empty())
 			{
 				keypoints3D = _featureDetector->generateKeypoints3D(data, keypoints);
 			}
+			if(!keypoints3DConfidence.empty())
+			{
+				keypoints3DConfidence = _featureDetector->generateKeypoints3DConfidence(data, keypoints);
+			}
 		}
 
-		data.setFeatures(keypoints, keypoints3D, descriptors);
+		data.setFeatures(keypoints, keypoints3D, keypoints3DConfidence, descriptors);
 	}
 }
 

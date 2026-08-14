@@ -818,7 +818,7 @@ SensorData CameraDepthAI::captureImage(SensorCaptureInfo * info)
 		std::vector<cv::KeyPoint> keypoints;
 		for(auto& feature : features)
 			keypoints.emplace_back(cv::KeyPoint(feature.position.x, feature.position.y, 3));
-		data.setFeatures(keypoints, std::vector<cv::Point3f>(), cv::Mat());
+		data.setFeatures(keypoints, std::vector<cv::Point3f>(), std::vector<int>(), cv::Mat());
 	}
 	else if(detectFeatures_ >= 2)
 	{
@@ -892,7 +892,7 @@ SensorData CameraDepthAI::captureImage(SensorCaptureInfo * info)
 			});
 			descriptors = descriptors.reshape(1);
 
-			data.setFeatures(keypoints, std::vector<cv::Point3f>(), descriptors);
+			data.setFeatures(keypoints, std::vector<cv::Point3f>(), std::vector<int>(), descriptors);
 		}
 
 		if(detectFeatures_ == 3)

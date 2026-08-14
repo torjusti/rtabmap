@@ -301,7 +301,7 @@ Transform OdometryF2F::computeTransform(
 		UWARN("Registration failed: \"%s\"", regInfo.rejectedMsg.c_str());
 	}
 
-	data.setFeatures(newFrame.sensorData().keypoints(), newFrame.sensorData().keypoints3D(), newFrame.sensorData().descriptors());
+	data.setFeatures(newFrame.sensorData().keypoints(), newFrame.sensorData().keypoints3D(), newFrame.sensorData().keypoints3DConfidence(), newFrame.sensorData().descriptors());
 	data.setLaserScan(newFrame.sensorData().laserScanRaw());
 
 	if(info)

@@ -819,9 +819,10 @@ public:
 	 * 
 	 * @param keypoints 2D keypoints in image coordinates
 	 * @param keypoints3D 3D points corresponding to keypoints (in base_link frame)
+	 * @param keypoints3DConfidence Confidence values of each keypoint's 3D depth (in camera frame)
 	 * @param descriptors Feature descriptors matrix (one row per keypoint)
 	 */
-	void setFeatures(const std::vector<cv::KeyPoint> & keypoints, const std::vector<cv::Point3f> & keypoints3D, const cv::Mat & descriptors);
+	void setFeatures(const std::vector<cv::KeyPoint> & keypoints, const std::vector<cv::Point3f> & keypoints3D, const std::vector<int> & keypoints3DConfidence = std::vector<int>(), const cv::Mat & descriptors = cv::Mat());
 	
 	/**
 	 * @brief Returns the 2D keypoints
@@ -834,6 +835,12 @@ public:
 	 * @return Const reference to vector of 3D points (in base_link frame)
 	 */
 	const std::vector<cv::Point3f> & keypoints3D() const {return _keypoints3D;}
+
+	/**
+	 * @brief Returns the keypoints' depth confidence values (0-100)
+	 * @return Const reference to vector of depth confidence values (camera frame)
+	 */
+	const std::vector<int> & keypoints3DConfidence() const {return _keypoints3DConfidence;}
 	
 	/**
 	 * @brief Returns the feature descriptors
@@ -1052,7 +1059,7 @@ private:
 	// Visual features
 	std::vector<cv::KeyPoint> _keypoints; ///< 2D keypoints in image coordinates
 	std::vector<cv::Point3f> _keypoints3D; ///< 3D points corresponding to keypoints (in base_link frame)
-	std::vector<int> _keypointsConfidence; ///< Confidence values of each keypoint's 3d depth (hence camera frame) (0-100)
+	std::vector<int> _keypoints3DConfidence; ///< Confidence values of each keypoint's 3d depth (hence camera frame) (0-100)
 	cv::Mat _descriptors; ///< Feature descriptors matrix (one row per keypoint)
 
 	// Global descriptors

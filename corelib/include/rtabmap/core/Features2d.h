@@ -238,7 +238,7 @@ public:
 			std::vector<cv::KeyPoint> & keypoints,
 			cv::Mat & descriptors,
 			std::vector<cv::Point3f> & keypoints3D,
-			std::vector<int> & keypointsConfidence,
+			std::vector<int> & keypoints3DConfidence,
 			float minDepth,
 			float maxDepth);
 
@@ -257,7 +257,7 @@ public:
 	static void limitKeypoints(std::vector<cv::KeyPoint> & keypoints, int maxKeypoints, const cv::Size & imageSize = cv::Size(), bool ssc = false);
 	static void limitKeypoints(std::vector<cv::KeyPoint> & keypoints, cv::Mat & descriptors, int maxKeypoints, const cv::Size & imageSize = cv::Size(), bool ssc = false);
 	static void limitKeypoints(std::vector<cv::KeyPoint> & keypoints, std::vector<cv::Point3f> & keypoints3D, cv::Mat & descriptors, int maxKeypoints, const cv::Size & imageSize = cv::Size(), bool ssc = false);
-	static void limitKeypoints(std::vector<cv::KeyPoint> & keypoints, std::vector<cv::Point3f> & keypoints3D, cv::Mat & descriptors, std::vector<int> & keypointsConfidence, int maxKeypoints, const cv::Size & imageSize, bool ssc);
+	static void limitKeypoints(std::vector<cv::KeyPoint> & keypoints, std::vector<cv::Point3f> & keypoints3D, cv::Mat & descriptors, std::vector<int> & keypoints3DConfidence, int maxKeypoints, const cv::Size & imageSize, bool ssc);
 	static void limitKeypoints(const std::vector<cv::KeyPoint> & keypoints, std::vector<bool> & inliers, int maxKeypoints, const cv::Size & imageSize = cv::Size(), bool ssc = false);
 	static void limitKeypoints(const std::vector<cv::KeyPoint> & keypoints, std::vector<bool> & inliers, int maxKeypoints, const cv::Size & imageSize, int gridRows, int gridCols, bool ssc = false);
 
@@ -287,7 +287,7 @@ public:
 	std::vector<cv::Point3f> generateKeypoints3D(
 			const SensorData & data,
 			const std::vector<cv::KeyPoint> & keypoints) const;
-	std::vector<int> generateKeypointsConfidence(
+	std::vector<int> generateKeypoints3DConfidence(
 		const SensorData & data,
 		const std::vector<cv::KeyPoint> & keypoints) const;
 

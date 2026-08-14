@@ -783,9 +783,11 @@ SensorData DBReader::getNextData(SensorCaptureInfo * info)
 			cv::Mat descriptors = s->getWordsDescriptors().clone();
 			const std::vector<cv::KeyPoint> & keypoints = s->getWordsKpts();
 			const std::vector<cv::Point3f> & keypoints3D = s->getWords3();
+			const std::vector<int> & keypoints3DConfidence = s->getWords3Confidence();
 			if(!_featuresIgnored &&
 				!keypoints.empty() &&
 			   (keypoints3D.empty() || keypoints.size() == keypoints3D.size()) &&
+			   (keypoints3DConfidence.empty() || keypoints.size() == keypoints3DConfidence.size()) &&
 			   (descriptors.empty() || (int)keypoints.size() == descriptors.rows))
 			{
 				if(!cameraOldNewIndices.empty())
@@ -793,6 +795,7 @@ SensorData DBReader::getNextData(SensorCaptureInfo * info)
 					cv::Mat newDescriptors;
 					std::vector<cv::KeyPoint> newKeypoints;
 					std::vector<cv::Point3f> newKeypoints3D;
+					std::vector<int> newKeypoints3DConfidence;
 					UASSERT(!dbModels.empty() && dbModels[0].imageWidth()>0);
 					int subImageWidth = dbModels[0].imageWidth();
 					for(size_t i = 0; i<keypoints.size(); ++i)
@@ -812,13 +815,17 @@ SensorData DBReader::getNextData(SensorCaptureInfo * info)
 								pt = util3d::transformPoint(pt, combinedLocalTransforms[cameraIndex]);
 								newKeypoints3D.push_back(pt);
 							}
+							if(!keypoints3DConfidence.empty())
+							{
+								newKeypoints3DConfidence.push_back(keypoints3DConfidence.at(i));
+							}
 							if(!descriptors.empty())
 							{
 								newDescriptors.push_back(descriptors.row(i));
 							}
 						}
 					}
-					data.setFeatures(newKeypoints, newKeypoints3D, newDescriptors);
+					data.setFeatures(newKeypoints, newKeypoints3D, newKeypoints3DConfidence, newDescriptors);
 				}
 				else if(!combinedLocalTransforms.empty())
 				{
@@ -837,11 +844,11 @@ SensorData DBReader::getNextData(SensorCaptureInfo * info)
 						pt = util3d::transformPoint(pt, combinedLocalTransforms[cameraIndex]);
 						newKeypoints3D.push_back(pt);
 					}
-					data.setFeatures(keypoints, newKeypoints3D, descriptors);
+					data.setFeatures(keypoints, newKeypoints3D, keypoints3DConfidence, descriptors);
 				}
 				else
 				{
-					data.setFeatures(keypoints, keypoints3D, descriptors);
+					data.setFeatures(keypoints, keypoints3D, keypoints3DConfidence, descriptors);
 				}
 			}
 			else if(!_featuresIgnored && !keypoints.empty() && (!keypoints3D.empty() || !descriptors.empty()))

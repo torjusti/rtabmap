@@ -607,13 +607,13 @@ Transform RegistrationVis::computeTransformationImpl(
 			{
 				kptsFromConfidence = fromSignature.getWords3Confidence();
 			}
-			else if(kptsFrom.size() == fromSignature.sensorData().keypointsConfidence().size())
+			else if(kptsFrom.size() == fromSignature.sensorData().keypoints3DConfidence().size())
 			{
-				kptsFromConfidence = fromSignature.sensorData().keypointsConfidence();
+				kptsFromConfidence = fromSignature.sensorData().keypoints3DConfidence();
 			}
 			else
 			{
-				kptsFromConfidence = _detectorFrom->generateKeypointsConfidence(fromSignature.sensorData(), kptsFrom);
+				kptsFromConfidence = _detectorFrom->generateKeypoints3DConfidence(fromSignature.sensorData(), kptsFrom);
 			}
 			*/
 
@@ -787,7 +787,7 @@ Transform RegistrationVis::computeTransformationImpl(
 				if(_estimationType == 0 || _estimationType == 1)
 				{
 					kptsTo3D = _detectorTo->generateKeypoints3D(toSignature.sensorData(), kptsTo);
-					//kptsToConfidence = _detectorTo->generateKeypointsConfidence(toSignature.sensorData(), kptsTo);
+					//kptsToConfidence = _detectorTo->generateKeypoints3DConfidence(toSignature.sensorData(), kptsTo);
 				}
 
 				UASSERT(kptsFrom.size() == kptsFrom3DKept.size());
@@ -819,7 +819,7 @@ Transform RegistrationVis::computeTransformationImpl(
 					}
 					*/
 				}
-				toSignature.sensorData().setFeatures(kptsTo, kptsTo3D, cv::Mat());
+				toSignature.sensorData().setFeatures(kptsTo, kptsTo3D, std::vector<int>(), cv::Mat());
 			}
 			else
 			{
@@ -844,10 +844,10 @@ Transform RegistrationVis::computeTransformationImpl(
 						*/
 					}
 				}
-				toSignature.sensorData().setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), cv::Mat());
+				toSignature.sensorData().setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), std::vector<int>(), cv::Mat());
 			}
 
-			fromSignature.sensorData().setFeatures(kptsFrom, kptsFrom3D, cv::Mat());
+			fromSignature.sensorData().setFeatures(kptsFrom, kptsFrom3D, std::vector<int>(), cv::Mat());
 		}
 		else // Features Matching
 		{
@@ -1003,13 +1003,13 @@ Transform RegistrationVis::computeTransformationImpl(
 			{
 				kptsFromConfidence = fromSignature.getWords3Confidence();
 			}
-			else if(kptsFromSource == 1 && kptsFrom.size() == fromSignature.sensorData().keypointsConfidence().size())
+			else if(kptsFromSource == 1 && kptsFrom.size() == fromSignature.sensorData().keypoints3DConfidence().size())
 			{
-				kptsFromConfidence = fromSignature.sensorData().keypointsConfidence();
+				kptsFromConfidence = fromSignature.sensorData().keypoints3DConfidence();
 			}
 			else
 			{
-				kptsFromConfidence = _detectorFrom->generateKeypointsConfidence(fromSignature.sensorData(), kptsFrom);
+				kptsFromConfidence = _detectorFrom->generateKeypoints3DConfidence(fromSignature.sensorData(), kptsFrom);
 			}
 
 			if(!kptsFrom3D.empty() &&
@@ -1052,13 +1052,13 @@ Transform RegistrationVis::computeTransformationImpl(
 			{
 				kptsToConfidence = toSignature.getWords3Confidence();
 			}
-			else if(kptsToSource == 1 && kptsTo.size() == toSignature.sensorData().keypointsConfidence().size())
+			else if(kptsToSource == 1 && kptsTo.size() == toSignature.sensorData().keypoints3DConfidence().size())
 			{
-				kptsToConfidence = toSignature.sensorData().keypointsConfidence();
+				kptsToConfidence = toSignature.sensorData().keypoints3DConfidence();
 			}
 			else
 			{
-				kptsToConfidence = _detectorTo->generateKeypointsConfidence(toSignature.sensorData(), kptsTo);
+				kptsToConfidence = _detectorTo->generateKeypoints3DConfidence(toSignature.sensorData(), kptsTo);
 			}
 
 			if(kptsTo3D.size() &&
@@ -1070,8 +1070,8 @@ Transform RegistrationVis::computeTransformationImpl(
 
 			UASSERT(kptsFrom.empty() || descriptorsFrom.rows == 0 || int(kptsFrom.size()) == descriptorsFrom.rows);
 
-			fromSignature.sensorData().setFeatures(kptsFrom, kptsFrom3D, descriptorsFrom);
-			toSignature.sensorData().setFeatures(kptsTo, kptsTo3D, descriptorsTo);
+			fromSignature.sensorData().setFeatures(kptsFrom, kptsFrom3D, kptsFromConfidence, descriptorsFrom);
+			toSignature.sensorData().setFeatures(kptsTo, kptsTo3D, kptsToConfidence, descriptorsTo);
 
 			UDEBUG("descriptorsFrom=%d", descriptorsFrom.rows);
 			UDEBUG("descriptorsTo=%d", descriptorsTo.rows);

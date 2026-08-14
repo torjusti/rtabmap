@@ -417,7 +417,7 @@ public:
 	 * @param words Multimap of word IDs to keypoint indices (allows duplicate words). The keypoint indices match the keypoints, points and descriptors.
 	 * @param keypoints Vector of 2D keypoints in image coordinates. The keypoints must be in the same order as the words.
 	 * @param words3 Vector of 3D points in base_link frame (with localTransform applied). The points must be in the same order as the words.
-	 * @param keypointsConfidence (override) Vector of confidence values for each keypoint's 3D depth. The values must be in the same order as the words.
+	 * @param keypoints3DConfidence (override) Vector of confidence values for each keypoint's 3D depth. The values must be in the same order as the words.
 	 * @param descriptors Feature descriptors matrix (one row per word). The descriptors must be in the same order as the words.
 	 * 
 	 * @note The signature is disabled after setting words (must be explicitly enabled).
@@ -425,7 +425,7 @@ public:
 	 * @note All arrays must have the same size (number of words).
 	 */
 	void setWords(const std::multimap<int, int> & words, const std::vector<cv::KeyPoint> & keypoints, const std::vector<cv::Point3f> & words3, const cv::Mat & descriptors);
-	void setWords(const std::multimap<int, int> & words, const std::vector<cv::KeyPoint> & keypoints, const std::vector<cv::Point3f> & words3, const std::vector<int> & keypointsConfidence, const cv::Mat & descriptors);
+	void setWords(const std::multimap<int, int> & words, const std::vector<cv::KeyPoint> & keypoints, const std::vector<cv::Point3f> & words3, const std::vector<int> & keypoints3DConfidence, const cv::Mat & descriptors);
 	
 	/**
 	 * @brief Checks if this signature is enabled
