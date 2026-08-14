@@ -54,19 +54,6 @@ namespace util3d
 std::vector<cv::Point3f> generateKeypoints3DDepth(
 		const std::vector<cv::KeyPoint> & keypoints,
 		const cv::Mat & depth,
-		const CameraModel & cameraModel,
-		float minDepth,
-		float maxDepth)
-{
-	UASSERT(cameraModel.isValidForProjection());
-	std::vector<CameraModel> models;
-	models.push_back(cameraModel);
-	return generateKeypoints3DDepth(keypoints, depth, models, minDepth, maxDepth);
-}
-
-std::vector<cv::Point3f> generateKeypoints3DDepth(
-		const std::vector<cv::KeyPoint> & keypoints,
-		const cv::Mat & depth,
 		const std::vector<CameraModel> & cameraModels,
 		float minDepth,
 		float maxDepth)
