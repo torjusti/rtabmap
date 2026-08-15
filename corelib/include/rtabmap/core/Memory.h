@@ -559,6 +559,7 @@ public:
 			std::multimap<int, int> & words,
 			std::vector<cv::KeyPoint> & wordsKpts,
 			std::vector<cv::Point3f> & words3,
+			std::vector<int> & words3Confidences,
 			cv::Mat & wordsDescriptors,
 			std::vector<GlobalDescriptor> & globalDescriptors) const;
 	/** @brief Loads mono and/or stereo camera calibration stored with @p nodeId. */

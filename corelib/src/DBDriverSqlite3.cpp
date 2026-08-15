@@ -2403,6 +2403,7 @@ void DBDriverSqlite3::getLocalFeaturesQuery(
 	std::multimap<int, int> & words,
 	std::vector<cv::KeyPoint> & keypoints,
 	std::vector<cv::Point3f> & points,
+	std::vector<int> & confidences,
 	cv::Mat & descriptors) const
 {
 	Signature s(signatureId);
@@ -2412,6 +2413,7 @@ void DBDriverSqlite3::getLocalFeaturesQuery(
 	words = ids.front()->getWords();
 	keypoints = ids.front()->getWordsKpts();
 	points = ids.front()->getWords3();
+	confidences = ids.front()->getWords3Confidences();
 	descriptors = ids.front()->getWordsDescriptors().clone();
 }
 
@@ -4660,9 +4662,9 @@ void DBDriverSqlite3::saveQuery(const std::list<Signature *> & signatures)
 				}
 
 				int conf = -1;
-				if(!(*i)->getWords3Confidence().empty())
+				if(!(*i)->getWords3Confidences().empty())
 				{
-					conf = (*i)->getWords3Confidence()[w->second];
+					conf = (*i)->getWords3Confidences()[w->second];
 				}
 
 				cv::Mat descriptor;

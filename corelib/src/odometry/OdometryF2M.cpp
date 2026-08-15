@@ -341,7 +341,7 @@ Transform OdometryF2M::computeTransform(
 					regPipeline_->parseParameters(params);
 				}
 
-				data.setFeatures(lastFrame_->sensorData().keypoints(), lastFrame_->sensorData().keypoints3D(), lastFrame_->sensorData().keypoints3DConfidence(), lastFrame_->sensorData().descriptors());
+				data.setFeatures(lastFrame_->sensorData().keypoints(), lastFrame_->sensorData().keypoints3D(), lastFrame_->sensorData().keypoints3DConfidences(), lastFrame_->sensorData().descriptors());
 				data.setLaserScan(lastFrame_->sensorData().laserScanRaw());
 
 				UDEBUG("Registration time = %fs", regInfo.totalTime);
@@ -1278,7 +1278,7 @@ Transform OdometryF2M::computeTransform(
 				if(lastFrameWords3Updated)
 				{
 					// update output with refined 3d points from bundle adjustment
-					data.setFeatures(lastFrame_->getWordsKpts(), lastFrameWords3, lastFrame_->getWords3Confidence(), lastFrame_->getWordsDescriptors());
+					data.setFeatures(lastFrame_->getWordsKpts(), lastFrameWords3, lastFrame_->getWords3Confidences(), lastFrame_->getWordsDescriptors());
 				}
 			}
 
@@ -1313,7 +1313,7 @@ Transform OdometryF2M::computeTransform(
 					dummy);
 			lastFrame_->sensorData().setLaserScan(dummy.sensorData().laserScanRaw());
 
-			data.setFeatures(lastFrame_->sensorData().keypoints(), lastFrame_->sensorData().keypoints3D(), lastFrame_->sensorData().keypoints3DConfidence(), lastFrame_->sensorData().descriptors());
+			data.setFeatures(lastFrame_->sensorData().keypoints(), lastFrame_->sensorData().keypoints3D(), lastFrame_->sensorData().keypoints3DConfidences(), lastFrame_->sensorData().descriptors());
 			data.setLaserScan(lastFrame_->sensorData().laserScanRaw());
 
 			// a very high variance tells that the new pose is not linked with the previous one

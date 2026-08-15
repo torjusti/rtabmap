@@ -609,13 +609,13 @@ Transform RegistrationVis::computeTransformationImpl(
 
 			/* Uncomment if confidence ever get used for optical flow
 			std::vector<int> kptsFromConfidence;
-			if(kptsFrom.size() == fromSignature.getWords3Confidence().size())
+			if(kptsFrom.size() == fromSignature.getWords3Confidences().size())
 			{
-				kptsFromConfidence = fromSignature.getWords3Confidence();
+				kptsFromConfidence = fromSignature.getWords3Confidences();
 			}
-			else if(kptsFrom.size() == fromSignature.sensorData().keypoints3DConfidence().size())
+			else if(kptsFrom.size() == fromSignature.sensorData().keypoints3DConfidences().size())
 			{
-				kptsFromConfidence = fromSignature.sensorData().keypoints3DConfidence();
+				kptsFromConfidence = fromSignature.sensorData().keypoints3DConfidences();
 			}
 			else
 			{
@@ -1005,13 +1005,13 @@ Transform RegistrationVis::computeTransformationImpl(
 			}
 
 			std::vector<int> kptsFromConfidence;
-			if(kptsFromSource == 2 && kptsFrom.size() == fromSignature.getWords3Confidence().size())
+			if(kptsFromSource == 2 && kptsFrom.size() == fromSignature.getWords3Confidences().size())
 			{
-				kptsFromConfidence = fromSignature.getWords3Confidence();
+				kptsFromConfidence = fromSignature.getWords3Confidences();
 			}
-			else if(kptsFromSource == 1 && kptsFrom.size() == fromSignature.sensorData().keypoints3DConfidence().size())
+			else if(kptsFromSource == 1 && kptsFrom.size() == fromSignature.sensorData().keypoints3DConfidences().size())
 			{
-				kptsFromConfidence = fromSignature.sensorData().keypoints3DConfidence();
+				kptsFromConfidence = fromSignature.sensorData().keypoints3DConfidences();
 			}
 			else
 			{
@@ -1056,13 +1056,13 @@ Transform RegistrationVis::computeTransformationImpl(
 			}
 
 			std::vector<int> kptsToConfidence;
-			if(kptsToSource == 2 && kptsTo.size() == toSignature.getWords3Confidence().size())
+			if(kptsToSource == 2 && kptsTo.size() == toSignature.getWords3Confidences().size())
 			{
-				kptsToConfidence = toSignature.getWords3Confidence();
+				kptsToConfidence = toSignature.getWords3Confidences();
 			}
-			else if(kptsToSource == 1 && kptsTo.size() == toSignature.sensorData().keypoints3DConfidence().size())
+			else if(kptsToSource == 1 && kptsTo.size() == toSignature.sensorData().keypoints3DConfidences().size())
 			{
-				kptsToConfidence = toSignature.sensorData().keypoints3DConfidence();
+				kptsToConfidence = toSignature.sensorData().keypoints3DConfidences();
 			}
 			else
 			{
@@ -1866,9 +1866,9 @@ Transform RegistrationVis::computeTransformationImpl(
 					for(std::map<int, int>::iterator iter=uniqueWordsA.begin(); iter!=uniqueWordsA.end(); ++iter)
 					{
 						words3A.insert(std::make_pair(iter->first, fromSignature.getWords3()[iter->second]));
-						if(!fromSignature.getWords3Confidence().empty())
+						if(!fromSignature.getWords3Confidences().empty())
 						{
-							confidences3A.insert(std::make_pair(iter->first, fromSignature.getWords3Confidence()[iter->second]));
+							confidences3A.insert(std::make_pair(iter->first, fromSignature.getWords3Confidences()[iter->second]));
 						}
 					}
 					for(std::map<int, int>::iterator iter=uniqueWordsB.begin(); iter!=uniqueWordsB.end(); ++iter)
@@ -1878,9 +1878,9 @@ Transform RegistrationVis::computeTransformationImpl(
 						{
 							words3B.insert(std::make_pair(iter->first, toSignature.getWords3()[iter->second]));
 						}
-						if(!toSignature.getWords3Confidence().empty())
+						if(!toSignature.getWords3Confidences().empty())
 						{
-							confidences3B.insert(std::make_pair(iter->first, toSignature.getWords3Confidence()[iter->second]));
+							confidences3B.insert(std::make_pair(iter->first, toSignature.getWords3Confidences()[iter->second]));
 						}
 					}
 
@@ -1944,7 +1944,7 @@ Transform RegistrationVis::computeTransformationImpl(
 					}
 					else
 					{
-						UASSERT(models.size() == 1 && models[0].isValidForProjection());
+						UASSERT(fromSignature.sensorData().cameraModels().size() == 1 && fromSignature.sensorData().cameraModels()[0].isValidForProjection());
 
 						if(_PnPUseInlierVariance && !confidences3A.empty())
 						{
@@ -1975,27 +1975,22 @@ Transform RegistrationVis::computeTransformationImpl(
 
 								if(conf <= 33)
 								{
-									var_z = 0.2f * 0.2f;	// 0.2m stddev for low confidence
+									var_z = _PnPLowConfVariance;
 									++lowA;
 								}
 								else if(conf <= 66)
 								{
-									var_z = 0.07f * 0.07f;	// 0.07m stddev for medium confidence
+									var_z = _PnPMediumConfVariance;
 									++mediumA;
 								}
 								else
 								{
-									var_z = 0.04f * 0.04f;	// 0.04m stddev for high confidence
+									var_z = _PnPHighConfVariance;
 									++highA;
 								}
                                 
-								// override var_z with configured PnP confidence variances
-								if(conf <= 33) var_z = _PnPLowConfVariance; else if(conf <= 66) var_z = _PnPMediumConfVariance; else var_z = _PnPHighConfVariance;
-
-					// override var_z with configured PnP confidence variances
-					if(conf <= 33) var_z = _PnPLowConfVariance; else if(conf <= 66) var_z = _PnPMediumConfVariance; else var_z = _PnPHighConfVariance;
-
-					cv::Matx33f cov(
+							
+								cv::Matx33f cov(
 									var_x, 0.0f,         0.0f,
 									0.0f,        var_y,  0.0f,
 									0.0f,        0.0f,   var_z);
@@ -2005,57 +2000,59 @@ Transform RegistrationVis::computeTransformationImpl(
 							UDEBUG("Generated covariances for %d 3D points (low=%d, medium=%d, high=%d)", (int)covariances3A.size(), lowA, mediumA, highA);
 						}
 
+						UASSERT(toSignature.sensorData().cameraModels().size() == 1 && toSignature.sensorData().cameraModels()[0].isValidForProjection());
 
-						
 						if(_PnPUseInlierVariance && !confidences3B.empty())
 						{
 							UASSERT(!toSignature.sensorData().cameraModels().empty());
 							const auto &camera = toSignature.sensorData().cameraModels()[0];
 							float fx = camera.fx();
 							float fy = camera.fy();
-							
-							int lowB = 0, mediumB = 0, highB = 0;
 
+							int lowB = 0, mediumB = 0, highB = 0;
+							
 							for(std::map<int, int>::const_iterator iter=confidences3B.begin(); iter!=confidences3B.end(); ++iter)
 							{
 								int id = iter->first;
 								std::map<int, cv::Point3f>::const_iterator ptIt = words3B.find(id);
 								if(ptIt == words3B.end()) continue;
 
-								float Z = std::max(ptIt->second.z, 10e-6f);
+								float Z = std::max(ptIt->second.z, 10e-6f); // clamp for division
 								int conf = iter->second;
 
 								if(conf < 0)
 								{
 									continue; // negative confidence means undefined
 								}
-								
+
 								float var_x = (Z / fx) * (Z / fx) * _PnPPixelVariance;
 								float var_y = (Z / fy) * (Z / fy) * _PnPPixelVariance;
 								float var_z;
 
 								if(conf <= 33)
 								{
-									var_z = 0.2f * 0.2f;	// 0.2m stddev for low confidence
+									var_z = _PnPLowConfVariance;
 									++lowB;
 								}
 								else if(conf <= 66)
 								{
-									var_z = 0.07f * 0.07f;	// 0.07m stddev for medium confidence
+									var_z = _PnPMediumConfVariance;
 									++mediumB;
 								}
 								else
 								{
-									var_z = 0.04f * 0.04f;	// 0.04m stddev for high confidence
+									var_z = _PnPHighConfVariance;
 									++highB;
 								}
-
+                                
+							
 								cv::Matx33f cov(
 									var_x, 0.0f,         0.0f,
 									0.0f,        var_y,  0.0f,
 									0.0f,        0.0f,   var_z);
 								covariances3B[id] = cov;
 							}
+							
 							UDEBUG("Generated covariances for %d 3D points (low=%d, medium=%d, high=%d)", (int)covariances3B.size(), lowB, mediumB, highB);
 						}
 

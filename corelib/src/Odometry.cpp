@@ -792,7 +792,7 @@ Transform Odometry::process(SensorData & data, const Transform & guessIn, Odomet
 			kpts[i].size *= _imageDecimation;
 			kpts[i].octave += log2value;
 		}
-		data.setFeatures(kpts, decimatedData.keypoints3D(), decimatedData.keypoints3DConfidence(), decimatedData.descriptors());
+		data.setFeatures(kpts, decimatedData.keypoints3D(), decimatedData.keypoints3DConfidences(), decimatedData.descriptors());
 		data.setLaserScan(decimatedData.laserScanRaw());
 
 		if(info)

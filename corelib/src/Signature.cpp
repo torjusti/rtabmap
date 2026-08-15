@@ -348,7 +348,7 @@ void Signature::removeAllWords()
 	_words.clear();
 	_wordsKpts.clear();
 	_words3.clear();
-	_words3Confidence.clear();
+	_words3Confidences.clear();
 	_wordsDescriptors = cv::Mat();
 	_invalidWordsCount = 0;
 }
@@ -399,7 +399,7 @@ void Signature::setWords(const std::multimap<int, int> & words,
 	_words = words;
 	_wordsKpts = keypoints;
 	_words3 = points;
-	_words3Confidence = confidences;
+	_words3Confidences = confidences;
 	_wordsDescriptors = descriptors.clone();
 }
 
@@ -430,7 +430,7 @@ unsigned long Signature::getMemoryUsed(bool withSensorData) const // Return memo
 	total += _words.size() * (sizeof(int)*2+sizeof(std::multimap<int, cv::KeyPoint>::iterator)) + sizeof(std::multimap<int, cv::KeyPoint>);
 	total += _wordsKpts.size() * sizeof(cv::KeyPoint) + sizeof(std::vector<cv::KeyPoint>);
 	total += _words3.size() * sizeof(cv::Point3f) + sizeof(std::vector<cv::Point3f>);
-	total += _words3Confidence.size() * sizeof(int) + sizeof(std::vector<int>);
+	total += _words3Confidences.size() * sizeof(int) + sizeof(std::vector<int>);
 	total += _wordsDescriptors.empty()?0:_wordsDescriptors.total() * _wordsDescriptors.elemSize() + sizeof(cv::Mat);
 	total += _wordsChanged.size() * (sizeof(int)*2+sizeof(std::map<int, int>::iterator)) + sizeof(std::map<int, int>);
 	if(withSensorData)

@@ -837,6 +837,7 @@ void DBDriver::getLocalFeatures(
 	std::multimap<int, int> & words,
 	std::vector<cv::KeyPoint> & keypoints,
 	std::vector<cv::Point3f> & points,
+	std::vector<int> & confidences,
 	cv::Mat & descriptors) const
 {
 	bool found = false;
@@ -858,6 +859,7 @@ void DBDriver::getLocalFeatures(
 				words = s->getWords();
 				keypoints = s->getWordsKpts();
 				points = s->getWords3();
+				confidences = s->getWords3Confidences();
 				descriptors = s->getWordsDescriptors().clone();
 			}
 		}
@@ -867,7 +869,7 @@ void DBDriver::getLocalFeatures(
 	if(!found)
 	{
 		UScopeMutex lock(_dbSafeAccessMutex);
-		getLocalFeaturesQuery(signatureId, words, keypoints, points, descriptors);
+		getLocalFeaturesQuery(signatureId, words, keypoints, points, confidences, descriptors);
 	}
 }
 

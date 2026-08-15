@@ -975,8 +975,9 @@ TEST_F(DbDriverFixture, GetNodeDataAndLocalFeatures)
 	std::multimap<int, int> words;
 	std::vector<cv::KeyPoint> keypoints;
 	std::vector<cv::Point3f> points;
+	std::vector<int> confidences;
 	cv::Mat loadedDescriptors;
-	driver_->getLocalFeatures(1, words, keypoints, points, loadedDescriptors);
+	driver_->getLocalFeatures(1, words, keypoints, points, confidences, loadedDescriptors);
 	ASSERT_EQ(words.size(), 1u);
 	EXPECT_EQ(words.begin()->first, 10);
 	ASSERT_EQ(keypoints.size(), 1u);

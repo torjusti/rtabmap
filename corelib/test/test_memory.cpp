@@ -3841,9 +3841,10 @@ TEST_F(MemoryFixture, GetNodeWordsReturnsSignaturesWords)
 	std::multimap<int, int> words;
 	std::vector<cv::KeyPoint> wordsKpts;
 	std::vector<cv::Point3f> words3;
+	std::vector<int> words3Confidences;
 	cv::Mat wordsDescriptors;
 	std::vector<GlobalDescriptor> globalDescriptors;
-	memory_->getNodeWordsAndGlobalDescriptors(id, words, wordsKpts, words3, wordsDescriptors, globalDescriptors);
+	memory_->getNodeWordsAndGlobalDescriptors(id, words, wordsKpts, words3, words3Confidences, wordsDescriptors, globalDescriptors);
 
 	EXPECT_EQ(words.size(), 0u);
 	EXPECT_EQ(wordsKpts.size(), 0u);

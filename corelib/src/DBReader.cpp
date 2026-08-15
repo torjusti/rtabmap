@@ -783,11 +783,11 @@ SensorData DBReader::getNextData(SensorCaptureInfo * info)
 			cv::Mat descriptors = s->getWordsDescriptors().clone();
 			const std::vector<cv::KeyPoint> & keypoints = s->getWordsKpts();
 			const std::vector<cv::Point3f> & keypoints3D = s->getWords3();
-			const std::vector<int> & keypoints3DConfidence = s->getWords3Confidence();
+			const std::vector<int> & keypoints3DConfidences = s->getWords3Confidences();
 			if(!_featuresIgnored &&
 				!keypoints.empty() &&
 			   (keypoints3D.empty() || keypoints.size() == keypoints3D.size()) &&
-			   (keypoints3DConfidence.empty() || keypoints.size() == keypoints3DConfidence.size()) &&
+			   (keypoints3DConfidences.empty() || keypoints.size() == keypoints3DConfidences.size()) &&
 			   (descriptors.empty() || (int)keypoints.size() == descriptors.rows))
 			{
 				if(!cameraOldNewIndices.empty())
@@ -815,9 +815,9 @@ SensorData DBReader::getNextData(SensorCaptureInfo * info)
 								pt = util3d::transformPoint(pt, combinedLocalTransforms[cameraIndex]);
 								newKeypoints3D.push_back(pt);
 							}
-							if(!keypoints3DConfidence.empty())
+							if(!keypoints3DConfidences.empty())
 							{
-								newKeypoints3DConfidence.push_back(keypoints3DConfidence.at(i));
+								newKeypoints3DConfidence.push_back(keypoints3DConfidences.at(i));
 							}
 							if(!descriptors.empty())
 							{
@@ -844,11 +844,11 @@ SensorData DBReader::getNextData(SensorCaptureInfo * info)
 						pt = util3d::transformPoint(pt, combinedLocalTransforms[cameraIndex]);
 						newKeypoints3D.push_back(pt);
 					}
-					data.setFeatures(keypoints, newKeypoints3D, keypoints3DConfidence, descriptors);
+					data.setFeatures(keypoints, newKeypoints3D, keypoints3DConfidences, descriptors);
 				}
 				else
 				{
-					data.setFeatures(keypoints, keypoints3D, keypoints3DConfidence, descriptors);
+					data.setFeatures(keypoints, keypoints3D, keypoints3DConfidences, descriptors);
 				}
 			}
 			else if(!_featuresIgnored && !keypoints.empty() && (!keypoints3D.empty() || !descriptors.empty()))

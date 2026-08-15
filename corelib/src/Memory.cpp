@@ -579,7 +579,8 @@ void Memory::loadDataFromDb(bool postInitClosingEvents)
 							std::multimap<int, int> w;
 							std::vector<cv::KeyPoint> k;
 							std::vector<cv::Point3f> p;
-							_dbDriver->getLocalFeatures(s->id(), loadedWords, k, p, descriptors);
+							std::vector<int> c;
+							_dbDriver->getLocalFeatures(s->id(), loadedWords, k, p, c, descriptors);
 							UASSERT_MSG(loadedWords.size() == words->size(), assertMsg.c_str()); // Just doublecheck
 							words = &loadedWords; // The index will be set
 							UASSERT_MSG(!descriptors.empty(), assertMsg.c_str());
@@ -3449,9 +3450,10 @@ Transform Memory::computeTransform(
 		std::multimap<int, int> words;
 		std::vector<cv::KeyPoint> keypoints;
 		std::vector<cv::Point3f> points;
+		std::vector<int> confidences;
 		cv::Mat descriptors;
 		UTimer timer;
-		_dbDriver->getLocalFeatures(fromS.id(), words, keypoints, points, descriptors);
+		_dbDriver->getLocalFeatures(fromS.id(), words, keypoints, points, confidences, descriptors);
 		if(!words.empty() && !keypoints.empty()) {
 			UASSERT(words.size() == fromS.getWords().size());
 			std::map<int, int> wordsChanged = fromS.getWordsChanged();
@@ -4784,6 +4786,7 @@ void Memory::getNodeWordsAndGlobalDescriptors(int nodeId,
 		std::multimap<int, int> & words,
 		std::vector<cv::KeyPoint> & wordsKpts,
 		std::vector<cv::Point3f> & words3,
+		std::vector<int> & words3Confidences,
 		cv::Mat & wordsDescriptors,
 		std::vector<GlobalDescriptor> & globalDescriptors) const
 {
@@ -4794,13 +4797,14 @@ void Memory::getNodeWordsAndGlobalDescriptors(int nodeId,
 		words = s->getWords();
 		wordsKpts = s->getWordsKpts();
 		words3 = s->getWords3();
+		words3Confidences = s->getWords3Confidences();
 		wordsDescriptors = s->getWordsDescriptors();
 		globalDescriptors = s->sensorData().globalDescriptors();
 
 		if(!words.empty() && wordsKpts.empty() && _dbDriver)
 		{
 			std::multimap<int, int> tmpWords;
-			_dbDriver->getLocalFeatures(nodeId, tmpWords, wordsKpts, words3, wordsDescriptors);
+			_dbDriver->getLocalFeatures(nodeId, tmpWords, wordsKpts, words3, words3Confidences, wordsDescriptors);
 			if(!tmpWords.empty() && !wordsKpts.empty())
 			{
 				UASSERT(tmpWords.size() == words.size());
@@ -5518,6 +5522,7 @@ Signature * Memory::createSignature(const SensorData & inputData, const Transfor
 
 	unsigned int preDecimation = 1;
 	std::vector<cv::Point3f> keypoints3D;
+	std::vector<int> keypoints3DConfidences;
 	SensorData decimatedData;
 	UDEBUG("Received kpts=%d kpts3D=%d, descriptors=%d _useOdometryFeatures=%s",
 			(int)data.keypoints().size(), (int)data.keypoints3D().size(), data.descriptors().rows, _useOdometryFeatures?"true":"false");
@@ -5829,9 +5834,15 @@ Signature * Memory::createSignature(const SensorData & inputData, const Transfor
 				if(stats) stats->addStatistic(Statistics::kTimingMemKeypoints_3D(), t*1000.0f);
 				UDEBUG("time keypoints 3D (%d) = %fs", (int)keypoints3D.size(), t);
 			}
+			if(!decimatedData.depthConfidenceRaw().empty() && !keypoints3D.empty() && decimatedData.cameraModels().size() && decimatedData.cameraModels()[0].isValidForProjection())
+			{
+				keypoints3DConfidences = _feature2D->generateKeypoints3DConfidence(decimatedData, keypoints);
+				// Add a tick and stats ?...
+				// t = timer.ticks();
+			}
 			if(depthMask.empty() && (_feature2D->getMinDepth() > 0.0f || _feature2D->getMaxDepth() > 0.0f))
 			{
-				_feature2D->filterKeypointsByDepth(keypoints, descriptors, keypoints3D, _feature2D->getMinDepth(), _feature2D->getMaxDepth());
+				_feature2D->filterKeypointsByDepth(keypoints, descriptors, keypoints3D, keypoints3DConfidences, _feature2D->getMinDepth(), _feature2D->getMaxDepth());
 			}
 		}
 		else if(data.imageRaw().empty())
@@ -6051,9 +6062,14 @@ Signature * Memory::createSignature(const SensorData & inputData, const Transfor
 			{
 				keypoints3D = _feature2D->generateKeypoints3D(data, keypoints);
 			}
+			if(keypoints3DConfidences.empty() &&
+				(!data.depthConfidenceRaw().empty() && !keypoints3D.empty() && data.cameraModels().size() && data.cameraModels()[0].isValidForProjection()))
+			{
+				keypoints3DConfidences = _feature2D->generateKeypoints3DConfidence(data, keypoints);
+			} 
 			if(_feature2D->getMinDepth() > 0.0f || _feature2D->getMaxDepth() > 0.0f)
 			{
-				_feature2D->filterKeypointsByDepth(keypoints, descriptors, keypoints3D, _feature2D->getMinDepth(), _feature2D->getMaxDepth());
+				_feature2D->filterKeypointsByDepth(keypoints, descriptors, keypoints3D, keypoints3DConfidences, _feature2D->getMinDepth(), _feature2D->getMaxDepth());
 			}
 			t = timer.ticks();
 			if(stats) stats->addStatistic(Statistics::kTimingMemKeypoints_3D(), t*1000.0f);
