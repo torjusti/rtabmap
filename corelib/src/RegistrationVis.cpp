@@ -1016,6 +1016,7 @@ Transform RegistrationVis::computeTransformationImpl(
 			else
 			{
 				kptsFromConfidence = _detectorFrom->generateKeypoints3DConfidence(fromSignature.sensorData(), kptsFrom);
+				UDEBUG("generated kptsFromConfidence=%d", (int)kptsFromConfidence.size());
 			}
 
 			if(!kptsFrom3D.empty() &&
@@ -1051,6 +1052,7 @@ Transform RegistrationVis::computeTransformationImpl(
 						   (int)toSignature.sensorData().keypoints3D().size());
 				}
 				kptsTo3D = _detectorTo->generateKeypoints3D(toSignature.sensorData(), kptsTo);
+				UDEBUG("generated kptsTo3D=%d", (int)kptsTo3D.size());
 			}
 
 			std::vector<int> kptsToConfidence;
@@ -1065,6 +1067,7 @@ Transform RegistrationVis::computeTransformationImpl(
 			else
 			{
 				kptsToConfidence = _detectorTo->generateKeypoints3DConfidence(toSignature.sensorData(), kptsTo);
+				UDEBUG("generated kptsToConfidence=%d", (int)kptsToConfidence.size());
 			}
 
 			if(kptsTo3D.size() &&

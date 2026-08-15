@@ -1385,7 +1385,7 @@ std::vector<int> Feature2D::generateKeypoints3DConfidence(
 	
 	if(keypoints.size())
 	{
-		keypoints3DConfidence.resize(keypoints.size(), 0); 
+		keypoints3DConfidence.resize(keypoints.size(), -1); 
 		
 		const cv::Mat & depthConfidence = data.depthConfidenceRaw();
 		const std::vector<CameraModel> & cameraModels = data.cameraModels();
@@ -1409,13 +1409,7 @@ std::vector<int> Feature2D::generateKeypoints3DConfidence(
 				
 				if(pixelY >= 0 && pixelY < depthConfidence.rows && pixelX >= 0 && pixelX < depthConfidence.cols)
 				{
-                    // Supporting both 32-bit float and 16-bit unsigned standard formats
-					if(depthConfidence.type() == CV_32FC1) {
-						keypoints3DConfidence.at(i) = depthConfidence.at<int>(pixelY, pixelX);
-					} else if(depthConfidence.type() == CV_16UC1) {
-						// Assuming standard mm to meter conversion or direct use depending on your sensor config
-						keypoints3DConfidence.at(i) = depthConfidence.at<int>(pixelY, pixelX); 
-					}
+                    keypoints3DConfidence.at(i) = static_cast<int>(depthConfidence.at<uint8_t>(pixelY, pixelX));
 				}
 			}
 		}

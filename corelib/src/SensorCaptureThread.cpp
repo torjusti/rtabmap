@@ -1043,11 +1043,11 @@ void SensorCaptureThread::postUpdate(SensorData * dataPtr, SensorCaptureInfo * i
 		if(!keypoints.empty())
 		{
 			descriptors = _featureDetector->generateDescriptors(grayScaleImg, keypoints);
-			if(!keypoints3D.empty())
+			if(!keypoints.empty())
 			{
 				keypoints3D = _featureDetector->generateKeypoints3D(data, keypoints);
 			}
-			if(!keypoints3DConfidence.empty())
+			if(!keypoints.empty())
 			{
 				keypoints3DConfidence = _featureDetector->generateKeypoints3DConfidence(data, keypoints);
 			}
