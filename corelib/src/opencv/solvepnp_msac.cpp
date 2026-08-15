@@ -22,10 +22,9 @@ cv::Matx22d computeWhiteningMatrix(
     Matx23d J_pi(fx/Z, 0.0, -fx*XB(0)/(Z*Z), 0.0, fy/Z, -fy*XB(1)/(Z*Z));
     Matx23d J_XA = J_pi * R33;
     Matx22d cov2D = J_XA * Matx33d(cov3D) * J_XA.t();
-    
     cov2D(0,0) += pixelVariance; cov2D(1,1) += pixelVariance;
-
     double det = std::max(cov2D(0,0)*cov2D(1,1) - cov2D(0,1)*cov2D(1,0), 1e-12);
+        
     return Matx22d(cov2D(1,1)/det, -cov2D(0,1)/det, -cov2D(1,0)/det, cov2D(0,0)/det);
 }
 
@@ -614,10 +613,16 @@ cv::Mat poseCovarianceRodriguesToRPY(const cv::Mat& rvec,
     double r22 = R.at<double>(2, 2);
 
     double roll_denom = r21 * r21 + r22 * r22;
-    if (roll_denom < 1e-12) roll_denom = 1e-12;
+    if (roll_denom < 1e-12) {
+        UDEBUG("poseCovarianceRodriguesToRPY: roll_denom is extremely small (%e).", roll_denom);
+        roll_denom = 1e-12;
+    }
 
     double pitch_denom2 = r00 * r00 + r10 * r10;
-    if (pitch_denom2 < 1e-12) pitch_denom2 = 1e-12;
+    if (pitch_denom2 < 1e-12) {
+        UDEBUG("poseCovarianceRodriguesToRPY: pitch_denom2 is extremely small (%e).", pitch_denom2);
+        pitch_denom2 = 1e-12;
+    }
     double pitch_denom = std::sqrt(pitch_denom2);
 
     cv::Mat J_RPY_R = cv::Mat::zeros(3, 9, CV_64FC1);
@@ -837,8 +842,29 @@ void solvePnPMsac(const std::vector<cv::Point3f> & objectPoints,
         final_cb->compute(param, final_err, final_J);
         cv::Mat H = final_J.t() * final_J;
         cv::Mat cov_LM;
-        cv::invert(H, cov_LM, cv::DECOMP_SVD);
-        poseCovarianceRodriguesToRPY(rvec, cov_LM).copyTo(outPoseCovariance);
+
+        double rcond = cv::invert(H, cov_LM, cv::DECOMP_SVD);
+        UDEBUG("MSAC Final Covariance: cv::invert rcond = %e", rcond);
+
+        if(rcond == 0.0 || rcond < 1e-15) {
+            UWARN("MSAC Final Covariance: Hessian matrix is singular or severely ill-conditioned (rcond=%e)! DECOMP_SVD may have zeroed out matrix dimensions.", rcond);
+            UDEBUG("Hessian diagonal: [%e, %e, %e, %e, %e, %e]", 
+                   H.at<double>(0,0), H.at<double>(1,1), H.at<double>(2,2), 
+                   H.at<double>(3,3), H.at<double>(4,4), H.at<double>(5,5));
+        }
+
+        cv::Mat outCov;
+        poseCovarianceRodriguesToRPY(rvec, cov_LM).copyTo(outCov);
+        
+        UDEBUG("Final OutCovariance diagonal (x,y,z,R,P,Y): [%e, %e, %e, %e, %e, %e]", 
+               outCov.at<double>(0,0), outCov.at<double>(1,1), outCov.at<double>(2,2), 
+               outCov.at<double>(3,3), outCov.at<double>(4,4), outCov.at<double>(5,5));
+
+        if(outCov.at<double>(0,0) == 0.0 || outCov.at<double>(1,1) == 0.0 || outCov.at<double>(2,2) == 0.0) {
+            UERROR("MSAC Final Covariance generated a ZERO on the translation diagonal! This will cause RTAB-Map to crash during Information matrix conversion.");
+        }
+
+        outCov.copyTo(outPoseCovariance);
     }
 
 }

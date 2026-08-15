@@ -758,6 +758,9 @@ class RTABMAP_CORE_EXPORT Parameters
     RTABMAP_PARAM(Vis, PnPMinConfidence,         int,     0,   uFormat("[%s = 1] Minimum depth confidence for 3D point correspondences used in PnPRansac. Disabled if Vis/PnPMsac=true.", kVisEstimationType().c_str()));
     RTABMAP_PARAM(Vis, PnPPixelVariance,         float,  0.0,   uFormat("[%s = 1] Typical pixel variance for features. Used in the PnPMSac, and for computing PnP variance if Vis/PnPUseInlierVariance=true.", kVisEstimationType().c_str()));
     RTABMAP_PARAM(Vis, PnPDepthVariance,         float,  0.0,   uFormat("[%s = 1] Typical depth variance for 3D features. Used as default variance for missing values in PnPMSac, and for computing PnP variance if Vis/PnPUseInlierVariance=true.", kVisEstimationType().c_str()));
+    RTABMAP_PARAM(Vis, PnPLowConfVariance,       float,  0.025f, uFormat("[%s = 1] Heuristic variance (m^2) for low-confidence depth points (default 0.2m stddev -> 0.2^2 = 0.04).", kVisEstimationType().c_str()));
+    RTABMAP_PARAM(Vis, PnPMediumConfVariance,    float,  0.0049f, uFormat("[%s = 1] Heuristic variance (m^2) for medium-confidence depth points (default 0.07m stddev -> 0.07^2 = 0.0049).", kVisEstimationType().c_str()));
+    RTABMAP_PARAM(Vis, PnPHighConfVariance,      float,  0.0016f, uFormat("[%s = 1] Heuristic variance (m^2) for high-confidence depth points (default 0.04m stddev -> 0.04^2 = 0.0016).", kVisEstimationType().c_str()));
     RTABMAP_PARAM(Vis, PnPComputeFullCovariance, bool,  false, uFormat("[%s = 1] Compute full covariance matrix for 3D point correspondences used in PnPRansac. Disabled if Vis/PnPMsac=true.", kVisEstimationType().c_str()).c_str());
     RTABMAP_PARAM(Vis, PnPUseInlierVariance,     bool,  false, uFormat("[%s = 1] Weigh PnP covariance formula with the inlier variances. Always enabled if Vis/PnPMsac=true, and inlier depth variance will default to Vis/PnPDepthVariance if not available.", kVisEstimationType().c_str()).c_str());  
 

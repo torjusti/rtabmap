@@ -110,6 +110,9 @@ private:
 	bool _PnPUseMsac;
 	int _PnPMinConfidence;
 	float _PnPPixelVariance;
+	float _PnPLowConfVariance;
+	float _PnPMediumConfVariance;
+	float _PnPHighConfVariance;
 	float _PnPDepthVariance;
 	bool _PnPComputeFullCovariance;
 	bool _PnPUseInlierVariance;

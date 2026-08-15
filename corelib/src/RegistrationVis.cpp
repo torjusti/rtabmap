@@ -82,6 +82,9 @@ RegistrationVis::RegistrationVis(const ParametersMap & parameters, Registration 
 		_PnPUseMsac(Parameters::defaultVisPnPUseMsac()),
 		_PnPMinConfidence(Parameters::defaultVisPnPMinConfidence()),
 		_PnPPixelVariance(Parameters::defaultVisPnPPixelVariance()),
+		_PnPLowConfVariance(Parameters::defaultVisPnPLowConfVariance()),
+		_PnPMediumConfVariance(Parameters::defaultVisPnPMediumConfVariance()),
+		_PnPHighConfVariance(Parameters::defaultVisPnPHighConfVariance()),
 		_PnPDepthVariance(Parameters::defaultVisPnPDepthVariance()),
 		_PnPComputeFullCovariance(Parameters::defaultVisPnPComputeFullCovariance()),
 		_PnPUseInlierVariance(Parameters::defaultVisPnPUseInlierVariance()),
@@ -152,6 +155,9 @@ void RegistrationVis::parseParameters(const ParametersMap & parameters)
 	Parameters::parse(parameters, Parameters::kVisPnPUseMsac(), _PnPUseMsac);
 	Parameters::parse(parameters, Parameters::kVisPnPMinConfidence(), _PnPMinConfidence);
 	Parameters::parse(parameters, Parameters::kVisPnPPixelVariance(), _PnPPixelVariance);
+	Parameters::parse(parameters, Parameters::kVisPnPLowConfVariance(), _PnPLowConfVariance);
+	Parameters::parse(parameters, Parameters::kVisPnPMediumConfVariance(), _PnPMediumConfVariance);
+	Parameters::parse(parameters, Parameters::kVisPnPHighConfVariance(), _PnPHighConfVariance);
 	Parameters::parse(parameters, Parameters::kVisPnPDepthVariance(), _PnPDepthVariance);
 	Parameters::parse(parameters, Parameters::kVisPnPComputeFullCovariance(), _PnPComputeFullCovariance);
 	Parameters::parse(parameters, Parameters::kVisPnPUseInlierVariance(), _PnPUseInlierVariance);
@@ -1937,12 +1943,14 @@ Transform RegistrationVis::computeTransformationImpl(
 					{
 						UASSERT(models.size() == 1 && models[0].isValidForProjection());
 
-						if(_PnPUseMsac && !confidences3A.empty())
+						if(_PnPUseInlierVariance && !confidences3A.empty())
 						{
 							UASSERT(!fromSignature.sensorData().cameraModels().empty());
 							const auto &camera = fromSignature.sensorData().cameraModels()[0];
 							float fx = camera.fx();
 							float fy = camera.fy();
+
+							int lowA = 0, mediumA = 0, highA = 0;
 							
 							for(std::map<int, int>::const_iterator iter=confidences3A.begin(); iter!=confidences3A.end(); ++iter)
 							{
@@ -1953,32 +1961,58 @@ Transform RegistrationVis::computeTransformationImpl(
 								float Z = std::max(ptIt->second.z, 10e-6f); // clamp for division
 								int conf = iter->second;
 
-								/////////////////////////////////////////////////////////////
-								// TEMP: FOR DEVELOPMENT
-								// Heuristic for depth standard deviation based on confidence
-								// Thought for ARKit confidence values
-								float var_z = 0.07f * 0.07f; // 0.07m stddev for medium confidence
-								if(conf >= 66)     var_z = 0.04f * 0.04f; // 0.04m stddev for high confidence
-								else if(conf < 33) var_z = 0.2f * 0.2f;	// 0.2m stddev for low confidence
-								/////////////////////////////////////////////////////////////
+								if(conf < 0)
+								{
+									continue; // negative confidence means undefined
+								}
 
 								float var_x = (Z / fx) * (Z / fx) * _PnPPixelVariance;
 								float var_y = (Z / fy) * (Z / fy) * _PnPPixelVariance;
+								float var_z;
 
-								cv::Matx33f cov(
+								if(conf <= 33)
+								{
+									var_z = 0.2f * 0.2f;	// 0.2m stddev for low confidence
+									++lowA;
+								}
+								else if(conf <= 66)
+								{
+									var_z = 0.07f * 0.07f;	// 0.07m stddev for medium confidence
+									++mediumA;
+								}
+								else
+								{
+									var_z = 0.04f * 0.04f;	// 0.04m stddev for high confidence
+									++highA;
+								}
+                                
+								// override var_z with configured PnP confidence variances
+								if(conf <= 33) var_z = _PnPLowConfVariance; else if(conf <= 66) var_z = _PnPMediumConfVariance; else var_z = _PnPHighConfVariance;
+
+					// override var_z with configured PnP confidence variances
+					if(conf <= 33) var_z = _PnPLowConfVariance; else if(conf <= 66) var_z = _PnPMediumConfVariance; else var_z = _PnPHighConfVariance;
+
+					cv::Matx33f cov(
 									var_x, 0.0f,         0.0f,
 									0.0f,        var_y,  0.0f,
 									0.0f,        0.0f,   var_z);
 								covariances3A[id] = cov;
 							}
+							
+							UDEBUG("Generated covariances for %d 3D points (low=%d, medium=%d, high=%d)", (int)covariances3A.size(), lowA, mediumA, highA);
 						}
-						if(_PnPUseMsac && !confidences3B.empty())
+
+
+						
+						if(_PnPUseInlierVariance && !confidences3B.empty())
 						{
 							UASSERT(!toSignature.sensorData().cameraModels().empty());
 							const auto &camera = toSignature.sensorData().cameraModels()[0];
 							float fx = camera.fx();
 							float fy = camera.fy();
 							
+							int lowB = 0, mediumB = 0, highB = 0;
+
 							for(std::map<int, int>::const_iterator iter=confidences3B.begin(); iter!=confidences3B.end(); ++iter)
 							{
 								int id = iter->first;
@@ -1986,19 +2020,32 @@ Transform RegistrationVis::computeTransformationImpl(
 								if(ptIt == words3B.end()) continue;
 
 								float Z = std::max(ptIt->second.z, 10e-6f);
-								float conf = float(iter->second) / 100.0f;
+								int conf = iter->second;
 
-								/////////////////////////////////////////////////////////////
-								// TEMP: FOR DEVELOPMENT
-								// Heuristic for depth standard deviation based on confidence
-								// Thought for ARKit confidence values
-								float var_z = 0.07f * 0.07f; // 0.07m stddev for medium confidence
-								if(conf >= 0.66f)     var_z = 0.04f * 0.04f; // 0.04m stddev for high confidence
-								else if(conf < 0.33f) var_z = 0.2f * 0.2f;	// 0.2m stddev for low confidence
-								/////////////////////////////////////////////////////////////
-
+								if(conf < 0)
+								{
+									continue; // negative confidence means undefined
+								}
+								
 								float var_x = (Z / fx) * (Z / fx) * _PnPPixelVariance;
 								float var_y = (Z / fy) * (Z / fy) * _PnPPixelVariance;
+								float var_z;
+
+								if(conf <= 33)
+								{
+									var_z = 0.2f * 0.2f;	// 0.2m stddev for low confidence
+									++lowB;
+								}
+								else if(conf <= 66)
+								{
+									var_z = 0.07f * 0.07f;	// 0.07m stddev for medium confidence
+									++mediumB;
+								}
+								else
+								{
+									var_z = 0.04f * 0.04f;	// 0.04m stddev for high confidence
+									++highB;
+								}
 
 								cv::Matx33f cov(
 									var_x, 0.0f,         0.0f,
@@ -2006,7 +2053,9 @@ Transform RegistrationVis::computeTransformationImpl(
 									0.0f,        0.0f,   var_z);
 								covariances3B[id] = cov;
 							}
+							UDEBUG("Generated covariances for %d 3D points (low=%d, medium=%d, high=%d)", (int)covariances3B.size(), lowB, mediumB, highB);
 						}
+
 
 						transform = util3d::estimateMotion3DTo2D(
 								words3A,
