@@ -3595,26 +3595,26 @@ void DBDriverSqlite3::loadQuery(VWDictionary & dictionary, bool lastStateOnly, b
 
 			cv::Mat d;
 			if(!idsOnly) {
-			descriptorSize = sqlite3_column_int(ppStmt, index++); // VisualWord descriptor size
-			descriptor = sqlite3_column_blob(ppStmt, index); 	// VisualWord descriptor array
-			dRealSize = sqlite3_column_bytes(ppStmt, index++);
+				descriptorSize = sqlite3_column_int(ppStmt, index++); // VisualWord descriptor size
+				descriptor = sqlite3_column_blob(ppStmt, index); 	// VisualWord descriptor array
+				dRealSize = sqlite3_column_bytes(ppStmt, index++);
 
-			if(dRealSize == descriptorSize)
-			{
-				// CV_8U binary descriptors
-				d = cv::Mat(1, descriptorSize, CV_8U);
-			}
-			else if(dRealSize/int(sizeof(float)) == descriptorSize)
-			{
-				// CV_32F
-				d = cv::Mat(1, descriptorSize, CV_32F);
-			}
-			else
-			{
-				UFATAL("Saved buffer size (%d bytes) is not the same as descriptor size (%d)", dRealSize, descriptorSize);
-			}
+				if(dRealSize == descriptorSize)
+				{
+					// CV_8U binary descriptors
+					d = cv::Mat(1, descriptorSize, CV_8U);
+				}
+				else if(dRealSize/int(sizeof(float)) == descriptorSize)
+				{
+					// CV_32F
+					d = cv::Mat(1, descriptorSize, CV_32F);
+				}
+				else
+				{
+					UFATAL("Saved buffer size (%d bytes) is not the same as descriptor size (%d)", dRealSize, descriptorSize);
+				}
 
-			memcpy(d.data, descriptor, dRealSize);
+				memcpy(d.data, descriptor, dRealSize);
 			}
 			VisualWord * vw = new VisualWord(id, d);
 			vw->setSaved(true);

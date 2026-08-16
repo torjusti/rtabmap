@@ -138,6 +138,36 @@ std::vector<cv::Point3f> RTABMAP_CORE_EXPORT generateKeypoints3DDisparity(
 		float minDepth = 0,
 		float maxDepth = 0);
 
+/**
+ * @brief Computes 3D keypoints from corresponding 2D points in a stereo image pair.
+ * 
+ * This function triangulates 3D points from pairs of corresponding 2D points 
+ * (`leftCorners`, `rightCorners`) using a given stereo camera model. It optionally applies 
+ * a validity mask and filters 3D points by depth range.
+ * 
+ * For each point pair, the disparity is computed as the x-coordinate difference between 
+ * left and right corners. Only positive disparities are considered valid. If a mask is 
+ * provided, only entries with a non-zero value are processed.
+ * 
+ * The resulting 3D points are optionally transformed using the stereo camera model's local transform,
+ * if one is defined and non-identity.
+ * 
+ * Invalid or out-of-range points are set to `(NaN, NaN, NaN)`.
+ * 
+ * @param leftCorners   A vector of 2D points from the left stereo image.
+ * @param rightCorners  A vector of corresponding 2D points from the right stereo image.
+ * @param model         The stereo camera model containing intrinsic parameters and optional local transform.
+ * @param mask          (Optional) A binary mask indicating which matches are valid (non-zero = valid).
+ *                      If empty, all matches are considered valid.
+ * @param minDepth      Minimum allowed depth value. If negative, no minimum is applied.
+ * @param maxDepth      Maximum allowed depth value. If zero or negative, no maximum is applied.
+ * 
+ * @return A vector of 3D points (`cv::Point3f`) corresponding to valid stereo matches.
+ *         Invalid points or those outside the depth range are returned as `(NaN, NaN, NaN)`.
+ * 
+ * @throws Assertion failure if the input vectors are inconsistent in size,
+ *         or if the stereo camera model is invalid (e.g., non-positive focal length or baseline).
+ */
 std::vector<cv::Point3f> RTABMAP_CORE_EXPORT generateKeypoints3DStereo(
 		const std::vector<cv::Point2f> & leftCorners,
 		const std::vector<cv::Point2f> & rightCorners,
@@ -158,6 +188,23 @@ std::map<int, cv::Point3f> RTABMAP_CORE_EXPORT generateWords3DMono(
 		double * variance = 0,
 		std::vector<int> * matchesOut = 0);
 
+/**
+ * @brief Aggregates word IDs and corresponding keypoints into a multimap.
+ * 
+ * This function pairs each word ID from the input list with the corresponding keypoint
+ * from the input vector and stores them in a `std::multimap<int, cv::KeyPoint>`.
+ * 
+ * It is assumed that the `wordIds` list and the `keypoints` vector are of the same length
+ * and ordered such that each word ID corresponds to the keypoint at the same index.
+ * 
+ * @param wordIds   A list of integer word IDs (e.g., visual word identifiers).
+ * @param keypoints A vector of keypoints associated with the word IDs.
+ * 
+ * @return A multimap where each key is a word ID and the value is the corresponding `cv::KeyPoint`.
+ *         Multiple keypoints can be associated with the same word ID.
+ * 
+ * @throws Assertion failure if `wordIds.size() != keypoints.size()`.
+ */
 std::multimap<int, cv::KeyPoint> RTABMAP_CORE_EXPORT aggregate(
 		const std::list<int> & wordIds,
 		const std::vector<cv::KeyPoint> & keypoints);

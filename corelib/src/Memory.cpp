@@ -5904,7 +5904,7 @@ Signature * Memory::createSignature(const SensorData & inputData, const Transfor
 				if(data.cameraModels().size()>=1 || data.stereoCameraModels().size()>=1)
 					_feature2D->limitKeypoints(keypoints,
 						keypoints3D,
-						keypoints3DConfidences,  (Requires limitKeypoints overload)
+						keypoints3DConfidences,
 						descriptors,
 						maxFeatures,
 						data.cameraModels().size()?cv::Size(data.cameraModels()[0].imageWidth()*data.cameraModels().size(),
@@ -6553,7 +6553,7 @@ Signature * Memory::createSignature(const SensorData & inputData, const Transfor
 					}
 					if(words3ConfidencesWasEmpty) 
 					{
-						words3Confidences.push_back(0); : Triangulated point has no depth sensor confidence
+						words3Confidences.push_back(0); // Triangulated points have minimum depth confidence
 					}
 				}
 				else if(!util3d::isFinite(words3D[iter->second]) && jter != inliers.end())
@@ -6561,7 +6561,7 @@ Signature * Memory::createSignature(const SensorData & inputData, const Transfor
 					words3D[iter->second] = jter->second;
 					if(!words3ConfidencesWasEmpty && iter->second < (int)words3Confidences.size()) 
 					{
-						words3Confidences[iter->second] = 0; : Reset confidence for motion-triangulated fallback
+						words3Confidences[iter->second] = 0; // Reset confidence for motion-triangulated fallback, to be updated when implementing covariance-aware BA
 					}
 					++added3DPointsWithoutDepth;
 				}
