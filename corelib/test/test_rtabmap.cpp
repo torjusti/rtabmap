@@ -180,13 +180,14 @@ int buildRtabmapDictionaryDb(const std::string & dbPath)
 		data.setId(frame + 1);
 		std::vector<cv::KeyPoint> kpts(kKeypointsPerFrame, cv::KeyPoint(1.f, 1.f, 1.f));
 		std::vector<cv::Point3f> pts3(kKeypointsPerFrame, cv::Point3f(0.f, 0.f, 1.f));
+		std::vector<int> pts3Confidences(kKeypointsPerFrame, 1);
 		// One-hot descriptors so every keypoint becomes its own visual word.
 		cv::Mat descriptors = cv::Mat::zeros(kKeypointsPerFrame, kFrames*kKeypointsPerFrame, CV_32F);
 		for(int row = 0; row < kKeypointsPerFrame; ++row)
 		{
 			descriptors.at<float>(row, frame*kKeypointsPerFrame + row) = 1000.0f;
 		}
-		data.setFeatures(kpts, pts3, descriptors);
+		data.setFeatures(kpts, pts3, pts3Confidences, descriptors);
 		rtabmap.process(data, Transform(float(frame), 0.0f, 0.0f, 0, 0, 0));
 	}
 	const int wordCount = (int)rtabmap.getMemory()->getVWDictionary()->getVisualWords().size();
@@ -2226,6 +2227,7 @@ SensorData makeFeaturesData(int id, int featSlot = 0, int k = 8)
 	SensorData data(image, camera); data.setId(id);
 	std::vector<cv::KeyPoint> kpts;
 	std::vector<cv::Point3f> pts3;
+	std::vector<int> pts3Confidences;
 	// 3D points are stored in the base/body frame: x forward, y left, z up.
 	// They are projected via fx=fy=50, cx=cy=32 so the (u, v) keypoints are
 	// consistent with the (x, y, z) 3D positions, otherwise PnP can't solve.
@@ -2246,13 +2248,14 @@ SensorData makeFeaturesData(int id, int featSlot = 0, int k = 8)
 	{
 		kpts.push_back(cv::KeyPoint(positions[i][0], positions[i][1], 1.f));
 		pts3.push_back(cv::Point3f(positions[i][2], positions[i][3], positions[i][4]));
+		pts3Confidences.push_back(50);
 	}
 	cv::Mat descriptors = cv::Mat::zeros(k, kSlots * 8, CV_32F);
 	for(int row = 0; row < k; ++row)
 	{
 		descriptors.at<float>(row, featSlot * 8 + row) = 1000.0f;
 	}
-	data.setFeatures(kpts, pts3, descriptors);
+	data.setFeatures(kpts, pts3, pts3Confidences, descriptors);
 	return data;
 }
 // Variant where each feature row can come from a different slot. Used to
@@ -2270,6 +2273,7 @@ SensorData makeFeaturesMixedSlots(int id, const std::vector<int> & slotPerRow)
 	SensorData data(image, camera); data.setId(id);
 	std::vector<cv::KeyPoint> kpts;
 	std::vector<cv::Point3f> pts3;
+	std::vector<int> pts3Confidences;
 	const float positions[8][5] = {
 		{10, 10,  1.5f,  0.66f,  0.66f},
 		{50, 10,  1.5f, -0.54f,  0.66f},
@@ -2284,13 +2288,14 @@ SensorData makeFeaturesMixedSlots(int id, const std::vector<int> & slotPerRow)
 	{
 		kpts.push_back(cv::KeyPoint(positions[i][0], positions[i][1], 1.f));
 		pts3.push_back(cv::Point3f(positions[i][2], positions[i][3], positions[i][4]));
+		pts3Confidences.push_back(50);
 	}
 	cv::Mat descriptors = cv::Mat::zeros(k, kSlots * 8, CV_32F);
 	for(int row = 0; row < k; ++row)
 	{
 		descriptors.at<float>(row, slotPerRow[row] * 8 + row) = 1000.0f;
 	}
-	data.setFeatures(kpts, pts3, descriptors);
+	data.setFeatures(kpts, pts3, pts3Confidences, descriptors);
 	return data;
 }
 
@@ -2976,6 +2981,7 @@ inline SensorData makeBaSceneFrame(
 
 	std::vector<cv::KeyPoint> kpts;
 	std::vector<cv::Point3f> pts3;
+	std::vector<int> pts3Confidences;
 	std::vector<cv::Mat> descRows;
 	std::normal_distribution<float> pxNoise(0.0f, pixelNoiseStd);
 	std::normal_distribution<float> dpNoise(0.0f, depthNoiseStd);
@@ -3021,6 +3027,7 @@ inline SensorData makeBaSceneFrame(
 
 		kpts.emplace_back(u, v, 1.0f);
 		pts3.emplace_back(pBase);
+		pts3Confidences.emplace_back(50);
 		descRows.push_back(row);
 	}
 
@@ -3029,7 +3036,7 @@ inline SensorData makeBaSceneFrame(
 	{
 		cv::vconcat(descRows, desc);
 	}
-	data.setFeatures(kpts, pts3, desc);
+	data.setFeatures(kpts, pts3, pts3Confidences, desc);
 	return data;
 }
 

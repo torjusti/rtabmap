@@ -399,10 +399,12 @@ TEST(SignatureTest, SetWords)
     words3.push_back(cv::Point3f(0.1f, 0.2f, 0.3f));
     words3.push_back(cv::Point3f(0.4f, 0.5f, 0.6f));
     words3.push_back(cv::Point3f(0.7f, 0.8f, 0.9f));
+
+    std::vector<int> words3Confidences = { 90, 80, 70 };
     
     cv::Mat descriptors = cv::Mat::zeros(3, 32, CV_8UC1);
     
-    sig.setWords(words, keypoints, words3, descriptors);
+    sig.setWords(words, keypoints, words3, words3Confidences, descriptors);
     
     EXPECT_EQ(sig.getWords().size(), 3u);
     EXPECT_EQ(sig.getWordsKpts().size(), 3u);
@@ -425,9 +427,10 @@ TEST(SignatureTest, SetWordsWithInvalidWords)
     
     std::vector<cv::KeyPoint> keypoints(4);
     std::vector<cv::Point3f> words3(4);
+    std::vector<int> words3Confidences = { 90, 80, 70, 60 };
     cv::Mat descriptors = cv::Mat::zeros(4, 32, CV_8UC1);
     
-    sig.setWords(words, keypoints, words3, descriptors);
+    sig.setWords(words, keypoints, words3, words3Confidences, descriptors);
     
     EXPECT_EQ(sig.getWords().size(), 4u);
     EXPECT_EQ(sig.getInvalidWordsCount(), 2);
@@ -444,9 +447,10 @@ TEST(SignatureTest, SetWordsAllInvalid)
     
     std::vector<cv::KeyPoint> keypoints(2);
     std::vector<cv::Point3f> words3(2);
+    std::vector<int> words3Confidences = { 50, 60 };
     cv::Mat descriptors = cv::Mat::zeros(2, 32, CV_8UC1);
     
-    sig.setWords(words, keypoints, words3, descriptors);
+    sig.setWords(words, keypoints, words3, words3Confidences, descriptors);
     
     EXPECT_EQ(sig.getInvalidWordsCount(), 2);
     EXPECT_TRUE(sig.isBadSignature()); // No valid words
@@ -459,9 +463,10 @@ TEST(SignatureTest, SetWordsEmpty)
     std::multimap<int, int> words;
     std::vector<cv::KeyPoint> keypoints;
     std::vector<cv::Point3f> words3;
+    std::vector<int> words3Confidences;
     cv::Mat descriptors;
     
-    sig.setWords(words, keypoints, words3, descriptors);
+    sig.setWords(words, keypoints, words3, words3Confidences, descriptors);
     
     EXPECT_TRUE(sig.getWords().empty());
     EXPECT_TRUE(sig.isBadSignature());
@@ -477,9 +482,10 @@ TEST(SignatureTest, RemoveAllWords)
     
     std::vector<cv::KeyPoint> keypoints(2);
     std::vector<cv::Point3f> words3(2);
+    std::vector<int> words3Confidences = { 90, 80 };
     cv::Mat descriptors = cv::Mat::zeros(2, 32, CV_8UC1);
     
-    sig.setWords(words, keypoints, words3, descriptors);
+    sig.setWords(words, keypoints, words3, words3Confidences, descriptors);
     EXPECT_EQ(sig.getWords().size(), 2u);
     
     sig.removeAllWords();
@@ -502,9 +508,10 @@ TEST(SignatureTest, ChangeWordsRef)
     
     std::vector<cv::KeyPoint> keypoints(3);
     std::vector<cv::Point3f> words3(3);
+    std::vector<int> words3Confidences = { 90, 80, 70 };
     cv::Mat descriptors = cv::Mat::zeros(3, 32, CV_8UC1);
     
-    sig.setWords(words, keypoints, words3, descriptors);
+    sig.setWords(words, keypoints, words3, words3Confidences, descriptors);
     
     EXPECT_EQ(sig.getWords().count(10), 2u);
     EXPECT_EQ(sig.getWords().count(20), 1u);
@@ -530,9 +537,10 @@ TEST(SignatureTest, ChangeWordsRefInvalid)
     
     std::vector<cv::KeyPoint> keypoints(2);
     std::vector<cv::Point3f> words3(2);
+    std::vector<int> words3Confidences = { 90, 80 };
     cv::Mat descriptors = cv::Mat::zeros(2, 32, CV_8UC1);
     
-    sig.setWords(words, keypoints, words3, descriptors);
+    sig.setWords(words, keypoints, words3, words3Confidences, descriptors);
     EXPECT_EQ(sig.getInvalidWordsCount(), 1);
     
     sig.changeWordsRef(0, 10);
@@ -566,9 +574,10 @@ TEST(SignatureTest, SetWordsDisablesSignature)
     words.insert(std::make_pair(1, 0));
     std::vector<cv::KeyPoint> keypoints(1);
     std::vector<cv::Point3f> words3(1);
+    std::vector<int> words3Confidences = { 50 };
     cv::Mat descriptors = cv::Mat::zeros(1, 32, CV_8UC1);
     
-    sig.setWords(words, keypoints, words3, descriptors);
+    sig.setWords(words, keypoints, words3, words3Confidences, descriptors);
     
     EXPECT_FALSE(sig.isEnabled()); // Should be disabled after setWords
 }
@@ -583,9 +592,10 @@ TEST(SignatureTest, SetWordsDescriptors)
     
     std::vector<cv::KeyPoint> keypoints(2);
     std::vector<cv::Point3f> words3(2);
+    std::vector<int> words3Confidences = { 90, 80 };
     cv::Mat descriptors = cv::Mat::zeros(2, 32, CV_8UC1);
     
-    sig.setWords(words, keypoints, words3, descriptors);
+    sig.setWords(words, keypoints, words3, words3Confidences, descriptors);
     
     cv::Mat newDescriptors = cv::Mat::ones(2, 32, CV_8UC1) * 128;
     sig.setWordsDescriptors(newDescriptors);
@@ -692,9 +702,10 @@ TEST(SignatureTest, CompareTo)
     
     std::vector<cv::KeyPoint> keypoints1(3);
     std::vector<cv::Point3f> words3_1(3);
+    std::vector<int> words3Confidences_1 = { 90, 80, 70 };
     cv::Mat descriptors1 = cv::Mat::zeros(3, 32, CV_8UC1);
     
-    sig1.setWords(words1, keypoints1, words3_1, descriptors1);
+    sig1.setWords(words1, keypoints1, words3_1, words3Confidences_1, descriptors1);
     
     // Add overlapping words to sig2
     std::multimap<int, int> words2;
@@ -704,9 +715,10 @@ TEST(SignatureTest, CompareTo)
     
     std::vector<cv::KeyPoint> keypoints2(3);
     std::vector<cv::Point3f> words3_2(3);
+    std::vector<int> words3Confidences_2 = { 90, 80, 70 };
     cv::Mat descriptors2 = cv::Mat::zeros(3, 32, CV_8UC1);
     
-    sig2.setWords(words2, keypoints2, words3_2, descriptors2);
+    sig2.setWords(words2, keypoints2, words3_2, words3Confidences_2, descriptors2);
     
     similarity = sig1.compareTo(sig2);
     EXPECT_GE(similarity, 0.0f);
@@ -728,10 +740,11 @@ TEST(SignatureTest, CompareToIdentical)
     
     std::vector<cv::KeyPoint> keypoints(3);
     std::vector<cv::Point3f> words3(3);
+    std::vector<int> words3Confidences = { 90, 80, 70 };
     cv::Mat descriptors = cv::Mat::zeros(3, 32, CV_8UC1);
     
-    sig1.setWords(words, keypoints, words3, descriptors);
-    sig2.setWords(words, keypoints, words3, descriptors);
+    sig1.setWords(words, keypoints, words3, words3Confidences, descriptors);
+    sig2.setWords(words, keypoints, words3, words3Confidences, descriptors);
     
     float similarity = sig1.compareTo(sig2);
     EXPECT_GE(similarity, 0.0f);
@@ -779,9 +792,10 @@ TEST(SignatureTest, ComprehensiveUsage)
     
     std::vector<cv::KeyPoint> keypoints(3);
     std::vector<cv::Point3f> words3(3);
+    std::vector<int> words3Confidences = { 90, 80, 70 };
     cv::Mat descriptors = cv::Mat::zeros(3, 32, CV_8UC1);
     
-    sig.setWords(words, keypoints, words3, descriptors);
+    sig.setWords(words, keypoints, words3, words3Confidences, descriptors);
     sig.setEnabled(true);
     
     // Verify everything

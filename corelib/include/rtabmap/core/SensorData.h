@@ -822,7 +822,7 @@ public:
 	 * @param keypoints3DConfidences Confidence values of each keypoint's 3D depth (in camera frame)
 	 * @param descriptors Feature descriptors matrix (one row per keypoint)
 	 */
-	void setFeatures(const std::vector<cv::KeyPoint> & keypoints, const std::vector<cv::Point3f> & keypoints3D, const std::vector<int> & keypoints3DConfidences = std::vector<int>(), const cv::Mat & descriptors = cv::Mat());
+	void setFeatures(const std::vector<cv::KeyPoint> & keypoints, const std::vector<cv::Point3f> & keypoints3D, const std::vector<int> & keypoints3DConfidences, const cv::Mat & descriptors);
 	
 	/**
 	 * @brief Returns the 2D keypoints

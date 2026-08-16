@@ -5900,7 +5900,7 @@ Signature Rtabmap::getSignatureCopy(int id, bool images, bool scan, bool userDat
 			_memory->getNodeWordsAndGlobalDescriptors(id, words, wordsKpts, words3, words3Confidences, wordsDescriptors, globalDescriptors);
 			if(withWords)
 			{
-				s.setWords(words, wordsKpts, words3, wordsDescriptors);
+				s.setWords(words, wordsKpts, words3, words3Confidences, wordsDescriptors);
 			}
 			if(withGlobalDescriptors)
 			{

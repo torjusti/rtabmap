@@ -94,10 +94,15 @@ protected:
 			const std::vector<int> & wordIds,
 			const std::vector<cv::KeyPoint> & keypoints,
 			const std::vector<cv::Point3f> & words3,
+			const std::vector<int> & words3Confidences,
 			const cv::Mat & descriptors)
 	{
 		ASSERT_EQ(wordIds.size(), keypoints.size());
 		ASSERT_EQ(wordIds.size(), words3.size());
+		if(!words3Confidences.empty())
+		{
+			ASSERT_EQ(wordIds.size(), words3Confidences.size());
+		}
 		ASSERT_EQ((int)wordIds.size(), descriptors.rows);
 
 		std::multimap<int, int> words;
@@ -105,7 +110,7 @@ protected:
 		{
 			words.insert(std::make_pair(wordIds[i], (int)i));
 		}
-		sig.setWords(words, keypoints, words3, descriptors);
+		sig.setWords(words, keypoints, words3, words3Confidences, descriptors);
 	}
 
 	static cv::Mat infMatrixDiagonal(
@@ -467,11 +472,12 @@ TEST_F(DbDriverFixture, SaveAndLoadSignatureAllMembers)
 		cv::Point3f(0.1f, 0.2f, 0.3f),
 		cv::Point3f(0.4f, 0.5f, 0.6f),
 		cv::Point3f(0.7f, 0.8f, 0.9f)};
+	const std::vector<int> words3Confidences = { 90, 80, 70 };
 	const cv::Mat descriptors = (cv::Mat_<float>(3, 8) <<
 		1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f, 8.f,
 		9.f, 10.f, 11.f, 12.f, 13.f, 14.f, 15.f, 16.f,
 		17.f, 18.f, 19.f, 20.f, 21.f, 22.f, 23.f, 24.f);
-	setSignatureFeatures(*sig, wordIds, keypoints, words3, descriptors);
+	setSignatureFeatures(*sig, wordIds, keypoints, words3, words3Confidences, descriptors);
 
 	sig->addLink(Link(1, 2, Link::kNeighbor,
 			Transform(0.5f, 0.f, 0.f, 0.f, 0.f, 0.f),
@@ -574,11 +580,13 @@ TEST_F(DbDriverFixture, SaveAndLoadSignaturesWithFeatures)
 			{100, 101},
 			{cv::KeyPoint(1.f, 2.f, 4.f), cv::KeyPoint(3.f, 4.f, 4.f)},
 			{cv::Point3f(0.f, 0.f, 1.f), cv::Point3f(1.f, 0.f, 1.f)},
+			{50, 60},
 			descriptors1);
 	setSignatureFeatures(*sig2,
 			{200},
 			{cv::KeyPoint(5.f, 6.f, 4.f)},
 			{cv::Point3f(2.f, 0.f, 1.f)},
+			{10, 70},
 			descriptors2);
 
 	saveSignature(sig1);
@@ -601,6 +609,7 @@ TEST_F(DbDriverFixture, SaveAndLoadSignaturesWithFeatures)
 	setSignatureFeatures(expected1, {100, 101},
 			{cv::KeyPoint(1.f, 2.f, 4.f), cv::KeyPoint(3.f, 4.f, 4.f)},
 			{cv::Point3f(0.f, 0.f, 1.f), cv::Point3f(1.f, 0.f, 1.f)},
+			{40, 30},
 			descriptors1);
 	expectSignatureFeaturesEqual(expected1, *loadedById.at(1));
 
@@ -608,6 +617,7 @@ TEST_F(DbDriverFixture, SaveAndLoadSignaturesWithFeatures)
 	setSignatureFeatures(expected2, {200},
 			{cv::KeyPoint(5.f, 6.f, 4.f)},
 			{cv::Point3f(2.f, 0.f, 1.f)},
+			{40, 90},
 			descriptors2);
 	expectSignatureFeaturesEqual(expected2, *loadedById.at(2));
 
@@ -961,7 +971,7 @@ TEST_F(DbDriverFixture, GetNodeDataAndLocalFeatures)
 	Signature * sig = new Signature(1);
 	attachSensorDataForDatabaseSave(*sig);
 	const cv::Mat descriptors = (cv::Mat_<float>(1, 4) << 1.f, 2.f, 3.f, 4.f);
-	setSignatureFeatures(*sig, {10}, {cv::KeyPoint(5.f, 6.f, 4.f)}, {cv::Point3f(0.f, 0.f, 1.f)}, descriptors);
+	setSignatureFeatures(*sig, {10}, {cv::KeyPoint(5.f, 6.f, 4.f)}, {cv::Point3f(0.f, 0.f, 1.f)}, {20}, descriptors);
 	saveSignature(sig);
 
 	SensorData data;
@@ -1094,7 +1104,7 @@ TEST_F(DbDriverFixture, MemoryUsageCountersAfterSave)
 	Signature * sig = new Signature(1);
 	attachSensorDataForDatabaseSave(*sig);
 	const cv::Mat descriptors = (cv::Mat_<float>(1, 4) << 1.f, 2.f, 3.f, 4.f);
-	setSignatureFeatures(*sig, {10}, {cv::KeyPoint(5.f, 6.f, 4.f)}, {cv::Point3f(0.f, 0.f, 1.f)}, descriptors);
+	setSignatureFeatures(*sig, {10}, {cv::KeyPoint(5.f, 6.f, 4.f)}, {cv::Point3f(0.f, 0.f, 1.f)}, {20}, descriptors);
 	saveSignature(sig);
 	saveVisualWord(new VisualWord(1, descriptors));
 

@@ -257,7 +257,7 @@ public:
 	static void limitKeypoints(std::vector<cv::KeyPoint> & keypoints, int maxKeypoints, const cv::Size & imageSize = cv::Size(), bool ssc = false);
 	static void limitKeypoints(std::vector<cv::KeyPoint> & keypoints, cv::Mat & descriptors, int maxKeypoints, const cv::Size & imageSize = cv::Size(), bool ssc = false);
 	static void limitKeypoints(std::vector<cv::KeyPoint> & keypoints, std::vector<cv::Point3f> & keypoints3D, cv::Mat & descriptors, int maxKeypoints, const cv::Size & imageSize = cv::Size(), bool ssc = false);
-	static void limitKeypoints(std::vector<cv::KeyPoint> & keypoints, std::vector<cv::Point3f> & keypoints3D, cv::Mat & descriptors, std::vector<int> & keypoints3DConfidences, int maxKeypoints, const cv::Size & imageSize, bool ssc);
+	static void limitKeypoints(std::vector<cv::KeyPoint> & keypoints, std::vector<cv::Point3f> & keypoints3D, std::vector<int> & keypoints3DConfidences, cv::Mat & descriptors, int maxKeypoints, const cv::Size & imageSize, bool ssc);
 	static void limitKeypoints(const std::vector<cv::KeyPoint> & keypoints, std::vector<bool> & inliers, int maxKeypoints, const cv::Size & imageSize = cv::Size(), bool ssc = false);
 	static void limitKeypoints(const std::vector<cv::KeyPoint> & keypoints, std::vector<bool> & inliers, int maxKeypoints, const cv::Size & imageSize, int gridRows, int gridCols, bool ssc = false);
 

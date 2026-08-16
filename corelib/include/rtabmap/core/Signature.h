@@ -424,8 +424,7 @@ public:
 	 * @note Invalid words (ID <= 0) are counted in `_invalidWordsCount`.
 	 * @note All arrays must have the same size (number of words).
 	 */
-	void setWords(const std::multimap<int, int> & words, const std::vector<cv::KeyPoint> & keypoints, const std::vector<cv::Point3f> & words3, const cv::Mat & descriptors);
-	void setWords(const std::multimap<int, int> & words, const std::vector<cv::KeyPoint> & keypoints, const std::vector<cv::Point3f> & words3, const std::vector<int> & keypoints3DConfidences, const cv::Mat & descriptors);
+	void setWords(const std::multimap<int, int> & words, const std::vector<cv::KeyPoint> & keypoints, const std::vector<cv::Point3f> & words3, const std::vector<int> & words3Confidence, const cv::Mat & descriptors);
 	
 	/**
 	 * @brief Checks if this signature is enabled

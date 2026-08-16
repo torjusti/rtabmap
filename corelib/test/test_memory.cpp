@@ -746,13 +746,14 @@ TEST(MemoryTest, ConvertToIntermediateClearsAllPayloadsByDefault)
 
 	std::vector<cv::KeyPoint> kpts(2, cv::KeyPoint(1.f, 1.f, 1.f));
 	std::vector<cv::Point3f> pts3(2, cv::Point3f(0.f, 0.f, 1.f));
+	std::vector<int> pts3Confidences(2, 1);
 	cv::Mat descriptors = cv::Mat::ones(2, 8, CV_32F);
-	s->sensorData().setFeatures(kpts, pts3, descriptors);
+	s->sensorData().setFeatures(kpts, pts3, pts3Confidences, descriptors);
 
 	std::multimap<int, int> wordIds;
 	wordIds.insert(std::make_pair(11, 0));
 	wordIds.insert(std::make_pair(22, 1));
-	s->setWords(wordIds, kpts, pts3, descriptors);
+	s->setWords(wordIds, kpts, pts3, pts3Confidences, descriptors);
 
 	s->sensorData().addGlobalDescriptor(GlobalDescriptor(0, cv::Mat::ones(1, 4, CV_32F)));
 
@@ -836,13 +837,14 @@ TEST(MemoryTest, ConvertToIntermediateClearsAllPayloadsWhenBothFlagsFalse)
 	// Also seed features, words and a global descriptor so every cleanup branch fires.
 	std::vector<cv::KeyPoint> kpts(2, cv::KeyPoint(1.f, 1.f, 1.f));
 	std::vector<cv::Point3f> pts3(2, cv::Point3f(0.f, 0.f, 1.f));
+	std::vector<int> pts3Confidences(2, 1);
 	cv::Mat descriptors = cv::Mat::ones(2, 8, CV_32F);
-	s->sensorData().setFeatures(kpts, pts3, descriptors);
+	s->sensorData().setFeatures(kpts, pts3, pts3Confidences, descriptors);
 
 	std::multimap<int, int> wordIds;
 	wordIds.insert(std::make_pair(11, 0));
 	wordIds.insert(std::make_pair(22, 1));
-	s->setWords(wordIds, kpts, pts3, descriptors);
+	s->setWords(wordIds, kpts, pts3, pts3Confidences, descriptors);
 
 	s->sensorData().addGlobalDescriptor(GlobalDescriptor(0, cv::Mat::ones(1, 4, CV_32F)));
 
@@ -901,12 +903,13 @@ TEST(MemoryTest, ConvertToIntermediateKeepsDataWhenIntermediateNodeDataKept)
 
 	std::vector<cv::KeyPoint> kpts(2, cv::KeyPoint(1.f, 1.f, 1.f));
 	std::vector<cv::Point3f> pts3(2, cv::Point3f(0.f, 0.f, 1.f));
+	std::vector<int> pts3Confidences(2, 1);
 	cv::Mat descriptors = cv::Mat::ones(2, 8, CV_32F);
 	std::multimap<int, int> wordIds;
 	wordIds.insert(std::make_pair(11, 0));
 	wordIds.insert(std::make_pair(22, 1));
-	s->sensorData().setFeatures(kpts, pts3, descriptors);
-	s->setWords(wordIds, kpts, pts3, descriptors);
+	s->sensorData().setFeatures(kpts, pts3, pts3Confidences, descriptors);
+	s->setWords(wordIds, kpts, pts3, pts3Confidences, descriptors);
 	s->sensorData().addGlobalDescriptor(GlobalDescriptor(0, cv::Mat::ones(1, 4, CV_32F)));
 
 	ASSERT_EQ(s->sensorData().imageCompressed().rows, 1);
@@ -1841,13 +1844,14 @@ int buildDictionaryDb(const std::string & dbPath)
 		SensorData data(image);
 		std::vector<cv::KeyPoint> kpts(kKeypointsPerFrame, cv::KeyPoint(1.f, 1.f, 1.f));
 		std::vector<cv::Point3f> pts3(kKeypointsPerFrame, cv::Point3f(0.f, 0.f, 1.f));
+		std::vector<int> pts3Confidence(kKeypointsPerFrame, 1);
 		// One-hot descriptors so every keypoint becomes its own visual word.
 		cv::Mat descriptors = cv::Mat::zeros(kKeypointsPerFrame, kFrames*kKeypointsPerFrame, CV_32F);
 		for(int row = 0; row < kKeypointsPerFrame; ++row)
 		{
 			descriptors.at<float>(row, frame*kKeypointsPerFrame + row) = 1000.0f;
 		}
-		data.setFeatures(kpts, pts3, descriptors);
+		data.setFeatures(kpts, pts3, pts3Confidence, descriptors);
 		if(!memory.update(data, Transform(float(frame), 0.0f, 0.0f, 0, 0, 0), covariance))
 		{
 			return 0;
@@ -1948,12 +1952,13 @@ TEST(MemoryTest, SetDummyDictionaryDisablesItselfWhenDatabaseHasNoWords)
 		SensorData data(image);
 		std::vector<cv::KeyPoint> kpts(kKeypoints, cv::KeyPoint(1.f, 1.f, 1.f));
 		std::vector<cv::Point3f> pts3(kKeypoints, cv::Point3f(0.f, 0.f, 1.f));
+		std::vector<int> pts3Confidences(kKeypoints, 1);
 		cv::Mat descriptors = cv::Mat::zeros(kKeypoints, kKeypoints, CV_32F);
 		for(int row = 0; row < kKeypoints; ++row)
 		{
 			descriptors.at<float>(row, row) = 1000.0f;
 		}
-		data.setFeatures(kpts, pts3, descriptors);
+		data.setFeatures(kpts, pts3, pts3Confidences, descriptors);
 		const cv::Mat covariance = cv::Mat::eye(6, 6, CV_64FC1) * 0.01;
 		ASSERT_TRUE(memory.update(data, Transform(5.0f, 0.0f, 0.0f, 0, 0, 0), covariance));
 		EXPECT_EQ((int)memory.getVWDictionary()->getVisualWords().size(), kKeypoints);
@@ -2005,12 +2010,13 @@ TEST(MemoryTest, SetDummyDictionaryDisabledWhenDictionaryMustBeRepaired)
 	SensorData data(image);
 	std::vector<cv::KeyPoint> kpts(kKeypoints, cv::KeyPoint(1.f, 1.f, 1.f));
 	std::vector<cv::Point3f> pts3(kKeypoints, cv::Point3f(0.f, 0.f, 1.f));
+	std::vector<int> pts3Confidences(kKeypoints, 1);
 	cv::Mat descriptors = cv::Mat::zeros(kKeypoints, 9, CV_32F);
 	for(int row = 0; row < kKeypoints; ++row)
 	{
 		descriptors.at<float>(row, row) = 1000.0f;
 	}
-	data.setFeatures(kpts, pts3, descriptors);
+	data.setFeatures(kpts, pts3, pts3Confidences, descriptors);
 	const cv::Mat covariance = cv::Mat::eye(6, 6, CV_64FC1) * 0.01;
 	EXPECT_TRUE(memory.update(data, Transform(9.0f, 0.0f, 0.0f, 0, 0, 0), covariance));
 
@@ -2278,12 +2284,13 @@ TEST(MemoryTest, DiscardedSessionSavesNothingBackWhenMemoryChanged)
 		SensorData data(image);
 		std::vector<cv::KeyPoint> kpts(kKeypoints, cv::KeyPoint(1.f, 1.f, 1.f));
 		std::vector<cv::Point3f> pts3(kKeypoints, cv::Point3f(0.f, 0.f, 1.f));
+		std::vector<int> pts3Confidences(kKeypoints, 1);
 		cv::Mat descriptors = cv::Mat::zeros(kKeypoints, 9, CV_32F);
 		for(int row = 0; row < kKeypoints; ++row)
 		{
 			descriptors.at<float>(row, row) = 1000.0f;
 		}
-		data.setFeatures(kpts, pts3, descriptors);
+		data.setFeatures(kpts, pts3, pts3Confidences, descriptors);
 		const cv::Mat covariance = cv::Mat::eye(6, 6, CV_64FC1) * 0.01;
 		ASSERT_TRUE(memory.update(data, Transform(9.0f, 0.0f, 0.0f, 0, 0, 0), covariance));
 		ASSERT_TRUE(memory.memoryChanged());
@@ -2333,6 +2340,7 @@ TEST(MemoryTest, ForgetTransfersBasedOnWordCountInWordRegime)
 
 		std::vector<cv::KeyPoint> kpts(kKeypointsPerFrame, cv::KeyPoint(1.f, 1.f, 1.f));
 		std::vector<cv::Point3f> pts3(kKeypointsPerFrame, cv::Point3f(0.f, 0.f, 1.f));
+		std::vector<int> pts3Confidences(kKeypointsPerFrame, 1);
 		// Each (frame, row) gets its own one-hot axis in a kFrames*kKeypointsPerFrame
 		// dimensional space, so every keypoint in every frame quantizes to its own
 		// brand new visual word. This guarantees notIndexedWordsCount > 0 at the time
@@ -2343,7 +2351,7 @@ TEST(MemoryTest, ForgetTransfersBasedOnWordCountInWordRegime)
 			const int axis = frameIndex * kKeypointsPerFrame + row;
 			descriptors.at<float>(row, axis) = 1000.0f;
 		}
-		data.setFeatures(kpts, pts3, descriptors);
+		data.setFeatures(kpts, pts3, pts3Confidences, descriptors);
 		return data;
 	};
 
@@ -2405,11 +2413,12 @@ TEST(MemoryTest, ForgetTransfersBasedOnWordCountInWordRegime)
 		SensorData extraData(image);
 		std::vector<cv::KeyPoint> oneKpt(1, cv::KeyPoint(1.f, 1.f, 1.f));
 		std::vector<cv::Point3f> onePt3(1, cv::Point3f(0.f, 0.f, 1.f));
+		std::vector<int> onePt3Confidence(1, 50);
 		cv::Mat descriptors = cv::Mat::zeros(1, kDescCols, CV_32F);
 		// Use the reserved axis (kFrames * kKeypointsPerFrame) so the descriptor is
 		// orthogonal to every existing word and creates a brand-new visual word.
 		descriptors.at<float>(0, kFrames * kKeypointsPerFrame) = 1000.0f;
-		extraData.setFeatures(oneKpt, onePt3, descriptors);
+		extraData.setFeatures(oneKpt, onePt3, onePt3Confidence, descriptors);
 		ASSERT_TRUE(memory.update(extraData, Transform(float(kFrames), 0.0f, 0.0f, 0, 0, 0), covariance));
 	}
 

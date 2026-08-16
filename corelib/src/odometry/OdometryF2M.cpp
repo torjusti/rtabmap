@@ -1272,7 +1272,7 @@ Transform OdometryF2M::computeTransform(
 										newFramePose.translation()));
 					}
 
-					map_->setWords(mapWords, mapWordsKpts, mapPoints, mapDescriptors);
+					map_->setWords(mapWords, mapWordsKpts, mapPoints, std::vector<int>(), mapDescriptors);
 				}
 
 				if(lastFrameWords3Updated)
@@ -1416,7 +1416,7 @@ Transform OdometryF2M::computeTransform(
 						}
 					}
 
-					map_->setWords(words, wordsKpts, transformedPoints, descriptors);
+					map_->setWords(words, wordsKpts, transformedPoints, std::vector<int>(), descriptors);
 					addKeyFrame = true;
 				}
 				else
