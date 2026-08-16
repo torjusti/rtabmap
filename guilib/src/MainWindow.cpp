@@ -6881,9 +6881,9 @@ void MainWindow::postProcessing(
 											else
 											{
 												signatureFrom.removeAllWords();
-												signatureFrom.sensorData().setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), cv::Mat());
+												signatureFrom.sensorData().setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), std::vector<int>(), cv::Mat());
 												signatureTo.removeAllWords();
-												signatureTo.sensorData().setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), cv::Mat());
+												signatureTo.sensorData().setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), std::vector<int>(), cv::Mat());
 											}
 										}
 										else if(!reextractFeatures && signatureFrom.getWords().empty() && signatureTo.getWords().empty())

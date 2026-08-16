@@ -2086,7 +2086,7 @@ Transform RegistrationVis::computeTransformationImpl(
 					}
 					UDEBUG("inliers: %d/%d", (int)inliersV.size(), (int)matchesV.size());
 					if(transform.isNull())
-					{
+					{ // This message is displayed even if the transform was rejected because of high variance. Maybe to be fixed ?
 						msg = uFormat("Not enough inliers %d/%d (matches=%d) between %d and %d",
 								(int)inliers.size(), _minInliers, (int)matches.size(), fromSignature.id(), toSignature.id());
 						UINFO("%s", msg.c_str());

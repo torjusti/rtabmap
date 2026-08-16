@@ -337,7 +337,7 @@ int main(int argc, char * argv[])
 			{
 				// set negative id so rtabmap will detect it as an intermediate node
 				data.setId(-1);
-				data.setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), cv::Mat());// remove features
+				data.setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), std::vector<int>(), cv::Mat());// remove features
 				processData = intermediateNodes;
 			}
 

@@ -9363,9 +9363,9 @@ void DatabaseViewer::refineConstraint(int from, int to, Registration * reg, Regi
 		if(reextractVisualFeatures)
 		{
 			fromS->removeAllWords();
-			fromS->sensorData().setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), cv::Mat());
+			fromS->sensorData().setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), std::vector<int>(), cv::Mat());
 			toS->removeAllWords();
-			toS->sensorData().setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), cv::Mat());
+			toS->sensorData().setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), std::vector<int>(), cv::Mat());
 		}
 
 		if(reg->isScanRequired())
@@ -9647,9 +9647,9 @@ bool DatabaseViewer::addConstraint(int from, int to, Registration * reg, bool si
 			if(reextractVisualFeatures)
 			{
 				fromS->removeAllWords();
-				fromS->sensorData().setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), cv::Mat());
+				fromS->sensorData().setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), std::vector<int>(), cv::Mat());
 				toS->removeAllWords();
-				toS->sensorData().setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), cv::Mat());
+				toS->sensorData().setFeatures(std::vector<cv::KeyPoint>(), std::vector<cv::Point3f>(), std::vector<int>(), cv::Mat());
 			}
 			if(reg->isScanRequired() && ui_->checkBox_icp_from_depth->isChecked())
 			{
