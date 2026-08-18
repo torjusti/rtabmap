@@ -1385,9 +1385,8 @@ void solvePnPMsac(const std::vector<cv::Point3f> & objectPoints,
                   cv::Mat & rvec, cv::Mat & tvec,
                   bool useExtrinsicGuess, int iterationsCount,
                   float reprojectionError, int minInliersCount,
-                  float confidence, float pixelVariance,
-                  std::vector<int> & inliers, int flags,
-                  int refineIterations, float refineSigma,
+                  float pixelVariance, std::vector<int> & inliers, 
+				  int flags, int refineIterations, float refineSigma,
                   bool use_prosac_ordering)
 {
     if(minInliersCount < 4)
@@ -1405,7 +1404,7 @@ void solvePnPMsac(const std::vector<cv::Point3f> & objectPoints,
     cv_custom::solvePnPMsac(
             objectPoints, imagePoints, cameraMatrix, distCoeffs, covariances3A,
             rvec, tvec, useExtrinsicGuess, iterationsCount, inlierThreshold, 
-			confidence, pixelVariance, use_prosac_ordering, inliers, flags);
+			0.99, pixelVariance, use_prosac_ordering, inliers, flags);
 
 
     // 2. Exact mimic of the Refinement loop

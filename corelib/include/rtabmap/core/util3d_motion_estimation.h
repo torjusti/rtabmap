@@ -98,18 +98,16 @@ bool RTABMAP_CORE_EXPORT ransacDeterministicSeedEnabled();
  * cv::reprojectPoints. Then, the covariance is computed using the Jacobian of the reprojection 
  * error with respect to the pose parameters. There are several ways to do that described below.
  * 	- If `useInlierCovariance` is false, the final pose covariance is computed in the classical way.
- *    If it is true, feature covariance are used inside the pose covariance formula.
- * 	- If pixelVariance and depthVariance are provided, they can serve as the typical covariance value 
- *    for a given feature, which is then propagated to compute the final pose covariance.
- * 	- If `covariances3A` and `covariances3B` are provided, they will be used instead of the default
- *    pixelVariance and depthVariance to compute the pose covariance.
+ *    If it is true, feature covariance are used inside the pose covariance formula (recovering the
+ *    covariance from the covariance weighted PnP solver).
+ * 	- If `covariances3A` and `covariances3B` are provided, they will be used to compute the 
+      pose covariance in case `useInlierCovariance` is true.
  * 	- If `splitLinearCovarianceComponents` is true, the linear components of the covariance are split.
  * If `computeFullCovariance` is false, we compute a heuristic covariance 
  *  - If `words3B` is provided, 3D variance is computed by comparing reprojected points to actual transformed points.
  *  - If `words3B` is empty, variance is estimated using reprojection error only.
- *  - For either strategy, if additionally `useInlierCovariance` is true, the covariance of the inliers is used to weigh 
- *    the error values. Covariance values used will be either `covariances3A` or `covariances3B` if provided, or 
- *    calculated from `pixelVariance` and `depthVariance` otherwise.
+ *  - For either strategy, if additionally `useInlierCovariance` is true, the depth confidence of the inliers is used to weigh 
+ *    the error values.
  */
 cv::Mat RTABMAP_CORE_EXPORT computePoseCovariance(
     bool computeFullCovariance, 
@@ -157,8 +155,8 @@ cv::Mat RTABMAP_CORE_EXPORT computePoseCovariance(
  * @param covariances3A Optional map of 3D point covariances in frame A, indexed by feature ID.
  * @param covariances3B Optional map of 3D point covariances in frame B, indexed by feature ID.
  * @param useMsac If true, uses MSAC instead of RANSAC for robust estimation.
- * @param pixelVariance Default variance of pixel coordinates (typically used if `covariances3A` and `covariances3B` are not provided).
- * @param depthVariance Default variance of depth values (typically used if `covariances3A` and `covariances3B` are not provided).
+ * @param pixelVariance Typical variance of matches in pixel space. Use as default pixel variance in case of missing data.
+ * @param depthVariance Default variance of depth values in case of missing data.
  * @param computeFullCovariance If true, computes the exact covariance matrix of the estimated pose
  * @param useInlierVariance If true, uses the covariance of inliers to weigh the error values when computing pose covariance.
  * 
@@ -362,30 +360,33 @@ void RTABMAP_CORE_EXPORT solvePnPRansac(
 /**
  * @brief Estimates the camera pose using the PnP MSAC algorithm and optionally refines it.
  *
- * TO BE WRITTEN
- * 
- * This function computes the rotation and translation vectors (rvec, tvec) that transform 3D object points
- * into the camera frame, using the Perspective-n-Point (PnP) method with RANSAC for robust outlier rejection.
- * After an initial estimation using OpenCV's `solvePnPRansac`, it optionally refines the model iteratively
- * based on reprojection error thresholds.
+ * This function is a fork of util3d::solvePnPRansac where the MSAC algorithm is used instead.
+ * Optionally, feature depth confidence, in the form of 3d covariances, can be used for the MSAC
+ * scoring, and the refinement steps. See util3d::solvePnPRansac.
  *
  * @param objectPoints        A vector of 3D points in the object coordinate space.
  * @param imagePoints         A vector of corresponding 2D points in the image plane.
  * @param cameraMatrix        The camera intrinsic matrix (3x3).
  * @param distCoeffs          Vector of distortion coefficients (k1, k2, p1, p2, k3, ...).
+ * @param covariances3A       Vector of 3*3 covariances of the input points.
  * @param rvec                Output rotation vector (Rodrigues form).
  * @param tvec                Output translation vector.
  * @param useExtrinsicGuess   If true, uses the provided rvec and tvec as an initial guess.
  * @param iterationsCount     The number of RANSAC iterations.
  * @param reprojectionError   Maximum allowed reprojection error to classify an inlier.
  * @param minInliersCount     Minimum number of inliers required to accept a model.
+ * @param pixelVariance       Typical pixel variance for matches.
  * @param inliers             Output vector of indices of inlier points.
  * @param flags               Method for solving PnP (`cv::SOLVEPNP_*` flags).
  * @param refineIterations    Number of refinement iterations after RANSAC.
  * @param refineSigma         Multiplier for the reprojection error standard deviation to define adaptive inlier threshold.
+ * @param useProsacOrdering   Wether to use the PROSAC strategy candidate selection (not tested).
  *
- * @note This function uses OpenCV 3's implementation of `solvePnPRansac` for robustness.
- *       After RANSAC, the pose is optionally refined by minimizing reprojection error on inliers.
+ * @note This function uses a custom implementation of the `solvePnPMsac` algorithm, forked
+ *       from OpenCV 3's `solvePnPRansac`. After RANSAC, the pose is optionally refined by
+ *       minimizing (Mahalanobis) reprojection error on inliers.
+ *       Also note that reprojectionError only make sense for the classical approach ignoring
+ *       3D covariances. If reprojectionError > 0, classical MSAC without covariances is performed.
  *
  * @warning Refinement may oscillate or terminate early if convergence is poor or the inlier set becomes unstable.
  *
@@ -410,7 +411,7 @@ void RTABMAP_CORE_EXPORT solvePnPMsac(
 		int flags,
 		int refineIterations,
 		float refineSigma,
-		bool use_prosac_ordering);
+		bool useProsacOrdering);
 
 } // namespace util3d
 } // namespace rtabmap
