@@ -386,7 +386,49 @@ cv::Mat computePoseCovariance(
 		// Prefer Cholesky decomposition, fallback to SVD only if Cholesky fails.
 		if(cv::invert(H, cov, cv::DECOMP_CHOLESKY) != 0 || cv::invert(H, cov, cv::DECOMP_SVD) > 1e-12)
 		{
-			cv_custom::poseCovarianceRodriguesToRPY(rvec, cov).copyTo(covariance);
+			// "cov" is the covariance of the camera-frame PnP pose, in [rvec, tvec]
+			// parameters (base frame of A expressed in the optical frame of B). The
+			// caller attributes the returned covariance to the link transform
+			// T_link = (localTransform * T_pnp)^-1 instead, so propagate the
+			// covariance through that mapping with a numerical Jacobian.
+			//
+			// Note: converting to roll/pitch/yaw directly at the camera-frame pose
+			// would be evaluated at the Euler singularity (its pitch is ~ -90 deg
+			// for any forward-looking camera, since base x maps to optical z) and
+			// would blow up the roll/yaw variances by orders of magnitude. The link
+			// rotation is near identity, where RPY is well conditioned.
+			auto linkParams = [&cameraModel](const cv::Mat & rv, const cv::Mat & tv)
+			{
+				cv::Mat Rm;
+				cv::Rodrigues(rv, Rm);
+				Transform pnp(
+					Rm.at<double>(0,0), Rm.at<double>(0,1), Rm.at<double>(0,2), tv.at<double>(0),
+					Rm.at<double>(1,0), Rm.at<double>(1,1), Rm.at<double>(1,2), tv.at<double>(1),
+					Rm.at<double>(2,0), Rm.at<double>(2,1), Rm.at<double>(2,2), tv.at<double>(2));
+				Transform link = (cameraModel.localTransform() * pnp).inverse();
+				float x,y,z,roll,pitch,yaw;
+				link.getTranslationAndEulerAngles(x, y, z, roll, pitch, yaw);
+				return cv::Vec6d(x, y, z, roll, pitch, yaw);
+			};
+
+			// Central differences. Transform is float-based, so keep eps well above
+			// float rounding noise (values are ~1 rad / ~1 m, float eps ~1e-7).
+			const double eps = 1e-4;
+			cv::Mat J(6, 6, CV_64FC1); // rows: link [x,y,z,roll,pitch,yaw], cols: [rvec, tvec] (same order as cov)
+			for(int j=0; j<6; ++j)
+			{
+				cv::Mat rvp = rvec.clone(), tvp = tvec.clone();
+				cv::Mat rvm = rvec.clone(), tvm = tvec.clone();
+				(j<3 ? rvp : tvp).at<double>(j%3) += eps;
+				(j<3 ? rvm : tvm).at<double>(j%3) -= eps;
+				cv::Vec6d p = linkParams(rvp, tvp);
+				cv::Vec6d m = linkParams(rvm, tvm);
+				for(int i=0; i<6; ++i)
+				{
+					J.at<double>(i,j) = (p[i]-m[i]) / (2.0*eps);
+				}
+			}
+			covariance = J * cov * J.t();
 			covariance = (covariance + covariance.t()) / 2.0;
 		}
 		else

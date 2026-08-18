@@ -13,8 +13,6 @@ using namespace cv;
 
 namespace cv_custom {
 
-cv::Mat poseCovarianceRodriguesToRPY(const cv::Mat& rvec, const cv::Mat& cov_rodriguez);
-
 std::vector<float> computeMahalanobisReprojErrors(
    const std::vector<cv::Point3f>& opoints,
    const std::vector<cv::Point2f>& ipoints,
