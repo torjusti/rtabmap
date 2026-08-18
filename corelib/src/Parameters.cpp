@@ -240,6 +240,8 @@ const std::map<std::string, std::pair<bool, std::string> > & Parameters::getRemo
 	if(removedParameters_.empty())
 	{
 		// removed parameters
+		// 0.24.0
+		removedParameters_.insert(std::make_pair("Vis/PnPMaxVariance", std::make_pair(true, Parameters::kVisPnPMaxLinVariance())));
 
 		// 0.23.7
 		removedParameters_.insert(std::make_pair("Marker/CornerRefinementMethod", std::make_pair(true, Parameters::kMarkerOpenCVCornerRefinementMethod())));
