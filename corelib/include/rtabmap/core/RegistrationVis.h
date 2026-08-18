@@ -105,7 +105,8 @@ private:
 	int _PnPFlags;
 	int _PnPRefineIterations;
 	int  _PnPVarMedianRatio;
-	float _PnPMaxVar;
+	float _PnPMaxLinVar;
+	float _PnPMaxAngVar;
 	bool _PnPSplitLinearCovarianceComponents;
 	bool _PnPUseMsac;
 	int _PnPMinConfidence;

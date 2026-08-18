@@ -77,7 +77,8 @@ RegistrationVis::RegistrationVis(const ParametersMap & parameters, Registration 
 		_PnPFlags(Parameters::defaultVisPnPFlags()),
 		_PnPRefineIterations(Parameters::defaultVisPnPRefineIterations()),
 		_PnPVarMedianRatio(Parameters::defaultVisPnPVarianceMedianRatio()),
-		_PnPMaxVar(Parameters::defaultVisPnPMaxVariance()),
+		_PnPMaxLinVar(Parameters::defaultVisPnPMaxLinVariance()),
+		_PnPMaxAngVar(Parameters::defaultVisPnPMaxAngVariance()),
 		_PnPSplitLinearCovarianceComponents(Parameters::defaultVisPnPSplitLinearCovComponents()),
 		_PnPUseMsac(Parameters::defaultVisPnPUseMsac()),
 		_PnPMinConfidence(Parameters::defaultVisPnPMinConfidence()),
@@ -150,7 +151,8 @@ void RegistrationVis::parseParameters(const ParametersMap & parameters)
 	Parameters::parse(parameters, Parameters::kVisPnPFlags(), _PnPFlags);
 	Parameters::parse(parameters, Parameters::kVisPnPRefineIterations(), _PnPRefineIterations);
 	Parameters::parse(parameters, Parameters::kVisPnPVarianceMedianRatio(), _PnPVarMedianRatio);
-	Parameters::parse(parameters, Parameters::kVisPnPMaxVariance(), _PnPMaxVar);
+	Parameters::parse(parameters, Parameters::kVisPnPMaxLinVariance(), _PnPMaxLinVar);
+	Parameters::parse(parameters, Parameters::kVisPnPMaxAngVariance(), _PnPMaxAngVar);
 	Parameters::parse(parameters, Parameters::kVisPnPSplitLinearCovComponents(), _PnPSplitLinearCovarianceComponents);
 	Parameters::parse(parameters, Parameters::kVisPnPUseMsac(), _PnPUseMsac);
 	Parameters::parse(parameters, Parameters::kVisPnPMinConfidence(), _PnPMinConfidence);
@@ -345,7 +347,8 @@ Transform RegistrationVis::computeTransformationImpl(
 	UDEBUG("%s=%f", Parameters::kVisEpipolarGeometryVar().c_str(), _epipolarGeometryVar);
 	UDEBUG("%s=%f", Parameters::kVisPnPReprojError().c_str(), _PnPReprojError);
 	UDEBUG("%s=%d", Parameters::kVisPnPFlags().c_str(), _PnPFlags);
-	UDEBUG("%s=%f", Parameters::kVisPnPMaxVariance().c_str(), _PnPMaxVar);
+	UDEBUG("%s=%f", Parameters::kVisPnPMaxLinVariance().c_str(), _PnPMaxLinVar);
+	UDEBUG("%s=%f", Parameters::kVisPnPMaxAngVariance().c_str(), _PnPMaxAngVar);
 	UDEBUG("%s=%f", Parameters::kVisPnPSplitLinearCovComponents().c_str(), (double)_PnPSplitLinearCovarianceComponents);
 	UDEBUG("%s=%d", Parameters::kVisPnPUseMsac().c_str(), _PnPUseMsac?1:0);
 	UDEBUG("%s=%d", Parameters::kVisPnPMinConfidence().c_str(), _PnPMinConfidence);
@@ -1921,7 +1924,8 @@ Transform RegistrationVis::computeTransformationImpl(
 								_PnPFlags,
 								_PnPRefineIterations,
 								_PnPVarMedianRatio,
-								_PnPMaxVar,
+								_PnPMaxLinVar,
+								_PnPMaxAngVar,
 								!guess.isNull()?guess:Transform::getIdentity(),
 								words3B,
 								&covariance,
@@ -2067,7 +2071,8 @@ Transform RegistrationVis::computeTransformationImpl(
 								_PnPFlags,
 								_PnPRefineIterations,
 								_PnPVarMedianRatio,
-								_PnPMaxVar,
+								_PnPMaxLinVar,
+								_PnPMaxAngVar,
 								!guess.isNull()?guess:Transform::getIdentity(),
 								words3B,
 								&covariance,

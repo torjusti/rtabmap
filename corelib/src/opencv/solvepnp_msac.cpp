@@ -121,8 +121,9 @@ bool solvePnPMsac(InputArray _opoints, InputArray _ipoints,
                   InputArray _cameraMatrix, InputArray _distCoeffs,
                   const std::vector<cv::Matx33f>& covariances3A,
                   OutputArray _rvec, OutputArray _tvec, bool useExtrinsicGuess,
-                  int iterationsCount, float confidence, float pixelVariance,
-                  bool use_prosac_ordering, OutputArray _inliers, int flags)
+                  int iterationsCount, float chi2Threshold, float confidence, 
+                  float pixelVariance, bool use_prosac_ordering, OutputArray _inliers, 
+                  int flags)
 {
 
     Mat opoints0 = _opoints.getMat(), ipoints0 = _ipoints.getMat();
@@ -162,7 +163,7 @@ bool solvePnPMsac(InputArray _opoints, InputArray _ipoints,
     Ptr<cv3::PointSetRegistrator::Callback> cb; // pointer to callback
     cb = Ptr<PnPMsacCallback>(new PnPMsacCallback( cameraMatrix, distCoeffs, covariances3A, pixelVariance, ransac_kernel_method, useExtrinsicGuess, rvec, tvec));
 
-    double param1 = CHI2_95_UNSQUARED;                // msac uses hardcoded chi2 thresholds
+    double param1 =  chi2Threshold;                   // chi2 threshold
     double param2 = confidence;                       // confidence
     int param3 = iterationsCount;                     // number maximum iterations
 
@@ -172,6 +173,28 @@ bool solvePnPMsac(InputArray _opoints, InputArray _ipoints,
     // call MSAC
     int result = createMSACPointSetRegistrator(cb, model_points,
         param1, param2, param3, use_prosac_ordering)->run(opoints, ipoints, _local_model, _mask_local_inliers);
+
+    if( result > 0 )
+    {
+        std::vector<Point3d> opoints_inliers;
+        std::vector<Point2d> ipoints_inliers;
+        opoints.convertTo(opoints_inliers, CV_64F);
+        ipoints.convertTo(ipoints_inliers, CV_64F);
+
+        const uchar* mask = _mask_local_inliers.ptr<uchar>();
+        int npoints1 = cv3::compressElems(&opoints_inliers[0], mask, 1, npoints);
+        cv3::compressElems(&ipoints_inliers[0], mask, 1, npoints);
+
+        opoints_inliers.resize(npoints1);
+        ipoints_inliers.resize(npoints1);
+
+        // Here we use the classical solvePnP as a refinement to the minimal guess like done in solvePnPRansac.
+        // This will be the result returned if no additional refinements are requested, hence in that case 
+        // solvePnPMsac relies on a classical covariance-unaware PnP algorithm (however on a set of carefully chosen 
+        // inliers, possibly using their covariances).
+        result = solvePnP(opoints_inliers, ipoints_inliers, cameraMatrix,
+                          distCoeffs, rvec, tvec, useExtrinsicGuess, flags == cv::SOLVEPNP_P3P ? cv::SOLVEPNP_EPNP : flags) ? 1 : -1;
+    }
 
     if( result <= 0 || _local_model.rows <= 0)
     {
@@ -448,13 +471,27 @@ public:
         Mat rvec = param.rowRange(0, 3);
         Mat tvec = param.rowRange(3, 6);
 
-        Mat proj, jac_pose;
-        projectPoints(opoints, rvec, tvec, K, D, proj, jac_pose);
-
         int N = opoints.checkVector(3);
-        _err.create(N * 2, 1, CV_64F);
-        _J.create(N * 2, 6, CV_64F);
-        Mat err = _err.getMat(), J = _J.getMat();
+
+        bool need_err = _err.needed();
+        bool need_J = _J.needed();
+
+        Mat proj, jac_pose;
+        if (need_J) {
+            projectPoints(opoints, rvec, tvec, K, D, proj, jac_pose);
+            _J.create(N * 2, 6, CV_64F);
+        } else {
+            projectPoints(opoints, rvec, tvec, K, D, proj);
+        }
+
+        Mat err, J;
+        if (need_err) {
+            _err.create(N * 2, 1, CV_64F);
+            err = _err.getMat();
+        }
+        if (need_J) {
+            J = _J.getMat();
+        }
 
         Mat R;
         Rodrigues(rvec, R);
@@ -468,7 +505,7 @@ public:
         const Point2f* pt2d = ipoints.ptr<Point2f>();
         const Point2f* pproj = proj.ptr<Point2f>();
 
-        for(int i=0; i < N; i++) {
+        for(int i = 0; i < N; i++) {
             Matx22d cov2D_inv;
             if(!cov3D.empty())
             {
@@ -491,20 +528,24 @@ public:
             double l11 = std::sqrt(std::max(0.0, cov2D_inv(1,1) - l10*l10));
             Matx22d Lt(l00, l10, 0.0, l11); 
 
-            Matx21d e(pt2d[i].x - pproj[i].x, pt2d[i].y - pproj[i].y);
-            Matx21d we = Lt * e;
-            err.at<double>(i*2, 0) = we(0);
-            err.at<double>(i*2+1, 0) = we(1);
-
-            Matx<double, 2, 6> J_p;
-            for(int k=0; k<6; k++) {
-                J_p(0, k) = jac_pose.at<double>(i*2, k);
-                J_p(1, k) = jac_pose.at<double>(i*2+1, k);
+            if (need_err) {
+                Matx21d e(pt2d[i].x - pproj[i].x, pt2d[i].y - pproj[i].y);
+                Matx21d we = Lt * e;
+                err.at<double>(i*2, 0) = we(0);
+                err.at<double>(i*2+1, 0) = we(1);
             }
-            Matx<double, 2, 6> wJ = Lt * J_p;
-            for(int k=0; k<6; k++) {
-                J.at<double>(i*2, k) = wJ(0, k);
-                J.at<double>(i*2+1, k) = wJ(1, k);
+
+            if (need_J) {
+                Matx<double, 2, 6> J_p;
+                for(int k=0; k<6; k++) {
+                    J_p(0, k) = jac_pose.at<double>(i*2, k);
+                    J_p(1, k) = jac_pose.at<double>(i*2+1, k);
+                }
+                Matx<double, 2, 6> wJ = Lt * J_p;
+                for(int k=0; k<6; k++) {
+                    J.at<double>(i*2, k) = wJ(0, k);
+                    J.at<double>(i*2+1, k) = wJ(1, k);
+                }
             }
         }
         return true;
@@ -662,211 +703,30 @@ cv::Mat poseCovarianceRodriguesToRPY(const cv::Mat& rvec,
     return outCovariance6x6;
 }
 
-// Extra RTABMap-like refinement loop for MSAC, including covariance propagation
-void solvePnPMsac(const std::vector<cv::Point3f> & objectPoints,
-                  const std::vector<cv::Point2f> & imagePoints,
-                  const cv::Mat & cameraMatrix,
-                  const cv::Mat & distCoeffs,
-                  const std::vector<cv::Matx33f> & covariances3A,
-                  cv::Mat & rvec, cv::Mat & tvec,
-                  bool useExtrinsicGuess, int iterationsCount,
-                  float reprojectionError, int minInliersCount,
-                  float confidence, float pixelVariance,
-                  std::vector<int> & inliers, int flags,
-                  int refineIterations, float refineSigma,
-                  bool use_prosac_ordering, cv::Mat & outPoseCovariance)
+void solvePnPMsacRefineLM(
+    cv::Mat & rvec,
+    cv::Mat & tvec,
+    const std::vector<cv::Point3f> & opoints_inliers,
+    const std::vector<cv::Point2f> & ipoints_inliers,
+    const std::vector<cv::Matx33f> & cov_inliers,
+    float pixelVariance,
+    const cv::Mat & cameraMatrix,
+    const cv::Mat & distCoeffs,
+    int maxIterations)
 {
-    if(minInliersCount < 4)
-    {
-        minInliersCount = 4;
-    }
+    cv::Mat param(6, 1, CV_64F);
+    rvec.copyTo(param.rowRange(0, 3));
+    tvec.copyTo(param.rowRange(3, 6));
 
-    UDEBUG("MSAC input points=%d useExtrinsicGuess=%d iterations=%d minInliers=%d flags=%d refineIterations=%d refineSigma=%f",
-           (int)objectPoints.size(), useExtrinsicGuess, iterationsCount, minInliersCount, flags, refineIterations, refineSigma);
+    cv::Ptr<cv::LMSolver::Callback> lm_cb = cv::makePtr<cv_custom::WeightedLMSolverCallback>(
+        opoints_inliers, ipoints_inliers, cov_inliers, pixelVariance, cameraMatrix, distCoeffs
+    );
 
-    // 1. Call the Core OpenCV-style function
-    cv_custom::solvePnPMsac(
-            objectPoints, imagePoints, cameraMatrix, distCoeffs, covariances3A,
-            rvec, tvec, useExtrinsicGuess, iterationsCount, confidence,
-            pixelVariance, use_prosac_ordering, inliers, flags);
+    cv::Ptr<cv::LMSolver> solver = cv::LMSolver::create(lm_cb, maxIterations); 
+    solver->run(param);
 
-    float inlierThreshold = CHI2_95_UNSQUARED;
-
-    // 2. Exact mimic of the Refinement loop
-    if((int)inliers.size() >= minInliersCount && refineIterations > 0)
-    {
-        float error_threshold = inlierThreshold;
-        int refine_iterations = 0;
-        bool inlier_changed = false, oscillating = false;
-        std::vector<int> new_inliers, prev_inliers = inliers;
-        std::vector<size_t> inliers_sizes;
-        
-        cv::Mat new_model_rvec = rvec.clone();
-        cv::Mat new_model_tvec = tvec.clone();
-
-        do
-        {
-            // Get inliers from the current model
-            std::vector<cv::Point3f> opoints_inliers(prev_inliers.size());
-            std::vector<cv::Point2f> ipoints_inliers(prev_inliers.size());
-            std::vector<cv::Matx33f> cov_inliers(prev_inliers.size());
-            for(unsigned int i = 0; i < prev_inliers.size(); ++i)
-            {
-                opoints_inliers[i] = objectPoints[prev_inliers[i]];
-                ipoints_inliers[i] = imagePoints[prev_inliers[i]];
-                cov_inliers[i] = covariances3A[prev_inliers[i]];
-            }
-
-            UDEBUG("inliers=%d refine_iterations=%d, rvec=%f,%f,%f tvec=%f,%f,%f", (int)prev_inliers.size(), refine_iterations,
-                   *new_model_rvec.ptr<double>(0), *new_model_rvec.ptr<double>(1), *new_model_rvec.ptr<double>(2),
-                   *new_model_tvec.ptr<double>(0), *new_model_tvec.ptr<double>(1), *new_model_tvec.ptr<double>(2));
-
-            // Optimize the model coefficients
-            cv::Mat param(6, 1, CV_64F);
-            new_model_rvec.copyTo(param.rowRange(0, 3));
-            new_model_tvec.copyTo(param.rowRange(3, 6));
-
-            cv::Ptr<cv::LMSolver::Callback> lm_cb = cv::makePtr<WeightedLMSolverCallback>(
-                opoints_inliers, ipoints_inliers, cov_inliers, pixelVariance, cameraMatrix, distCoeffs
-            );
-
-            cv::Ptr<cv::LMSolver> solver = cv::LMSolver::create(lm_cb, 20); 
-            solver->run(param);
-
-            param.rowRange(0, 3).copyTo(new_model_rvec);
-            param.rowRange(3, 6).copyTo(new_model_tvec);
-            
-            inliers_sizes.push_back(prev_inliers.size());
-
-            UDEBUG("rvec=%f,%f,%f tvec=%f,%f,%f",
-                   *new_model_rvec.ptr<double>(0), *new_model_rvec.ptr<double>(1), *new_model_rvec.ptr<double>(2),
-                   *new_model_tvec.ptr<double>(0), *new_model_tvec.ptr<double>(1), *new_model_tvec.ptr<double>(2));
-
-            // Select the new inliers based on the optimized coefficients and new threshold
-            std::vector<float> err = computeMahalanobisReprojErrors(
-                objectPoints, imagePoints, cameraMatrix, distCoeffs, 
-                new_model_rvec, new_model_tvec, covariances3A, pixelVariance, error_threshold, new_inliers
-            );
-
-            UDEBUG("MSAC refineModel: Number of inliers found (before/after): %d/%d, with an error threshold of %f.",
-                   (int)prev_inliers.size (), (int)new_inliers.size (), error_threshold);
-
-            if ((int)new_inliers.size() < minInliersCount)
-            {
-                ++refine_iterations;
-                if (refine_iterations >= refineIterations)
-                {
-                    break;
-                }
-                continue;
-            }
-
-            // Estimate the variance and the new threshold
-            float m = uMean(err.data(), err.size());
-            float variance = uVariance(err.data(), err.size());
-            error_threshold = std::min(inlierThreshold, refineSigma * float(sqrt(variance)));
-
-            UDEBUG ("MSAC refineModel: New estimated error threshold: %f (variance=%f mean=%f) on iteration %d out of %d.",
-                  error_threshold, variance, m, refine_iterations, refineIterations);
-            
-            inlier_changed = false;
-            std::swap (prev_inliers, new_inliers);
-
-            // If the number of inliers changed, then we are still optimizing
-            if (new_inliers.size () != prev_inliers.size ())
-            {
-                // Check if the number of inliers is oscillating in between two values
-                if ((int)inliers_sizes.size () >= minInliersCount)
-                {
-                    if (inliers_sizes[inliers_sizes.size () - 1] == inliers_sizes[inliers_sizes.size () - 3] &&
-                        inliers_sizes[inliers_sizes.size () - 2] == inliers_sizes[inliers_sizes.size () - 4])
-                    {
-                        oscillating = true;
-                        break;
-                    }
-                }
-                inlier_changed = true;
-                continue;
-            }
-
-            // Check the values of the inlier set
-            for (size_t i = 0; i < prev_inliers.size (); ++i)
-            {
-                // If the value of the inliers changed, then we are still optimizing
-                if (prev_inliers[i] != new_inliers[i])
-                {
-                    inlier_changed = true;
-                    break;
-                }
-            }
-        }
-        while (inlier_changed && ++refine_iterations < refineIterations);
-
-        // If the new set of inliers is empty, we didn't do a good job refining
-        if ((int)prev_inliers.size() < minInliersCount)
-        {
-            UWARN ("MSAC refineModel: Refinement failed: got very low inliers (%d)!", (int)prev_inliers.size());
-        }
-
-        if (oscillating)
-        {
-            UDEBUG("MSAC refineModel: Detected oscillations in the model refinement.");
-        }
-
-        std::swap (inliers, new_inliers);
-        rvec = new_model_rvec;
-        tvec = new_model_tvec;
-    }
-
-    // 3. Covariance Extraction
-    if ((int)inliers.size() >= minInliersCount)
-    {
-        std::vector<cv::Point3f> final_opoints;
-        std::vector<cv::Point2f> final_ipoints;
-        std::vector<cv::Matx33f> final_covs;
-        for (int idx : inliers) {
-            final_opoints.push_back(objectPoints[idx]);
-            final_ipoints.push_back(imagePoints[idx]);
-            final_covs.push_back(covariances3A[idx]);
-        }
-
-        cv::Ptr<cv::LMSolver::Callback> final_cb = cv::makePtr<WeightedLMSolverCallback>(
-            final_opoints, final_ipoints, final_covs, pixelVariance, cameraMatrix, distCoeffs
-        );
-
-        cv::Mat final_err, final_J;
-        cv::Mat param(6, 1, CV_64F);
-        rvec.copyTo(param.rowRange(0, 3));
-        tvec.copyTo(param.rowRange(3, 6));
-
-        final_cb->compute(param, final_err, final_J);
-        cv::Mat H = final_J.t() * final_J;
-        cv::Mat cov_LM;
-
-        double rcond = cv::invert(H, cov_LM, cv::DECOMP_SVD);
-        UDEBUG("MSAC Final Covariance: cv::invert rcond = %e", rcond);
-
-        if(rcond == 0.0 || rcond < 1e-15) {
-            UWARN("MSAC Final Covariance: Hessian matrix is singular or severely ill-conditioned (rcond=%e)! DECOMP_SVD may have zeroed out matrix dimensions.", rcond);
-            UDEBUG("Hessian diagonal: [%e, %e, %e, %e, %e, %e]", 
-                   H.at<double>(0,0), H.at<double>(1,1), H.at<double>(2,2), 
-                   H.at<double>(3,3), H.at<double>(4,4), H.at<double>(5,5));
-        }
-
-        cv::Mat outCov;
-        poseCovarianceRodriguesToRPY(rvec, cov_LM).copyTo(outCov);
-        
-        UDEBUG("Final OutCovariance diagonal (x,y,z,R,P,Y): [%e, %e, %e, %e, %e, %e]", 
-               outCov.at<double>(0,0), outCov.at<double>(1,1), outCov.at<double>(2,2), 
-               outCov.at<double>(3,3), outCov.at<double>(4,4), outCov.at<double>(5,5));
-
-        if(outCov.at<double>(0,0) == 0.0 || outCov.at<double>(1,1) == 0.0 || outCov.at<double>(2,2) == 0.0) {
-            UERROR("MSAC Final Covariance generated a ZERO on the translation diagonal! This will cause RTAB-Map to crash during Information matrix conversion.");
-        }
-
-        outCov.copyTo(outPoseCovariance);
-    }
-
+    param.rowRange(0, 3).copyTo(rvec);
+    param.rowRange(3, 6).copyTo(tvec);
 }
 
 } // namespace cv_custom

@@ -147,7 +147,8 @@ cv::Mat RTABMAP_CORE_EXPORT computePoseCovariance(
  * @param flagsPnP Flags to control the `cv::solvePnPRansac` behavior (e.g., `cv::SOLVEPNP_ITERATIVE`).
  * @param refineIterations Number of iterations for non-linear optimization (set to 0 to disable refinement).
  * @param varianceMedianRatio Index divisor used to select the robust variance threshold from sorted error residuals (e.g., 4 → use the 25% percentile).
- * @param maxVariance Maximum allowed median variance (linear error). Estimates with higher variance are rejected.
+ * @param maxLinVariance Maximum allowed median linear variance. Estimates with higher variance are rejected.
+ * @param maxAngVariance Maximum allowed median angular variance. Estimates with higher variance are rejected.
  * @param guess Initial guess for the camera pose (must not be null). Typically from odometry or motion model.
  * @param words3B Optional 3D points in frame B (if available). Used to better estimate 3D errors and variances.
  * @param covariance Optional output pointer for the estimated 6x6 pose covariance matrix.
@@ -187,7 +188,8 @@ Transform RTABMAP_CORE_EXPORT estimateMotion3DTo2D(
 			int flagsPnP = 0,
 			int pnpRefineIterations = 1,
 			int varianceMedianRatio = 4,
-			float maxVariance = 0,
+			float maxLinVariance = 0,
+			float maxAngVariance = 0,
 			const Transform & guess = Transform::getIdentity(),
 			const std::map<int, cv::Point3f> & words3B = std::map<int, cv::Point3f>(),
 			cv::Mat * covariance = 0, // mean reproj error if words3B is not set
@@ -219,7 +221,8 @@ Transform RTABMAP_CORE_EXPORT estimateMotion3DTo2D(
  * @param flagsPnP               PnP flags (not used internally).
  * @param refineIterations       Number of pose refinement iterations after RANSAC (not used internally).
  * @param varianceMedianRatio    Divider used to compute median-based variance from the error distribution.
- * @param maxVariance            Maximum allowed variance to accept the transform. Higher values permit more noisy estimates.
+ * @param maxLinVariance         Maximum allowed linear variance to accept the transform. Higher values permit more noisy estimates.
+ * @param maxAngVariance         Maximum allowed angular variance to accept the transform. Higher values permit more noisy estimates.
  * @param guess                  Initial guess of the transformation.
  * @param words3B                Optional 3D points in destination frame (scene B) to evaluate the covariance using 3D 
  *                               correspondences, otherwise covariance is estimated from reprojection errors.
@@ -247,7 +250,8 @@ Transform RTABMAP_CORE_EXPORT estimateMotion3DTo2D(
 			int flagsPnP,
 			int refineIterations,
 			int varianceMedianRatio,
-			float maxVariance,
+			float maxLinVariance,
+			float maxAngVariance,
 			const Transform & guess,
 			const std::map<int, cv::Point3f> & words3B,
 			cv::Mat * covariance,
@@ -269,7 +273,8 @@ Transform RTABMAP_CORE_EXPORT estimateMotion3DTo2D(
 			int flagsPnP = 0,
 			int pnpRefineIterations = 1,
 			int varianceMedianRatio = 4,
-			float maxVariance = 0,
+			float maxLinVariance = 0,
+			float maxAngVariance = 0,
 			const Transform & guess = Transform::getIdentity(),
 			const std::map<int, cv::Point3f> & words3B = std::map<int, cv::Point3f>(),
 			cv::Mat * covariance = 0, // mean reproj error if words3B is not set
@@ -354,6 +359,60 @@ void RTABMAP_CORE_EXPORT solvePnPRansac(
 		int flags,
 		int refineIterations = 1,
 		float refineSigma = 3.0f);
+
+
+/**
+ * @brief Estimates the camera pose using the PnP MSAC algorithm and optionally refines it.
+ *
+ * TO BE WRITTEN
+ * 
+ * This function computes the rotation and translation vectors (rvec, tvec) that transform 3D object points
+ * into the camera frame, using the Perspective-n-Point (PnP) method with RANSAC for robust outlier rejection.
+ * After an initial estimation using OpenCV's `solvePnPRansac`, it optionally refines the model iteratively
+ * based on reprojection error thresholds.
+ *
+ * @param objectPoints        A vector of 3D points in the object coordinate space.
+ * @param imagePoints         A vector of corresponding 2D points in the image plane.
+ * @param cameraMatrix        The camera intrinsic matrix (3x3).
+ * @param distCoeffs          Vector of distortion coefficients (k1, k2, p1, p2, k3, ...).
+ * @param rvec                Output rotation vector (Rodrigues form).
+ * @param tvec                Output translation vector.
+ * @param useExtrinsicGuess   If true, uses the provided rvec and tvec as an initial guess.
+ * @param iterationsCount     The number of RANSAC iterations.
+ * @param reprojectionError   Maximum allowed reprojection error to classify an inlier.
+ * @param minInliersCount     Minimum number of inliers required to accept a model.
+ * @param inliers             Output vector of indices of inlier points.
+ * @param flags               Method for solving PnP (`cv::SOLVEPNP_*` flags).
+ * @param refineIterations    Number of refinement iterations after RANSAC.
+ * @param refineSigma         Multiplier for the reprojection error standard deviation to define adaptive inlier threshold.
+ *
+ * @note This function uses OpenCV 3's implementation of `solvePnPRansac` for robustness.
+ *       After RANSAC, the pose is optionally refined by minimizing reprojection error on inliers.
+ *
+ * @warning Refinement may oscillate or terminate early if convergence is poor or the inlier set becomes unstable.
+ *
+ * @see cv::solvePnP, cv::solvePnPRansac
+ */
+
+void RTABMAP_CORE_EXPORT solvePnPMsac(
+		const std::vector<cv::Point3f> & objectPoints,
+		const std::vector<cv::Point2f> & imagePoints,
+		const cv::Mat & cameraMatrix,
+		const cv::Mat & distCoeffs,
+		const std::vector<cv::Matx33f> & covariances3A,
+		cv::Mat & rvec,
+		cv::Mat & tvec,
+		bool useExtrinsicGuess,
+		int iterationsCount,
+		float reprojectionError,
+		int minInliersCount,
+		float confidence,
+		float pixelVariance,
+		std::vector<int> & inliers,
+		int flags,
+		int refineIterations,
+		float refineSigma,
+		bool use_prosac_ordering);
 
 } // namespace util3d
 } // namespace rtabmap
