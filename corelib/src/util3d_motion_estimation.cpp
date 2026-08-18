@@ -259,7 +259,7 @@ Transform estimateMotion3DTo2D(
 					covariances3A, covariances3B, words3B,
 					splitLinearCovarianceComponents,
 					varianceMedianRatio, 
-					pixelVariance, depthVariance
+					pixelVariance
 				);
 			}
 
@@ -323,8 +323,7 @@ cv::Mat computePoseCovariance(
     const std::map<int, cv::Point3f>& words3B,
     bool splitLinearCovarianceComponents,
     int varianceMedianRatio,
-    float pixelVariance,
-    float depthVariance)
+    float pixelVariance)
 {
     cv::Mat covariance = cv::Mat::eye(6, 6, CV_64FC1);
     if(inliers.size() < 4)

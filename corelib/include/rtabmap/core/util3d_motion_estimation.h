@@ -90,7 +90,6 @@ bool RTABMAP_CORE_EXPORT ransacDeterministicSeedEnabled();
  * @param splitLinearCovarianceComponents Whether to split linear covariance components.
  * @param varianceMedianRatio Index divisor used to select the robust variance threshold from sorted error residuals.
  * @param pixelVariance Variance of pixel coordinates.
- * @param depthVariance Variance of depth values.
  *
  * @return The computed pose covariance matrix.
  *
@@ -128,8 +127,7 @@ cv::Mat RTABMAP_CORE_EXPORT computePoseCovariance(
     const std::map<int, cv::Point3f>& words3B,
     bool splitLinearCovarianceComponents,
     int varianceMedianRatio,
-    float pixelVariance,
-    float depthVariance);
+    float pixelVariance);
 
 /**
  * @brief Estimates a 6-DOF camera transform from 3D-2D point correspondences using PnP RANSAC.
