@@ -529,7 +529,7 @@ public:
             Matx22d Lt(l00, l10, 0.0, l11); 
 
             if (need_err) {
-                Matx21d e(pt2d[i].x - pproj[i].x, pt2d[i].y - pproj[i].y);
+                Matx21d e(pproj[i].x - pt2d[i].x, pproj[i].y - pt2d[i].y);
                 Matx21d we = Lt * e;
                 err.at<double>(i*2, 0) = we(0);
                 err.at<double>(i*2+1, 0) = we(1);

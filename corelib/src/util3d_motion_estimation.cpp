@@ -263,29 +263,37 @@ Transform estimateMotion3DTo2D(
 				);
 			}
 
-			double max_var_lin = uMax3(
-				covariance->at<double>(0,0), 
-				covariance->at<double>(1,1), 
-				covariance->at<double>(2,2)
-			);
-
-			double max_var_ang = uMax3(
-				covariance->at<double>(3,3), 
-				covariance->at<double>(4,4), 
-				covariance->at<double>(5,5)
-			);
-					
-			if(maxLinVariance > 0 && max_var_lin > maxLinVariance)
+			if(covariance->empty())
 			{
-				UWARN("Rejected PnP transform, linear variance is too high! %f > %f!", max_var_lin, maxLinVariance);
+				UWARN("Rejected PnP transform, degenerate covariance matrix!");
 				*covariance = cv::Mat::eye(6,6,CV_64FC1);
 				transform.setNull();
 			}
-			if(maxAngVariance > 0 && max_var_ang > maxAngVariance)
+			else
 			{
-				UWARN("Rejected PnP transform, angular variance is too high! %f > %f!", max_var_ang, maxAngVariance);
-				*covariance = cv::Mat::eye(6,6,CV_64FC1);
-				transform.setNull();
+				double max_var_lin = uMax3(
+					covariance->at<double>(0,0), 
+					covariance->at<double>(1,1), 
+					covariance->at<double>(2,2)
+				);
+
+				double max_var_ang = uMax3(
+					covariance->at<double>(3,3), 
+					covariance->at<double>(4,4), 
+					covariance->at<double>(5,5)
+				);
+				if(maxLinVariance > 0 && max_var_lin > maxLinVariance)
+				{
+					UWARN("Rejected PnP transform, linear variance is too high! %f > %f!", max_var_lin, maxLinVariance);
+					*covariance = cv::Mat::eye(6,6,CV_64FC1);
+					transform.setNull();
+				}
+				if(maxAngVariance > 0 && max_var_ang > maxAngVariance)
+				{
+					UWARN("Rejected PnP transform, angular variance is too high! %f > %f!", max_var_ang, maxAngVariance);
+					*covariance = cv::Mat::eye(6,6,CV_64FC1);
+					transform.setNull();
+				}
 			}
 		}
 	}
@@ -347,69 +355,75 @@ cv::Mat computePoseCovariance(
 		UWARN("Inlier covariance requested but no covariances3A provided! Ignoring inlier covariance.");
 		useInlierCovariance = false;
 	}
-	UASSERT(covariances3A.empty() || covariances3A.size() == inliers.size());
-	UASSERT(covariances3B.empty() || covariances3B.size() == inliers.size());
-
 
     // Compute the covariance matrix using the Jacobian of the reprojection errors
     if(computeFullCovariance)
-    {
-        // 1. Compute full projection Jacobians
-        std::vector<cv::Point3f> inlierObjPts(inliers.size());
-        for(size_t i = 0; i < inliers.size(); ++i)
-            inlierObjPts[i] = objectPoints[inliers[i]];
+ 	{
+ 	 	// Compute full projection Jacobians
+ 	 	std::vector<cv::Point3f> inlierObjPts(inliers.size());
+ 	 	for(size_t i = 0; i < inliers.size(); ++i)
+ 	 	 	inlierObjPts[i] = objectPoints[inliers[i]];
 
-        std::vector<cv::Point2f> reprojectedPts;
-        cv::Mat jacobianFull, J_pose;
-        cv::projectPoints(inlierObjPts, rvec, tvec, K, cameraModel.D(), reprojectedPts, jacobianFull);
-        jacobianFull.colRange(0, 6).convertTo(J_pose, CV_64FC1);
+ 	 	std::vector<cv::Point2f> reprojectedPts;
+ 	 	cv::Mat jacobianFull, J_pose;
+ 	 	cv::projectPoints(inlierObjPts, rvec, tvec, K, cameraModel.D(), reprojectedPts, jacobianFull);
+ 	 	jacobianFull.colRange(0, 6).convertTo(J_pose, CV_64FC1);
 
-        // 2. Build Hessian matrix H = sum( J_i^T * inv(Sigma_i) * J_i )
-        cv::Mat H = cv::Mat::zeros(6, 6, CV_64FC1);
+ 	 	// Build Hessian matrix H = sum( J_i^T * inv(Sigma_i) * J_i )
+ 	 	cv::Mat H = cv::Mat::zeros(6, 6, CV_64FC1);
 
-        for(size_t i = 0; i < inliers.size(); ++i)
-        {
-            int idx = inliers[i];
-            cv::Point3f pt3d = objectPoints[idx];
+ 	 	for(size_t i = 0; i < inliers.size(); ++i)
+ 	 	{
+ 	 	 	int idx = inliers[i];
+ 	 	 	cv::Point3f pt3d = objectPoints[idx];
 
-            cv::Matx31d ptB = R_x33 * cv::Matx31d(pt3d.x, pt3d.y, pt3d.z) + cv::Matx31d(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
-            double Z = std::max(ptB(2,0), 1e-5); 
+ 	 	 	cv::Matx31d ptB = R_x33 * cv::Matx31d(pt3d.x, pt3d.y, pt3d.z) + cv::Matx31d(tvec.at<double>(0), tvec.at<double>(1), tvec.at<double>(2));
+ 	 	 	double Z = std::max(ptB(2,0), 1e-5); 
 
-            cv::Matx22d cov2D = cv::Matx22d::eye() * (double)pixelVariance;
-            cv::Matx23d J_pi(fx/Z, 0.0, -fx*ptB(0,0)/(Z*Z),
-                             0.0, fy/Z, -fy*ptB(1,0)/(Z*Z));
+ 	 	 	cv::Matx22d cov2D = cv::Matx22d::eye() * (double)pixelVariance;
+ 	 	 	cv::Matx23d J_pi(fx/Z, 0.0, -fx*ptB(0,0)/(Z*Z),
+ 	 	 	 	 	 	 	 0.0, fy/Z, -fy*ptB(1,0)/(Z*Z));
 
-            // Incorporate 3D noise (MSAC or RANSAC with 3D covariance)
-            if(useInlierCovariance)
-            {
-                cv::Matx33d cov3D(covariances3A.at(matches[idx]));
-                cov2D += J_pi * (R_x33 * cov3D * R_x33.t()) * J_pi.t();
-            }
+ 	 	 	// Incorporate 3D noise (MSAC or RANSAC with 3D covariance)
+ 	 	 	if(useInlierCovariance)
+ 	 	 	{
+ 	 	 	 	UASSERT(covariances3A.find(matches[idx]) != covariances3A.end());
+ 	 	 	 	cv::Matx33d cov3D(covariances3A.at(matches[idx]));
+ 	 	 	 	cov2D += J_pi * (R_x33 * cov3D * R_x33.t()) * J_pi.t();
+ 	 	 	}
 
-            cv::Mat J_i = J_pose.rowRange(static_cast<int>(i)*2, static_cast<int>(i)*2 + 2);
+ 	 	 	cv::Mat J_i = J_pose.rowRange(static_cast<int>(i)*2, static_cast<int>(i)*2 + 2);
 
-            if((cov2D(0,0) + cov2D(1,1)) < 1e-12)
-            {
-                cov2D(0,0) += 1e-6;
-                cov2D(1,1) += 1e-6;
-            }
+ 	 	 	if((cov2D(0,0) + cov2D(1,1)) < 1e-12)
+ 	 	 	{
+ 	 	 	 	cov2D(0,0) += 1e-6;
+ 	 	 	 	cov2D(1,1) += 1e-6;
+ 	 	 	}
 
-            cv::Matx22d cov2D_inv = cov2D.inv(cv::DECOMP_SVD);
-            H += J_i.t() * cv::Mat(cov2D_inv) * J_i;
-        }
+ 	 	 	cv::Matx22d cov2D_inv = cov2D.inv(cv::DECOMP_SVD);
+ 	 	 	H += J_i.t() * cv::Mat(cov2D_inv) * J_i;
+ 	 	}
 
-        // 3. Invert Hessian to get pose covariance
-        cv::Mat cov;
-        if(cv::invert(H, cov, cv::DECOMP_SVD) > 1e-12)
-        {
-            cv_custom::poseCovarianceRodriguesToRPY(rvec, cov).copyTo(covariance);
-        }
-        else 
-        {
-            UWARN("Failed to invert Hessian matrix (H) for covariance calculation!");
-			return cv::Mat();
-        }
-    }
+ 	 	// Hessian stabilization / inversion
+    
+		H = (H + H.t()) / 2.0;
+
+		for(int i = 0; i < 6; ++i) {
+			H.at<double>(i, i) += 1e-8; 
+		}
+
+		cv::Mat cov;
+		// Prefer Cholesky decomposition, fallback to SVD only if Cholesky fails.
+		if(cv::invert(H, cov, cv::DECOMP_CHOLESKY) != 0 || cv::invert(H, cov, cv::DECOMP_SVD) > 1e-12)
+		{
+			cv_custom::poseCovarianceRodriguesToRPY(rvec, cov).copyTo(covariance);
+			covariance = (covariance + covariance.t()) / 2.0;
+		}
+		else
+		{
+			return cv::Mat()
+		}
+ 	}
 	// Original RTABMap strategy: like in PCL computeVariance() method of sac_model.h
     else if(!words3B.empty() || cameraModel.imageSize() != cv::Size())
     {
@@ -466,12 +480,15 @@ cv::Mat computePoseCovariance(
 
             if(useInlierCovariance)
 			{
+				UASSERT(covariances3A.find(matches[inliers[i]]) != covariances3A.end());
+
 				// Mahalanobis errors, made metric (m^2) using average 3D variance (Trace/3)
 				cv::Matx31d diff(objPt.x - newPt.x, objPt.y - newPt.y, objPt.z - newPt.z);
 				cv::Matx33d cov3D_total(covariances3A.at(matches[inliers[i]]));
 				
 				if(!covariances3B.empty()) 
 				{
+					UASSERT(covariances3B.find(matches[inliers[i]]) != covariances3B.end());
 					cv::Matx33d cov3D_B(covariances3B.at(matches[inliers[i]]));
 					cov3D_total += R_x33.t() * cov3D_B * R_x33;
 				}
@@ -584,6 +601,7 @@ cv::Mat computePoseCovariance(
 			bool originalRTABMapStrategy = false;
             if(!originalRTABMapStrategy && useInlierCovariance && !covariances3A.empty())
             {
+				UASSERT(covariances3A.find(matches[idx]) != covariances3A.end());
                 cv::Matx33d cov3D(covariances3A.at(matches[idx]));
                 cv::Matx23d J_pi(fx/Z, 0.0, -fx*ptB(0,0)/(Z*Z),
                                  0.0, fy/Z, -fy*ptB(1,0)/(Z*Z));
@@ -1255,6 +1273,7 @@ void solvePnPRansac(
 		int refine_iterations = 0;
 		bool inlier_changed = false, oscillating = false;
 		std::vector<int> new_inliers, prev_inliers = inliers;
+		std::vector<int> final_inliers = inliers;
 		std::vector<size_t> inliers_sizes;
 		//Eigen::VectorXf new_model_coefficients = model_coefficients;
 		cv::Mat new_model_rvec = rvec;
@@ -1287,6 +1306,8 @@ void solvePnPRansac(
 			std::vector<float> err = computeReprojErrors(objectPoints, imagePoints, cameraMatrix, distCoeffs, new_model_rvec, new_model_tvec, error_threshold, new_inliers);
 			UDEBUG("RANSAC refineModel: Number of inliers found (before/after): %d/%d, with an error threshold of %f.",
 					(int)prev_inliers.size (), (int)new_inliers.size (), error_threshold);
+
+			final_inliers = new_inliers;
 
 			if ((int)new_inliers.size() < minInliersCount)
 			{
@@ -1349,7 +1370,7 @@ void solvePnPRansac(
 			UDEBUG("RANSAC refineModel: Detected oscillations in the model refinement.");
 		}
 
-		std::swap (inliers, new_inliers);
+		std::swap(inliers, final_inliers);
 		rvec = new_model_rvec;
 		tvec = new_model_tvec;
 	}
@@ -1379,13 +1400,13 @@ void solvePnPMsac(const std::vector<cv::Point3f> & objectPoints,
 
     // 1. Call the custom OpenCV-style function
 	const float chi2_95_unsquared = 2.44765f;
+	float inlierThreshold = reprojectionError ? reprojectionError : chi2_95_unsquared;
 
     cv_custom::solvePnPMsac(
             objectPoints, imagePoints, cameraMatrix, distCoeffs, covariances3A,
-            rvec, tvec, useExtrinsicGuess, iterationsCount, reprojectionError?reprojectionError:chi2_95_unsquared, 
+            rvec, tvec, useExtrinsicGuess, iterationsCount, inlierThreshold, 
 			confidence, pixelVariance, use_prosac_ordering, inliers, flags);
 
-    float inlierThreshold = chi2_95_unsquared;
 
     // 2. Exact mimic of the Refinement loop
     if((int)inliers.size() >= minInliersCount && refineIterations > 0)
@@ -1393,6 +1414,7 @@ void solvePnPMsac(const std::vector<cv::Point3f> & objectPoints,
         float error_threshold = inlierThreshold;
         int refine_iterations = 0;
         bool inlier_changed = false, oscillating = false;
+		std::vector<int> final_inliers = inliers;
         std::vector<int> new_inliers, prev_inliers = inliers;
         std::vector<size_t> inliers_sizes;
         
@@ -1417,7 +1439,7 @@ void solvePnPMsac(const std::vector<cv::Point3f> & objectPoints,
                    *new_model_tvec.ptr<double>(0), *new_model_tvec.ptr<double>(1), *new_model_tvec.ptr<double>(2));
 
             cv_custom::solvePnPMsacRefineLM(
-					rvec, tvec,
+					new_model_rvec, new_model_tvec,
 					opoints_inliers,
 					ipoints_inliers,
 					cov_inliers,
@@ -1425,6 +1447,7 @@ void solvePnPMsac(const std::vector<cv::Point3f> & objectPoints,
 					cameraMatrix,
 					distCoeffs
 			);
+			inliers_sizes.push_back(prev_inliers.size());
 
             // Select the new inliers based on the optimized coefficients and new threshold
             std::vector<float> err = cv_custom::computeMahalanobisReprojErrors(
@@ -1434,6 +1457,8 @@ void solvePnPMsac(const std::vector<cv::Point3f> & objectPoints,
 
             UDEBUG("MSAC refineModel: Number of inliers found (before/after): %d/%d, with an error threshold of %f.",
                    (int)prev_inliers.size (), (int)new_inliers.size (), error_threshold);
+
+			final_inliers = new_inliers;
 
             if ((int)new_inliers.size() < minInliersCount)
             {
@@ -1497,7 +1522,7 @@ void solvePnPMsac(const std::vector<cv::Point3f> & objectPoints,
             UDEBUG("MSAC refineModel: Detected oscillations in the model refinement.");
         }
 
-        std::swap (inliers, new_inliers);
+        std::swap (inliers, final_inliers);
         rvec = new_model_rvec;
         tvec = new_model_tvec;
     }
