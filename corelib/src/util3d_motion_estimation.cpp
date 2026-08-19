@@ -483,6 +483,66 @@ cv::Mat computePoseCovariance(
 			}
 			covariance = J * cov * J.t();
 			covariance = (covariance + covariance.t()) / 2.0;
+
+			// Make the covariance safely invertible for the optimizers: links
+			// store information = covariance.inv(), and g2o verifies these are
+			// symmetric positive definite. Clamp the eigenvalue spread so the
+			// condition number stays <= 1e6 (upstream covariances are diagonal
+			// and never hit this, but a full 6x6 from the Hessian can be
+			// nearly rank-deficient along weakly observed directions).
+			cv::Mat eigVal, eigVec;
+			cv::eigen(covariance, eigVal, eigVec);
+			double maxEig = eigVal.at<double>(0); // cv::eigen sorts descending
+			if(!uIsFinite(maxEig) || maxEig <= 0.0)
+			{
+				return cv::Mat();
+			}
+			double minEig = maxEig * 1e-6;
+			bool clamped = false;
+			for(int i=0; i<6; ++i)
+			{
+				if(eigVal.at<double>(i) < minEig)
+				{
+					eigVal.at<double>(i) = minEig;
+					clamped = true;
+				}
+			}
+			if(clamped)
+			{
+				covariance = eigVec.t() * cv::Mat::diag(eigVal) * eigVec;
+				covariance = (covariance + covariance.t()) / 2.0;
+			}
+
+			// The Hessian-based covariance only models measurement noise
+			// (pixel + depth), so with many inliers it collapses to the
+			// millimeter / hundredth-of-a-degree level. Real links also carry
+			// unmodeled systematic error (intrinsics calibration, rolling
+			// shutter, depth bias), so treat the estimate as a lower bound and
+			// floor the per-axis standard deviations at 1 cm / 0.1 deg.
+			// Without this, loop closures become so stiff relative to odometry
+			// that graph optimization transfers all residual drift onto
+			// odometry edges and RGBD/OptimizeMaxError rejects valid loops.
+			// The floor is applied as a symmetric scaling D*C*D (D diagonal,
+			// >= 1) to preserve correlations and positive-definiteness.
+			const double minLinVariance = 1e-4;              // (1 cm)^2
+			const double minAngVariance = 3.0462e-6;         // (0.1 deg)^2 in rad^2
+			cv::Mat scale = cv::Mat::eye(6, 6, CV_64FC1);
+			bool floored = false;
+			for(int i=0; i<6; ++i)
+			{
+				double floorVar = i < 3 ? minLinVariance : minAngVariance;
+				double var = covariance.at<double>(i,i);
+				if(var > 0.0 && var < floorVar)
+				{
+					scale.at<double>(i,i) = std::sqrt(floorVar / var);
+					floored = true;
+				}
+			}
+			if(floored)
+			{
+				covariance = scale * covariance * scale;
+				covariance = (covariance + covariance.t()) / 2.0;
+			}
 		}
 		else
 		{
