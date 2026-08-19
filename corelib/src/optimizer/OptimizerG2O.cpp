@@ -699,6 +699,9 @@ std::map<int, Transform> OptimizerG2O::optimize(
 							if(!isCovarianceIgnored())
 							{
 								memcpy(information.data(), iter->second.infMatrix().data, iter->second.infMatrix().total()*sizeof(double));
+								// numerical inverses of full covariances are not exactly
+								// symmetric, which g2o's verifyInformationMatrices() rejects
+								information = ((information + information.transpose()) * 0.5).eval();
 							}
 							priorEdge->setInformation(information);
 							edge = priorEdge;
@@ -993,6 +996,9 @@ std::map<int, Transform> OptimizerG2O::optimize(
 					if(!isCovarianceIgnored())
 					{
 						memcpy(information.data(), iter->second.infMatrix().data, iter->second.infMatrix().total()*sizeof(double));
+						// numerical inverses of full covariances are not exactly
+						// symmetric, which g2o's verifyInformationMatrices() rejects
+						information = ((information + information.transpose()) * 0.5).eval();
 					}
 
 					Eigen::Affine3d a = iter->second.transform().toEigen3d();
@@ -1729,6 +1735,11 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 					if(!isCovarianceIgnored())
 					{
 						memcpy(information.data(), iter->second.infMatrix().data, iter->second.infMatrix().total()*sizeof(double));
+						// The information matrix is the numerical inverse of the link
+						// covariance; for full (correlated) covariances it is not
+						// exactly symmetric, which g2o's verifyInformationMatrices()
+						// rejects. Symmetrize explicitly.
+						information = ((information + information.transpose()) * 0.5).eval();
 					}
 
 					// between cameras, not base_link
