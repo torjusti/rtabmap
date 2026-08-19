@@ -117,6 +117,7 @@ Transform estimateMotion3DTo2D(
 	std::vector<int> ids = uKeys(words2B);
 	std::vector<cv::Point3f> objectPoints(ids.size());
 	std::vector<cv::Point2f> imagePoints(ids.size());
+	std::vector<cv::Matx33f> objectCovariances(ids.size());
 	int oi=0;
 	matches.resize(ids.size());
 	for(unsigned int i=0; i<ids.size(); ++i)
@@ -129,6 +130,10 @@ Transform estimateMotion3DTo2D(
 			objectPoints[oi].y = pt.y;
 			objectPoints[oi].z = pt.z;
 			imagePoints[oi] = words2B.find(ids[i])->second.pt;
+			if(useFeatureCovariance)
+			{
+				objectCovariances[oi] = covariances3A.find(ids[i])->second;
+			}
 			matches[oi++] = ids[i];
 		}
 	}
@@ -159,7 +164,6 @@ Transform estimateMotion3DTo2D(
 
 		if(useMsac)
 		{
-			std::vector<cv::Matx33f> objectCovariances;
 			if(useFeatureCovariance)
 			{
 				util3d::solvePnPMsac(

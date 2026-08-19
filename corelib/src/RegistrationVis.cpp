@@ -1948,148 +1948,161 @@ Transform RegistrationVis::computeTransformationImpl(
 					}
 					else
 					{
-						UASSERT(fromSignature.sensorData().cameraModels().size() == 1 && fromSignature.sensorData().cameraModels()[0].isValidForProjection());
-
-						if(_PnPUseFeatureCovariance && !confidences3A.empty())
+						if(_PnPUseFeatureCovariance)
 						{
-							UASSERT(!fromSignature.sensorData().cameraModels().empty());
-							const auto &camera = fromSignature.sensorData().cameraModels()[0];
-							float fx = camera.fx();
-							float fy = camera.fy();
-
-							const rtabmap::Transform &localTransform = camera.localTransform();
-							rtabmap::Transform localTransformInv = localTransform.inverse();
-
-							Eigen::Matrix3f R_eigen = localTransform.toEigen3f().linear();
-							cv::Matx33f R(
-								R_eigen(0,0), R_eigen(0,1), R_eigen(0,2),
-								R_eigen(1,0), R_eigen(1,1), R_eigen(1,2),
-								R_eigen(2,0), R_eigen(2,1), R_eigen(2,2)
-							);
-
-							int lowA = 0, mediumA = 0, highA = 0;
 							
-							for(std::map<int, int>::const_iterator iter=confidences3A.begin(); iter!=confidences3A.end(); ++iter)
+							UASSERT(fromSignature.sensorData().cameraModels().size() == 1 && fromSignature.sensorData().cameraModels()[0].isValidForProjection());
+							const auto &cameraA = fromSignature.sensorData().cameraModels()[0];
+							
+							const rtabmap::Transform &localTransformA = cameraA.localTransform();
+							rtabmap::Transform localTransformInv = localTransformA.inverse();
+	
+							Eigen::Matrix3f R_eigenA = localTransformA.toEigen3f().linear();
+							cv::Matx33f R_A(
+								R_eigenA(0,0), R_eigenA(0,1), R_eigenA(0,2),
+								R_eigenA(1,0), R_eigenA(1,1), R_eigenA(1,2),
+								R_eigenA(2,0), R_eigenA(2,1), R_eigenA(2,2)
+							);
+							
+							const float fxA = cameraA.fx();
+							const float fyA = cameraA.fy();
+							
+							int lowCountA = 0, medCountA = 0, highCountA = 0, defaultCountA = 0;
+							
+							for(std::map<int, cv::Point3f>::iterator iter=words3A.begin(); iter!=words3A.end(); ++iter)
 							{
-								int id = iter->first;
-								std::map<int, cv::Point3f>::const_iterator ptIt = words3A.find(id);
-								if(ptIt == words3A.end()) continue;
-
-								int conf = iter->second;
-								if(conf < 0)
+								float var_z = _PnPDepthVariance;
+								bool usedConfidence = false;
+	
+								// Check if confidence data is available for this word ID
+								if (confidences3A.find(iter->first) != confidences3A.end())
 								{
-									continue; // negative confidence means undefined
+									auto confIt = confidences3A.find(iter->first);
+									if (confIt != confidences3A.end() && confIt->second >= 0)
+									{
+										int conf = confIt->second;
+										if (conf <= 33)
+										{
+											var_z = _PnPLowConfVariance;
+											++lowCountA;
+										}
+										else if (conf <= 66)
+										{
+											var_z = _PnPMediumConfVariance;
+											++medCountA;
+										}
+										else
+										{
+											var_z = _PnPHighConfVariance;
+											++highCountA;
+										}
+										usedConfidence = true;
+									}
 								}
-
-								// base_link frame to camera frame
-								cv::Point3f ptCam = util3d::transformPoint(ptIt->second, localTransformInv);
-
+	
+								if (!usedConfidence)
+								{
+									++defaultCountA;
+								}
+	
+								// Transform point from base_link frame to camera frame to get depth Z
+								cv::Point3f ptCam = util3d::transformPoint(iter->second, localTransformInv);
 								float Z = std::max(ptCam.z, 1e-5f);
-
-								float var_x = (Z / fx) * (Z / fx) * _PnPPixelVariance;
-								float var_y = (Z / fy) * (Z / fy) * _PnPPixelVariance;
-								float var_z;
-
-								if(conf <= 33)
-								{
-									var_z = _PnPLowConfVariance;
-									++lowA;
-								}
-								else if(conf <= 66)
-								{
-									var_z = _PnPMediumConfVariance;
-									++mediumA;
-								}
-								else
-								{
-									var_z = _PnPHighConfVariance;
-									++highA;
-								}
-								
-								// covariance in base_link frame
+	
+								// Variance propagation in camera frame
+								float var_x = (Z / fxA) * (Z / fxA) * _PnPHighConfVariance;
+								float var_y = (Z / fyA) * (Z / fyA) * _PnPHighConfVariance;
+	
 								cv::Matx33f covCam(
 									var_x, 0.0f,  0.0f,
 									0.0f,  var_y, 0.0f,
-									0.0f,  0.0f,  var_z);
-								cv::Matx33f covBase = R * covCam * R.t();
-									
-								covariances3A[id] = covBase;
+									0.0f,  0.0f,  var_z
+								);
+	
+								// Rotate covariance matrix back into base_link frame
+								covariances3A.insert(std::make_pair(iter->first, R_A * covCam * R_A.t()));
 							}
 							
-							UDEBUG("Generated covariances for %d 3D points (low=%d, medium=%d, high=%d)", (int)covariances3A.size(), lowA, mediumA, highA);
-						}
+							UDEBUG("Generated covariances3A (confidence tiers: low=%d, med=%d, high=%d; fallback default=%d)",
+								lowCountA, medCountA, highCountA, defaultCountA);
 
-						UASSERT(toSignature.sensorData().cameraModels().size() == 1 && toSignature.sensorData().cameraModels()[0].isValidForProjection());
-
-						if(_PnPUseFeatureCovariance && !confidences3B.empty())
-						{
-							UASSERT(!toSignature.sensorData().cameraModels().empty());
-							const auto &camera = toSignature.sensorData().cameraModels()[0];
-							float fx = camera.fx();
-							float fy = camera.fy();
-
-							const rtabmap::Transform &localTransform = camera.localTransform();
-							rtabmap::Transform localTransformInv = localTransform.inverse();
-
-							Eigen::Matrix3f R_eigen = localTransform.toEigen3f().linear();
-							cv::Matx33f R(
-								R_eigen(0,0), R_eigen(0,1), R_eigen(0,2),
-								R_eigen(1,0), R_eigen(1,1), R_eigen(1,2),
-								R_eigen(2,0), R_eigen(2,1), R_eigen(2,2)
-							);
-
-							int lowB = 0, mediumB = 0, highB = 0;
-							
-							for(std::map<int, int>::const_iterator iter=confidences3B.begin(); iter!=confidences3B.end(); ++iter)
-							{
-								int id = iter->first;
-								std::map<int, cv::Point3f>::const_iterator ptIt = words3B.find(id);
-								if(ptIt == words3B.end()) continue;
-
-								int conf = iter->second;
-								if(conf < 0)
-								{
-									continue; // negative confidence means undefined
-								}
-
-								// base_link frame to camera frame
-								cv::Point3f ptCam = util3d::transformPoint(ptIt->second, localTransformInv);
-
-								float Z = std::max(ptCam.z, 1e-5f);
-
-								float var_x = (Z / fx) * (Z / fx) * _PnPPixelVariance;
-								float var_y = (Z / fy) * (Z / fy) * _PnPPixelVariance;
-								float var_z;
-
-								if(conf <= 33)
-								{
-									var_z = _PnPLowConfVariance;
-									++lowB;
-								}
-								else if(conf <= 66)
-								{
-									var_z = _PnPMediumConfVariance;
-									++mediumB;
-								}
-								else
-								{
-									var_z = _PnPHighConfVariance;
-									++highB;
-								}
 								
-								// covariance in base_link frame
-								cv::Matx33f covCam(
-									var_x, 0.0f,  0.0f,
-									0.0f,  var_y, 0.0f,
-									0.0f,  0.0f,  var_z);
-								cv::Matx33f covBase = R * covCam * R.t();
-
-								covariances3B[id] = covBase;
+							if(!words3B.empty())
+							{	
+								UASSERT(toSignature.sensorData().cameraModels().size() == 1 && toSignature.sensorData().cameraModels()[0].isValidForProjection());
+								const auto &cameraB = toSignature.sensorData().cameraModels()[0];
+								
+								const rtabmap::Transform &localTransformB = cameraB.localTransform();
+								rtabmap::Transform localTransformInv = localTransformB.inverse();
+								const Eigen::Matrix3f R_eigenB = localTransformB.toEigen3f().linear();
+								const cv::Matx33f R_B(
+									R_eigenB(0,0), R_eigenB(0,1), R_eigenB(0,2),
+									R_eigenB(1,0), R_eigenB(1,1), R_eigenB(1,2),
+									R_eigenB(2,0), R_eigenB(2,1), R_eigenB(2,2)
+								);	
+								
+								const float fxB = cameraB.fx();
+								const float fyB = cameraB.fy();
+								
+								int lowCountB = 0, medCountB = 0, highCountB = 0, defaultCountB = 0;
+								for(std::map<int, cv::Point3f>::iterator iter=words3B.begin(); iter!=words3B.end(); ++iter)
+								{
+									float var_z = _PnPDepthVariance;
+									bool usedConfidence = false;
+		
+									// Check if confidence data is available for this word ID
+									if (confidences3B.find(iter->first) != confidences3B.end())
+									{
+										auto confIt = confidences3B.find(iter->first);
+										if (confIt != confidences3B.end() && confIt->second >= 0)
+										{
+											int conf = confIt->second;
+											if (conf <= 33)
+											{
+												var_z = _PnPLowConfVariance;
+												++lowCountB;
+											}
+											else if (conf <= 66)
+											{
+												var_z = _PnPMediumConfVariance;
+												++medCountB;
+											}
+											else
+											{
+												var_z = _PnPHighConfVariance;
+												++highCountB;
+											}
+											usedConfidence = true;
+										}
+									}
+		
+									if (!usedConfidence)
+									{
+										++defaultCountB;
+									}
+		
+									// Transform point from base_link frame to camera frame to get depth Z
+									cv::Point3f ptCam = util3d::transformPoint(iter->second, localTransformInv);
+									float Z = std::max(ptCam.z, 1e-5f);
+		
+									// Variance propagation in camera frame
+									float var_x = (Z / fxB) * (Z / fxB) * _PnPHighConfVariance;
+									float var_y = (Z / fyB) * (Z / fyB) * _PnPHighConfVariance;
+		
+									cv::Matx33f covCam(
+										var_x, 0.0f,  0.0f,
+										0.0f,  var_y, 0.0f,
+										0.0f,  0.0f,  var_z
+									);
+		
+									// Rotate covariance matrix back into base_link frame
+									covariances3B.insert(std::make_pair(iter->first, R_B * covCam * R_B.t()));
+								}
+	
+								UDEBUG("Generated covariances3B (confidence tiers: low=%d, med=%d, high=%d; fallback default=%d)",
+									lowCountB, medCountB, highCountB, defaultCountB);
 							}
-							
-							UDEBUG("Generated covariances for %d 3D points (low=%d, medium=%d, high=%d)", (int)covariances3B.size(), lowB, mediumB, highB);
 						}
-
 
 						transform = util3d::estimateMotion3DTo2D(
 								words3A,
@@ -2115,7 +2128,7 @@ Transform RegistrationVis::computeTransformationImpl(
 								_PnPPixelVariance,
 								_PnPDepthVariance,
 								_PnPComputeFullCovariance, // use the true 6dof covariance coming from the reprojection jacobian
-								_PnPUseFeatureCovariance); // use the inlier variance to scale the covariance
+								_PnPUseFeatureCovariance); // use the feature variances to scale the covariance
 						inliers = inliersV;
 						matches = matchesV;
 					}
