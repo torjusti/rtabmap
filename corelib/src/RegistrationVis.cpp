@@ -1871,7 +1871,15 @@ Transform RegistrationVis::computeTransformationImpl(
 						words3A.insert(std::make_pair(iter->first, fromSignature.getWords3()[iter->second]));
 						if(!fromSignature.getWords3Confidences().empty())
 						{
-							confidences3A.insert(std::make_pair(iter->first, fromSignature.getWords3Confidences()[iter->second]));
+							// -1 means no confidence data for this point (e.g. the
+							// database was recorded without a confidence image);
+							// skip those so an all-sentinel vector leaves the map
+							// empty and covariance construction is bypassed below.
+							int conf = fromSignature.getWords3Confidences()[iter->second];
+							if(conf >= 0)
+							{
+								confidences3A.insert(std::make_pair(iter->first, conf));
+							}
 						}
 					}
 					for(std::map<int, int>::iterator iter=uniqueWordsB.begin(); iter!=uniqueWordsB.end(); ++iter)
@@ -1883,7 +1891,11 @@ Transform RegistrationVis::computeTransformationImpl(
 						}
 						if(!toSignature.getWords3Confidences().empty())
 						{
-							confidences3B.insert(std::make_pair(iter->first, toSignature.getWords3Confidences()[iter->second]));
+							int conf = toSignature.getWords3Confidences()[iter->second];
+							if(conf >= 0)
+							{
+								confidences3B.insert(std::make_pair(iter->first, conf));
+							}
 						}
 					}
 
@@ -1948,7 +1960,14 @@ Transform RegistrationVis::computeTransformationImpl(
 					}
 					else
 					{
-						if(_PnPUseFeatureCovariance)
+						// Only build per-feature covariances when actual depth
+						// confidence data is available. When it is not, every
+						// point would get the same default variance and the 3D
+						// covariance carries no per-feature information; the
+						// solver's pixel-space fallback (defaults built in the
+						// guess camera frame inside estimateMotion3DTo2D) gates
+						// loop closures much more effectively in that case.
+						if(_PnPUseFeatureCovariance && !confidences3A.empty())
 						{
 							
 							UASSERT(fromSignature.sensorData().cameraModels().size() == 1 && fromSignature.sensorData().cameraModels()[0].isValidForProjection());
@@ -2027,7 +2046,7 @@ Transform RegistrationVis::computeTransformationImpl(
 								lowCountA, medCountA, highCountA, defaultCountA);
 
 								
-							if(!words3B.empty())
+							if(!words3B.empty() && !confidences3B.empty())
 							{	
 								UASSERT(toSignature.sensorData().cameraModels().size() == 1 && toSignature.sensorData().cameraModels()[0].isValidForProjection());
 								const auto &cameraB = toSignature.sensorData().cameraModels()[0];
