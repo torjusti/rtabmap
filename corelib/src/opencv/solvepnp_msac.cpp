@@ -1,4 +1,5 @@
 #include <iostream>
+#include <limits>
 #include "solvepnp_msac.h"
 
 #include "rtabmap/utilite/UMath.h"
@@ -88,6 +89,18 @@ public:
 
         for ( i = 0; i < count; ++i)
         {
+            // Cheirality check: a point behind the camera can never be an
+            // inlier. Without this, the near-zero clamped depth in the
+            // whitening Jacobian produces a near-infinite covariance, which
+            // whitens any reprojection error to ~0: mirror/flipped poses that
+            // put the scene behind the camera would score as perfect models.
+            Matx31d XB = R33 * Matx31d(pt3d[i].x, pt3d[i].y, pt3d[i].z) + tvec31;
+            if(XB(2) <= 1e-5)
+            {
+                err[i] = std::numeric_limits<float>::max();
+                continue;
+            }
+
             Matx22d cov2D_inv;
             if(!cov3D.empty())
             {
@@ -507,7 +520,15 @@ public:
 
         for(int i = 0; i < N; i++) {
             Matx22d cov2D_inv;
-            if(!cov3D.empty())
+            Matx31d XB = R33 * Matx31d(pt3d[i].x, pt3d[i].y, pt3d[i].z) + tvec31;
+            if(XB(2) <= 1e-5)
+            {
+                // Behind the camera: whiten with identity so the raw (large)
+                // pixel residual pushes the optimizer back to a valid pose
+                // instead of being flattened by a near-infinite covariance.
+                cov2D_inv = Matx22d(1.0, 0.0, 0.0, 1.0);
+            }
+            else if(!cov3D.empty())
             {
                 cov2D_inv = computeWhiteningMatrix(pt3d[i], R33, tvec31, fx, fy, cov3D[i], pixelVariance);
             }
@@ -590,6 +611,14 @@ std::vector<float> computeMahalanobisReprojErrors(
 
     for (int i = 0; i < count; ++i)
     {
+        // Cheirality check: points behind the camera are never inliers (see
+        // the same check in PnPMsacCallback::computeError).
+        Matx31d XB = R33 * Matx31d(opoints[i].x, opoints[i].y, opoints[i].z) + tvec31;
+        if(XB(2) <= 1e-5)
+        {
+            continue;
+        }
+
         Matx22d cov2D_inv;
         if(!cov3D.empty())
         {
