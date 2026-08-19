@@ -99,7 +99,7 @@ Transform estimateMotion3DTo2D(
     float pixelVariance,
     float depthVariance,
     bool computeFullCovariance, 
-    bool useInlierVariance)
+    bool useFeatureCovariance)
 {
 	UASSERT(cameraModel.isValidForProjection());
 	UASSERT(!guess.isNull());
@@ -160,40 +160,8 @@ Transform estimateMotion3DTo2D(
 		if(useMsac)
 		{
 			std::vector<cv::Matx33f> objectCovariances;
-			if(useInlierVariance)
+			if(useFeatureCovariance)
 			{
-				int covAvailableCount = 0;
-				objectCovariances.resize(objectPoints.size());
-				double fx = K.at<double>(0,0);
-				double fy = K.at<double>(1,1);
-				double d_pixelVar = static_cast<double>(pixelVariance);
-				double d_depthVar = static_cast<double>(depthVariance);
-
-				for(size_t i = 0; i < objectPoints.size(); ++i)
-				{
-					auto iter = covariances3A.find(matches[i]);
-					if(iter != covariances3A.end())
-					{
-						objectCovariances[i] = iter->second;
-						covAvailableCount++;
-					}
-					else
-					{
-						double Z = static_cast<double>(objectPoints[i].z);
-						double var_x = Z*Z * d_pixelVar / (fx*fx);
-						double var_y = Z*Z * d_pixelVar / (fy*fy);
-						double var_z = d_depthVar;
-						objectCovariances[i] = cv::Matx33f(
-							static_cast<float>(var_x), 0.0f, 0.0f, 
-							0.0f, static_cast<float>(var_y), 0.0f, 
-							0.0f, 0.0f, static_cast<float>(var_z));
-					}
-				}
-				if(covAvailableCount != (int)objectPoints.size())
-				{
-					UDEBUG("Covariance-aware PnPMsac: Not all object points have covariance available from sensor data! %d/%d points have covariance, others will be given default covariances", 
-						covAvailableCount, (int)objectPoints.size());
-				}
 				util3d::solvePnPMsac(
 					objectPoints,
 					imagePoints,
@@ -202,7 +170,7 @@ Transform estimateMotion3DTo2D(
 					rvec, tvec, 
 					!guessCameraFrame.isNull(), 
 					iterations, 0, minInliers, // 0 reprojection error : covariance aware mode of solvePnPMsac
-					0.99, pixelVariance, inliers, flagsPnP, refineIterations, 3.0f, false);
+					pixelVariance, inliers, flagsPnP, refineIterations, 3.0f, false);
 			}
 			else
 			{
@@ -217,10 +185,8 @@ Transform estimateMotion3DTo2D(
 					rvec, tvec, 
 					!guessCameraFrame.isNull(), 
 					iterations, reprojError, minInliers, 
-					0.99, pixelVariance, inliers, flagsPnP, refineIterations, 3.0f, false);
+					pixelVariance, inliers, flagsPnP, refineIterations, 3.0f, false);
 			}
-			
-
 		}
 		else
 		{
@@ -253,7 +219,7 @@ Transform estimateMotion3DTo2D(
 			{
 				*covariance = computePoseCovariance(
 					computeFullCovariance, 
-					useInlierVariance,
+					useFeatureCovariance,
 					objectPoints, imagePoints, inliers, matches,
 					cameraModel, transform, rvec, tvec,
 					covariances3A, covariances3B, words3B,
@@ -317,7 +283,7 @@ Transform estimateMotion3DTo2D(
 // Computes the 6-DoF pose covariance matrix for PnPRansac and PnPMsac
 cv::Mat computePoseCovariance(
     bool computeFullCovariance, 
-    bool useInlierCovariance,
+    bool useFeatureCovariance,
     const std::vector<cv::Point3f>& objectPoints,
     const std::vector<cv::Point2f>& imagePoints,
     const std::vector<int>& inliers,
@@ -347,13 +313,13 @@ cv::Mat computePoseCovariance(
     double fx = K.at<double>(0,0);
     double fy = K.at<double>(1,1);
 
-    UDEBUG("Computing pose covariance (computeFullCovariance=%d, useInlierCovariance=%d, inliers=%d)", 
-        computeFullCovariance?1:0, useInlierCovariance?1:0, (int)inliers.size());
+    UDEBUG("Computing pose covariance (computeFullCovariance=%d, useFeatureCovariance=%d, inliers=%d)", 
+        computeFullCovariance?1:0, useFeatureCovariance?1:0, (int)inliers.size());
 
-	if(useInlierCovariance && covariances3A.empty())
+	if(useFeatureCovariance && covariances3A.empty())
 	{
 		UWARN("Inlier covariance requested but no covariances3A provided! Ignoring inlier covariance.");
-		useInlierCovariance = false;
+		useFeatureCovariance = false;
 	}
 
     // Compute the covariance matrix using the Jacobian of the reprojection errors
@@ -385,7 +351,7 @@ cv::Mat computePoseCovariance(
  	 	 	 	 	 	 	 0.0, fy/Z, -fy*ptB(1,0)/(Z*Z));
 
  	 	 	// Incorporate 3D noise (MSAC or RANSAC with 3D covariance)
- 	 	 	if(useInlierCovariance)
+ 	 	 	if(useFeatureCovariance)
  	 	 	{
  	 	 	 	UASSERT(covariances3A.find(matches[idx]) != covariances3A.end());
  	 	 	 	cv::Matx33d cov3D(covariances3A.at(matches[idx]));
@@ -421,7 +387,7 @@ cv::Mat computePoseCovariance(
 		}
 		else
 		{
-			return cv::Mat()
+			return cv::Mat();
 		}
  	}
 	// Original RTABMap strategy: like in PCL computeVariance() method of sac_model.h
@@ -478,7 +444,7 @@ cv::Mat computePoseCovariance(
             Eigen::Vector4f v2(newPt.x, newPt.y, newPt.z, 0);
             float angle = pcl::getAngle3D(v1, v2);
 
-            if(useInlierCovariance)
+            if(useFeatureCovariance)
 			{
 				UASSERT(covariances3A.find(matches[inliers[i]]) != covariances3A.end());
 
@@ -489,12 +455,17 @@ cv::Mat computePoseCovariance(
 				if(!covariances3B.empty()) 
 				{
 					UASSERT(covariances3B.find(matches[inliers[i]]) != covariances3B.end());
-					cv::Matx33d cov3D_B(covariances3B.at(matches[inliers[i]]));
-					cov3D_total += R_x33.t() * cov3D_B * R_x33;
-				}
-				else
-				{
-					cov3D_total *= 2; // we suppose that the 3d points have the same covariance in both frames
+					cv::Matx33d cov3D_B(covariances3B.at(matches[inliers[i]])); // In base_link_B
+					
+					// Extract rotation R_trans from transform (base_link_B -> base_link_A)
+					cv::Matx33d R_trans(
+						transform.r11(), transform.r12(), transform.r13(),
+						transform.r21(), transform.r22(), transform.r23(),
+						transform.r31(), transform.r32(), transform.r33()
+					);
+
+					// Rotate cov3D_B from base_link_B into base_link_A
+					cov3D_total += R_trans * cov3D_B * R_trans.t();
 				}
 
 				cv::Matx33d cov3D_inv = cov3D_total.inv(cv::DECOMP_SVD);
@@ -599,7 +570,7 @@ cv::Mat computePoseCovariance(
             double Z = std::max(ptB(2,0), 1e-5);
             
 			bool originalRTABMapStrategy = false;
-            if(!originalRTABMapStrategy && useInlierCovariance && !covariances3A.empty())
+            if(!originalRTABMapStrategy && useFeatureCovariance && !covariances3A.empty())
             {
 				UASSERT(covariances3A.find(matches[idx]) != covariances3A.end());
                 cv::Matx33d cov3D(covariances3A.at(matches[idx]));

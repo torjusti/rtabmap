@@ -116,7 +116,7 @@ private:
 	float _PnPHighConfVariance;
 	float _PnPDepthVariance;
 	bool _PnPComputeFullCovariance;
-	bool _PnPUseInlierVariance;
+	bool _PnPUseFeatureCovariance;
 	unsigned int _multiSamplingPolicy;
 	int _correspondencesApproach;
 	int _flowWinSize;

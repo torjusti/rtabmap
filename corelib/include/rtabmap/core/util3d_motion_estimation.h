@@ -75,7 +75,7 @@ bool RTABMAP_CORE_EXPORT ransacDeterministicSeedEnabled();
  * At the moment, this function is only implemented for the 3D->2D case, and only used in the single-camera setup.
  * 
  * @param computeFullCovariance Whether to compute the full covariance matrix.
- * @param useInlierCovariance Whether to use inlier covariances.
+ * @param useFeatureCovariance Whether to use inlier covariances.
  * @param objectPoints 3D points in the world coordinate system.
  * @param imagePoints 2D points in the image coordinate system.
  * @param inliers Indices of the inliers.
@@ -84,8 +84,8 @@ bool RTABMAP_CORE_EXPORT ransacDeterministicSeedEnabled();
  * @param transform Estimated camera transform.
  * @param rvec Rotation vector (Rodrigues).
  * @param tvec Translation vector.
- * @param covariances3A Covariances for 3D points in frame A.
- * @param covariances3B Covariances for 3D points in frame B.
+ * @param covariances3A Covariances for 3D points in frame A in base_link frame.
+ * @param covariances3B Covariances for 3D points in frame B in base_link frame.
  * @param words3B 3D points in frame B, indexed by feature ID.
  * @param splitLinearCovarianceComponents Whether to split linear covariance components.
  * @param varianceMedianRatio Index divisor used to select the robust variance threshold from sorted error residuals.
@@ -97,21 +97,21 @@ bool RTABMAP_CORE_EXPORT ransacDeterministicSeedEnabled();
  * If `computeFullCovariance` is true, the 2d reprojection derivatives are calculated using
  * cv::reprojectPoints. Then, the covariance is computed using the Jacobian of the reprojection 
  * error with respect to the pose parameters. There are several ways to do that described below.
- * 	- If `useInlierCovariance` is false, the final pose covariance is computed in the classical way.
+ * 	- If `useFeatureCovariance` is false, the final pose covariance is computed in the classical way.
  *    If it is true, feature covariance are used inside the pose covariance formula (recovering the
  *    covariance from the covariance weighted PnP solver).
  * 	- If `covariances3A` and `covariances3B` are provided, they will be used to compute the 
-      pose covariance in case `useInlierCovariance` is true.
+      pose covariance in case `useFeatureCovariance` is true.
  * 	- If `splitLinearCovarianceComponents` is true, the linear components of the covariance are split.
  * If `computeFullCovariance` is false, we compute a heuristic covariance 
  *  - If `words3B` is provided, 3D variance is computed by comparing reprojected points to actual transformed points.
  *  - If `words3B` is empty, variance is estimated using reprojection error only.
- *  - For either strategy, if additionally `useInlierCovariance` is true, the depth confidence of the inliers is used to weigh 
+ *  - For either strategy, if additionally `useFeatureCovariance` is true, the depth confidence of the inliers is used to weigh 
  *    the error values.
  */
 cv::Mat RTABMAP_CORE_EXPORT computePoseCovariance(
     bool computeFullCovariance, 
-    bool useInlierCovariance,
+    bool useFeatureCovariance,
     const std::vector<cv::Point3f>& objectPoints,
     const std::vector<cv::Point2f>& imagePoints,
     const std::vector<int>& inliers,
@@ -152,13 +152,13 @@ cv::Mat RTABMAP_CORE_EXPORT computePoseCovariance(
  * @param matchesOut Optional output vector of all matched IDs used (regardless of inlier status).
  * @param inliersOut Optional output vector of matched IDs that were determined to be inliers.
  * @param splitLinearCovarianceComponents Whether to split and compute variance for X, Y, Z components separately.
- * @param covariances3A Optional map of 3D point covariances in frame A, indexed by feature ID.
- * @param covariances3B Optional map of 3D point covariances in frame B, indexed by feature ID.
+ * @param covariances3A Optional map of 3D point covariances in frame A, indexed by feature ID, in base_link frame coordinates.
+ * @param covariances3B Optional map of 3D point covariances in frame B, indexed by feature ID, in base_link frame coordinates.
  * @param useMsac If true, uses MSAC instead of RANSAC for robust estimation.
  * @param pixelVariance Typical variance of matches in pixel space. Use as default pixel variance in case of missing data.
  * @param depthVariance Default variance of depth values in case of missing data.
  * @param computeFullCovariance If true, computes the exact covariance matrix of the estimated pose
- * @param useInlierVariance If true, uses the covariance of inliers to weigh the error values when computing pose covariance.
+ * @param useFeatureCovariance If true, uses the covariance of inliers to weigh the error values when computing pose covariance.
  * 
  * @return The estimated transformation from frame B to frame A. If estimation fails or is rejected due to variance,
  *         a null transform is returned (i.e., `transform.isNull()` will be true).
@@ -198,7 +198,7 @@ Transform RTABMAP_CORE_EXPORT estimateMotion3DTo2D(
 			float pixelVariance = 2 * 2,
 			float depthVariance = 0.05 * 0.05,
 			bool computeFullCovariance = false, 
-			bool useInlierVariance = false);
+			bool useFeatureCovariance = false);
 
 /**
  * @brief Estimates the 3D-to-2D motion (pose) transformation between a set of 3D points and their corresponding 2D keypoints using the OpenGV library.
@@ -368,7 +368,7 @@ void RTABMAP_CORE_EXPORT solvePnPRansac(
  * @param imagePoints         A vector of corresponding 2D points in the image plane.
  * @param cameraMatrix        The camera intrinsic matrix (3x3).
  * @param distCoeffs          Vector of distortion coefficients (k1, k2, p1, p2, k3, ...).
- * @param covariances3A       Vector of 3*3 covariances of the input points.
+ * @param covariances3A       Vector of 3*3 covariances of the input points in base_link frame.
  * @param rvec                Output rotation vector (Rodrigues form).
  * @param tvec                Output translation vector.
  * @param useExtrinsicGuess   If true, uses the provided rvec and tvec as an initial guess.
@@ -405,7 +405,6 @@ void RTABMAP_CORE_EXPORT solvePnPMsac(
 		int iterationsCount,
 		float reprojectionError,
 		int minInliersCount,
-		float confidence,
 		float pixelVariance,
 		std::vector<int> & inliers,
 		int flags,

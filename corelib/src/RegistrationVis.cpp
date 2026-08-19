@@ -88,7 +88,7 @@ RegistrationVis::RegistrationVis(const ParametersMap & parameters, Registration 
 		_PnPHighConfVariance(Parameters::defaultVisPnPHighConfVariance()),
 		_PnPDepthVariance(Parameters::defaultVisPnPDepthVariance()),
 		_PnPComputeFullCovariance(Parameters::defaultVisPnPComputeFullCovariance()),
-		_PnPUseInlierVariance(Parameters::defaultVisPnPUseInlierVariance()),
+		_PnPUseFeatureCovariance(Parameters::defaultVisPnPUseFeatureCovariance()),
 		_multiSamplingPolicy(Parameters::defaultVisPnPSamplingPolicy()),
 		_correspondencesApproach(Parameters::defaultVisCorType()),
 		_flowWinSize(Parameters::defaultVisCorFlowWinSize()),
@@ -162,7 +162,7 @@ void RegistrationVis::parseParameters(const ParametersMap & parameters)
 	Parameters::parse(parameters, Parameters::kVisPnPHighConfVariance(), _PnPHighConfVariance);
 	Parameters::parse(parameters, Parameters::kVisPnPDepthVariance(), _PnPDepthVariance);
 	Parameters::parse(parameters, Parameters::kVisPnPComputeFullCovariance(), _PnPComputeFullCovariance);
-	Parameters::parse(parameters, Parameters::kVisPnPUseInlierVariance(), _PnPUseInlierVariance);
+	Parameters::parse(parameters, Parameters::kVisPnPUseFeatureCovariance(), _PnPUseFeatureCovariance);
 	Parameters::parse(parameters, Parameters::kVisPnPSamplingPolicy(), _multiSamplingPolicy);
 	Parameters::parse(parameters, Parameters::kVisCorType(), _correspondencesApproach);
 	Parameters::parse(parameters, Parameters::kVisCorFlowWinSize(), _flowWinSize);
@@ -355,7 +355,7 @@ Transform RegistrationVis::computeTransformationImpl(
 	UDEBUG("%s=%f", Parameters::kVisPnPPixelVariance().c_str(), _PnPPixelVariance);
 	UDEBUG("%s=%f", Parameters::kVisPnPDepthVariance().c_str(), _PnPDepthVariance);
 	UDEBUG("%s=%d", Parameters::kVisPnPComputeFullCovariance().c_str(), _PnPComputeFullCovariance?1:0);
-	UDEBUG("%s=%d", Parameters::kVisPnPUseInlierVariance().c_str(), _PnPUseInlierVariance?1:0);
+	UDEBUG("%s=%d", Parameters::kVisPnPUseFeatureCovariance().c_str(), _PnPUseFeatureCovariance?1:0);
 	UDEBUG("%s=%f", Parameters::kVisPnPVarianceMedianRatio().c_str(), (double)_PnPVarMedianRatio);
 	UDEBUG("%s=%d", Parameters::kVisCorType().c_str(), _correspondencesApproach);
 	UDEBUG("%s=%d", Parameters::kVisCorFlowWinSize().c_str(), _flowWinSize);
@@ -1905,7 +1905,7 @@ Transform RegistrationVis::computeTransformationImpl(
 						// Multi-Camera
 						UASSERT(models[0].isValidForProjection());
 
-						if(_PnPUseMsac || _PnPComputeFullCovariance || _PnPUseInlierVariance)
+						if(_PnPUseMsac || _PnPComputeFullCovariance || _PnPUseFeatureCovariance)
 						{
 							UWARN("PnP MSAC / 6DoF covariance from Jacobian matrices are not supported for multi-camera, using RANSAC instead.");
 						}
@@ -1950,12 +1950,22 @@ Transform RegistrationVis::computeTransformationImpl(
 					{
 						UASSERT(fromSignature.sensorData().cameraModels().size() == 1 && fromSignature.sensorData().cameraModels()[0].isValidForProjection());
 
-						if(_PnPUseInlierVariance && !confidences3A.empty())
+						if(_PnPUseFeatureCovariance && !confidences3A.empty())
 						{
 							UASSERT(!fromSignature.sensorData().cameraModels().empty());
 							const auto &camera = fromSignature.sensorData().cameraModels()[0];
 							float fx = camera.fx();
 							float fy = camera.fy();
+
+							const rtabmap::Transform &localTransform = camera.localTransform();
+							rtabmap::Transform localTransformInv = localTransform.inverse();
+
+							Eigen::Matrix3f R_eigen = localTransform.toEigen3f().linear();
+							cv::Matx33f R(
+								R_eigen(0,0), R_eigen(0,1), R_eigen(0,2),
+								R_eigen(1,0), R_eigen(1,1), R_eigen(1,2),
+								R_eigen(2,0), R_eigen(2,1), R_eigen(2,2)
+							);
 
 							int lowA = 0, mediumA = 0, highA = 0;
 							
@@ -1965,13 +1975,16 @@ Transform RegistrationVis::computeTransformationImpl(
 								std::map<int, cv::Point3f>::const_iterator ptIt = words3A.find(id);
 								if(ptIt == words3A.end()) continue;
 
-								float Z = std::max(ptIt->second.z, 10e-6f); // clamp for division
 								int conf = iter->second;
-
 								if(conf < 0)
 								{
 									continue; // negative confidence means undefined
 								}
+
+								// base_link frame to camera frame
+								cv::Point3f ptCam = util3d::transformPoint(ptIt->second, localTransformInv);
+
+								float Z = std::max(ptCam.z, 1e-5f);
 
 								float var_x = (Z / fx) * (Z / fx) * _PnPPixelVariance;
 								float var_y = (Z / fy) * (Z / fy) * _PnPPixelVariance;
@@ -1992,13 +2005,15 @@ Transform RegistrationVis::computeTransformationImpl(
 									var_z = _PnPHighConfVariance;
 									++highA;
 								}
-                                
-							
-								cv::Matx33f cov(
-									var_x, 0.0f,         0.0f,
-									0.0f,        var_y,  0.0f,
-									0.0f,        0.0f,   var_z);
-								covariances3A[id] = cov;
+								
+								// covariance in base_link frame
+								cv::Matx33f covCam(
+									var_x, 0.0f,  0.0f,
+									0.0f,  var_y, 0.0f,
+									0.0f,  0.0f,  var_z);
+								cv::Matx33f covBase = R * covCam * R.t();
+									
+								covariances3A[id] = covBase;
 							}
 							
 							UDEBUG("Generated covariances for %d 3D points (low=%d, medium=%d, high=%d)", (int)covariances3A.size(), lowA, mediumA, highA);
@@ -2006,12 +2021,22 @@ Transform RegistrationVis::computeTransformationImpl(
 
 						UASSERT(toSignature.sensorData().cameraModels().size() == 1 && toSignature.sensorData().cameraModels()[0].isValidForProjection());
 
-						if(_PnPUseInlierVariance && !confidences3B.empty())
+						if(_PnPUseFeatureCovariance && !confidences3B.empty())
 						{
 							UASSERT(!toSignature.sensorData().cameraModels().empty());
 							const auto &camera = toSignature.sensorData().cameraModels()[0];
 							float fx = camera.fx();
 							float fy = camera.fy();
+
+							const rtabmap::Transform &localTransform = camera.localTransform();
+							rtabmap::Transform localTransformInv = localTransform.inverse();
+
+							Eigen::Matrix3f R_eigen = localTransform.toEigen3f().linear();
+							cv::Matx33f R(
+								R_eigen(0,0), R_eigen(0,1), R_eigen(0,2),
+								R_eigen(1,0), R_eigen(1,1), R_eigen(1,2),
+								R_eigen(2,0), R_eigen(2,1), R_eigen(2,2)
+							);
 
 							int lowB = 0, mediumB = 0, highB = 0;
 							
@@ -2021,13 +2046,16 @@ Transform RegistrationVis::computeTransformationImpl(
 								std::map<int, cv::Point3f>::const_iterator ptIt = words3B.find(id);
 								if(ptIt == words3B.end()) continue;
 
-								float Z = std::max(ptIt->second.z, 10e-6f); // clamp for division
 								int conf = iter->second;
-
 								if(conf < 0)
 								{
 									continue; // negative confidence means undefined
 								}
+
+								// base_link frame to camera frame
+								cv::Point3f ptCam = util3d::transformPoint(ptIt->second, localTransformInv);
+
+								float Z = std::max(ptCam.z, 1e-5f);
 
 								float var_x = (Z / fx) * (Z / fx) * _PnPPixelVariance;
 								float var_y = (Z / fy) * (Z / fy) * _PnPPixelVariance;
@@ -2048,13 +2076,15 @@ Transform RegistrationVis::computeTransformationImpl(
 									var_z = _PnPHighConfVariance;
 									++highB;
 								}
-                                
-							
-								cv::Matx33f cov(
-									var_x, 0.0f,         0.0f,
-									0.0f,        var_y,  0.0f,
-									0.0f,        0.0f,   var_z);
-								covariances3B[id] = cov;
+								
+								// covariance in base_link frame
+								cv::Matx33f covCam(
+									var_x, 0.0f,  0.0f,
+									0.0f,  var_y, 0.0f,
+									0.0f,  0.0f,  var_z);
+								cv::Matx33f covBase = R * covCam * R.t();
+
+								covariances3B[id] = covBase;
 							}
 							
 							UDEBUG("Generated covariances for %d 3D points (low=%d, medium=%d, high=%d)", (int)covariances3B.size(), lowB, mediumB, highB);
@@ -2085,7 +2115,7 @@ Transform RegistrationVis::computeTransformationImpl(
 								_PnPPixelVariance,
 								_PnPDepthVariance,
 								_PnPComputeFullCovariance, // use the true 6dof covariance coming from the reprojection jacobian
-								_PnPUseInlierVariance); // use the inlier variance to scale the covariance
+								_PnPUseFeatureCovariance); // use the inlier variance to scale the covariance
 						inliers = inliersV;
 						matches = matchesV;
 					}
