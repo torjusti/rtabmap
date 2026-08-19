@@ -132,7 +132,11 @@ Transform estimateMotion3DTo2D(
 			imagePoints[oi] = words2B.find(ids[i])->second.pt;
 			if(useFeatureCovariance)
 			{
-				objectCovariances[oi] = covariances3A.find(ids[i])->second;
+				// Missing entries (e.g. keypoint outside the confidence image)
+				// are left zero and given a default covariance below, once the
+				// camera-frame guess is available.
+				std::map<int, cv::Matx33f>::const_iterator covIter = covariances3A.find(ids[i]);
+				objectCovariances[oi] = covIter != covariances3A.end() ? covIter->second : cv::Matx33f::zeros();
 			}
 			matches[oi++] = ids[i];
 		}
@@ -140,6 +144,7 @@ Transform estimateMotion3DTo2D(
 
 	objectPoints.resize(oi);
 	imagePoints.resize(oi);
+	objectCovariances.resize(oi);
 	matches.resize(oi);
 
 	UDEBUG("words3A=%d words2B=%d matches=%d words3B=%d guess=%s reprojError=%f iterations=%d useMsac=%d",
@@ -166,6 +171,43 @@ Transform estimateMotion3DTo2D(
 		{
 			if(useFeatureCovariance)
 			{
+				// Fill in defaults for points whose covariance was missing
+				// upstream (left zero above). objectPoints are in the base
+				// frame of A, so use the guess to get the depth along the
+				// optical axis of B (not the base-frame z) and rotate the
+				// camera-frame diagonal covariance back into A's frame.
+				int covMissingCount = 0;
+				double fx = K.at<double>(0,0);
+				double fy = K.at<double>(1,1);
+				double d_pixelVar = static_cast<double>(pixelVariance);
+				double d_depthVar = static_cast<double>(depthVariance);
+				cv::Matx33f R_g(
+						guessCameraFrame.r11(), guessCameraFrame.r12(), guessCameraFrame.r13(),
+						guessCameraFrame.r21(), guessCameraFrame.r22(), guessCameraFrame.r23(),
+						guessCameraFrame.r31(), guessCameraFrame.r32(), guessCameraFrame.r33());
+
+				for(size_t i = 0; i < objectCovariances.size(); ++i)
+				{
+					if(cv::trace(objectCovariances[i]) <= 0.0f)
+					{
+						cv::Point3f ptCam = util3d::transformPoint(objectPoints[i], guessCameraFrame);
+						double Z = std::max(static_cast<double>(ptCam.z), 1e-5);
+						double var_x = Z*Z * d_pixelVar / (fx*fx);
+						double var_y = Z*Z * d_pixelVar / (fy*fy);
+						double var_z = d_depthVar;
+						cv::Matx33f covCam(
+							static_cast<float>(var_x), 0.0f, 0.0f, 
+							0.0f, static_cast<float>(var_y), 0.0f, 
+							0.0f, 0.0f, static_cast<float>(var_z));
+						objectCovariances[i] = R_g.t() * covCam * R_g;
+						++covMissingCount;
+					}
+				}
+				if(covMissingCount > 0)
+				{
+					UDEBUG("Covariance-aware PnPMsac: %d/%d points had no covariance from sensor data, default covariances assigned", 
+						covMissingCount, (int)objectCovariances.size());
+				}
 				util3d::solvePnPMsac(
 					objectPoints,
 					imagePoints,
@@ -178,18 +220,23 @@ Transform estimateMotion3DTo2D(
 			}
 			else
 			{
-				// Identity covariance for each point, so that the Mahalanobis distance is equal to the Euclidean distance
-				// Computationally unoptimal, a dedicated solvePnPMsac without covariance could also be implemented.
-				std::vector<cv::Matx33f> objectCovariances(objectPoints.size(), cv::Matx33f::eye());
+				// No 3D covariances: with an empty covariance vector and
+				// pixelVariance=0, solvePnPMsac whitens with identity in pixel
+				// space, so the Mahalanobis distance equals the Euclidean pixel
+				// reprojection error and reprojError keeps its usual meaning.
+				// (Passing identity 3D covariances instead would inject a fake
+				// 1 m^2 3D noise term, shrinking all whitened errors by the
+				// projection Jacobian and accepting nearly everything as inlier.)
+				std::vector<cv::Matx33f> noCovariances; // intentionally empty
 				util3d::solvePnPMsac(
 					objectPoints,
 					imagePoints,
 					K, D,
-					objectCovariances,
+					noCovariances,
 					rvec, tvec, 
 					!guessCameraFrame.isNull(), 
 					iterations, reprojError, minInliers, 
-					pixelVariance, inliers, flagsPnP, refineIterations, 3.0f, false);
+					0.0f, inliers, flagsPnP, refineIterations, 3.0f, false);
 			}
 		}
 		else
@@ -357,9 +404,15 @@ cv::Mat computePoseCovariance(
  	 	 	// Incorporate 3D noise (MSAC or RANSAC with 3D covariance)
  	 	 	if(useFeatureCovariance)
  	 	 	{
- 	 	 	 	UASSERT(covariances3A.find(matches[idx]) != covariances3A.end());
- 	 	 	 	cv::Matx33d cov3D(covariances3A.at(matches[idx]));
- 	 	 	 	cov2D += J_pi * (R_x33 * cov3D * R_x33.t()) * J_pi.t();
+ 	 	 	 	// Some words legitimately have no covariance (e.g. keypoint outside
+ 	 	 	 	// the confidence image or undefined confidence); for those, keep
+ 	 	 	 	// the pixel-only weighting instead of crashing.
+ 	 	 	 	std::map<int, cv::Matx33f>::const_iterator covIter = covariances3A.find(matches[idx]);
+ 	 	 	 	if(covIter != covariances3A.end())
+ 	 	 	 	{
+ 	 	 	 	 	cv::Matx33d cov3D(covIter->second);
+ 	 	 	 	 	cov2D += J_pi * (R_x33 * cov3D * R_x33.t()) * J_pi.t();
+ 	 	 	 	}
  	 	 	}
 
  	 	 	cv::Mat J_i = J_pose.rowRange(static_cast<int>(i)*2, static_cast<int>(i)*2 + 2);
@@ -490,19 +543,22 @@ cv::Mat computePoseCovariance(
             Eigen::Vector4f v2(newPt.x, newPt.y, newPt.z, 0);
             float angle = pcl::getAngle3D(v1, v2);
 
-            if(useFeatureCovariance)
+            // Some words legitimately have no covariance (e.g. keypoint outside the
+            // confidence image or undefined confidence); fall back to the classical
+            // error for those instead of crashing.
+            std::map<int, cv::Matx33f>::const_iterator covIterA =
+                useFeatureCovariance ? covariances3A.find(matches[inliers[i]]) : covariances3A.end();
+            if(useFeatureCovariance && covIterA != covariances3A.end())
 			{
-				UASSERT(covariances3A.find(matches[inliers[i]]) != covariances3A.end());
-
 				// Mahalanobis errors, made metric (m^2) using average 3D variance (Trace/3)
 				cv::Matx31d diff(objPt.x - newPt.x, objPt.y - newPt.y, objPt.z - newPt.z);
-				cv::Matx33d cov3D_total(covariances3A.at(matches[inliers[i]]));
+				cv::Matx33d cov3D_total(covIterA->second);
 				
-				if(!covariances3B.empty()) 
+				std::map<int, cv::Matx33f>::const_iterator covIterB = covariances3B.find(matches[inliers[i]]);
+				if(covIterB != covariances3B.end())
 				{
-					UASSERT(covariances3B.find(matches[inliers[i]]) != covariances3B.end());
-					cv::Matx33d cov3D_B(covariances3B.at(matches[inliers[i]])); // In base_link_B
-					
+					cv::Matx33d cov3D_B(covIterB->second); // In base_link_B
+
 					// Extract rotation R_trans from transform (base_link_B -> base_link_A)
 					cv::Matx33d R_trans(
 						transform.r11(), transform.r12(), transform.r13(),
@@ -616,10 +672,11 @@ cv::Mat computePoseCovariance(
             double Z = std::max(ptB(2,0), 1e-5);
             
 			bool originalRTABMapStrategy = false;
-            if(!originalRTABMapStrategy && useFeatureCovariance && !covariances3A.empty())
+			std::map<int, cv::Matx33f>::const_iterator covIter =
+				(!originalRTABMapStrategy && useFeatureCovariance) ? covariances3A.find(matches[idx]) : covariances3A.end();
+            if(!originalRTABMapStrategy && covIter != covariances3A.end())
             {
-				UASSERT(covariances3A.find(matches[idx]) != covariances3A.end());
-                cv::Matx33d cov3D(covariances3A.at(matches[idx]));
+                cv::Matx33d cov3D(covIter->second);
                 cv::Matx23d J_pi(fx/Z, 0.0, -fx*ptB(0,0)/(Z*Z),
                                  0.0, fy/Z, -fy*ptB(1,0)/(Z*Z));
                 
@@ -1442,12 +1499,18 @@ void solvePnPMsac(const std::vector<cv::Point3f> & objectPoints,
             // Get inliers from the current model
             std::vector<cv::Point3f> opoints_inliers(prev_inliers.size());
             std::vector<cv::Point2f> ipoints_inliers(prev_inliers.size());
-            std::vector<cv::Matx33f> cov_inliers(prev_inliers.size());
+            // covariances3A may be intentionally empty (pixel-space Euclidean
+            // mode); keep it empty here too so the LM solver and the error
+            // computation use the same whitening as the MSAC stage.
+            std::vector<cv::Matx33f> cov_inliers(covariances3A.empty() ? 0 : prev_inliers.size());
             for(unsigned int i = 0; i < prev_inliers.size(); ++i)
             {
                 opoints_inliers[i] = objectPoints[prev_inliers[i]];
                 ipoints_inliers[i] = imagePoints[prev_inliers[i]];
-                cov_inliers[i] = covariances3A[prev_inliers[i]];
+                if(!cov_inliers.empty())
+                {
+                    cov_inliers[i] = covariances3A[prev_inliers[i]];
+                }
             }
 
             UDEBUG("inliers=%d refine_iterations=%d, rvec=%f,%f,%f tvec=%f,%f,%f", (int)prev_inliers.size(), refine_iterations,
