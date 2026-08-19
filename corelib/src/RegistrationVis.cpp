@@ -2010,8 +2010,8 @@ Transform RegistrationVis::computeTransformationImpl(
 								float Z = std::max(ptCam.z, 1e-5f);
 	
 								// Variance propagation in camera frame
-								float var_x = (Z / fxA) * (Z / fxA) * _PnPHighConfVariance;
-								float var_y = (Z / fyA) * (Z / fyA) * _PnPHighConfVariance;
+								float var_x = (Z / fxA) * (Z / fxA) * _PnPPixelVariance;
+								float var_y = (Z / fyA) * (Z / fyA) * _PnPPixelVariance;
 	
 								cv::Matx33f covCam(
 									var_x, 0.0f,  0.0f,
@@ -2086,8 +2086,8 @@ Transform RegistrationVis::computeTransformationImpl(
 									float Z = std::max(ptCam.z, 1e-5f);
 		
 									// Variance propagation in camera frame
-									float var_x = (Z / fxB) * (Z / fxB) * _PnPHighConfVariance;
-									float var_y = (Z / fyB) * (Z / fyB) * _PnPHighConfVariance;
+									float var_x = (Z / fxB) * (Z / fxB) * _PnPPixelVariance;
+									float var_y = (Z / fyB) * (Z / fyB) * _PnPPixelVariance;
 		
 									cv::Matx33f covCam(
 										var_x, 0.0f,  0.0f,
