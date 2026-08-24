@@ -6607,6 +6607,18 @@ Signature * Memory::createSignature(const SensorData & inputData, const Transfor
 			}
 		}
 
+		bool reuseCompressedImage = !image.empty() &&
+				image.data == data.imageRaw().data &&
+				!data.imageCompressed().empty();
+		bool reuseCompressedDepth = !depthOrRightImage.empty() &&
+				depthOrRightImage.data == data.depthOrRightRaw().data &&
+				!data.depthOrRightCompressed().empty();
+		bool reuseCompressedDepthConfidence = !depthConfidence.empty() &&
+				depthConfidence.data == data.depthConfidenceRaw().data &&
+				!data.depthConfidenceCompressed().empty();
+		UDEBUG("Reusing compressed data: image=%d, depth=%d, depthConfidence=%d",
+				reuseCompressedImage?1:0, reuseCompressedDepth?1:0, reuseCompressedDepthConfidence?1:0);
+
 		cv::Mat compressedImage;
 		cv::Mat compressedDepth;
 		cv::Mat compressedDepthConfidence;
@@ -6619,15 +6631,15 @@ Signature * Memory::createSignature(const SensorData & inputData, const Transfor
 			rtabmap::CompressionThread ctDepthConfidence(depthConfidence);
 			rtabmap::CompressionThread ctLaserScan(laserScan.data());
 			rtabmap::CompressionThread ctUserData(data.userDataRaw());
-			if(!image.empty())
+			if(!image.empty() && !reuseCompressedImage)
 			{
 				ctImage.start();
 			}
-			if(!depthOrRightImage.empty())
+			if(!depthOrRightImage.empty() && !reuseCompressedDepth)
 			{
 				ctDepth.start();
 			}
-			if(!depthConfidence.empty())
+			if(!depthConfidence.empty() && !reuseCompressedDepthConfidence)
 			{
 				ctDepthConfidence.start();
 			}
@@ -6653,9 +6665,9 @@ Signature * Memory::createSignature(const SensorData & inputData, const Transfor
 		}
 		else
 		{
-			compressedImage = compressImage2(image, _rgbCompressionFormat);
-			compressedDepth = compressImage2(depthOrRightImage, depthOrRightImage.type() == CV_32FC1 || depthOrRightImage.type() == CV_16UC1?_depthCompressionFormat:_rgbCompressionFormat);
-			compressedDepthConfidence = compressData2(depthConfidence);
+			compressedImage = reuseCompressedImage?cv::Mat():compressImage2(image, _rgbCompressionFormat);
+			compressedDepth = reuseCompressedDepth?cv::Mat():compressImage2(depthOrRightImage, depthOrRightImage.type() == CV_32FC1 || depthOrRightImage.type() == CV_16UC1?_depthCompressionFormat:_rgbCompressionFormat);
+			compressedDepthConfidence = reuseCompressedDepthConfidence?cv::Mat():compressData2(depthConfidence);
 			compressedScan = compressData2(laserScan.data());
 			compressedUserData = compressData2(data.userDataRaw());
 		}
