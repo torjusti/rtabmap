@@ -491,6 +491,23 @@ std::list<std::pair<int, Transform> > RTABMAP_CORE_EXPORT computePath(
 			bool updateNewCosts = false);
 
 /**
+ * @brief Single-source graph depth via BFS.
+ *
+ * Runs one breadth-first search from @p from and returns, for every reached
+ * node, the length of the shortest path from @p from.
+ *
+ * @param links Directed edges (`from` → `to`) keyed by source id.
+ * @param from Start node id.
+ * @param maxLength If &gt; 0, only nodes with path length ≤ this value are returned (the
+ *                  frontier is not expanded further); `0` explores the whole component.
+ * @return Node id → path length mapping.
+ */
+std::map<int, int> RTABMAP_CORE_EXPORT computePathLengths(
+			const std::multimap<int, int> & links,
+			int from,
+			int maxLength = 0);
+
+/**
  * @brief Dijkstra shortest path on link constraints.
  *
  * Explores outgoing links keyed by `link.from()`. Edge cost is `1` when
