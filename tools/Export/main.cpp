@@ -49,7 +49,12 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <pcl/common/common.h>
 #include <pcl/surface/poisson.h>
 #include <stdio.h>
+#include <algorithm>
 #include <fstream>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #ifdef RTABMAP_PDAL
 #include <rtabmap/core/PDALWriter.h>
@@ -1493,6 +1498,9 @@ int main(int argc, char * argv[])
 	}
 	int processedNodes = 0;
 	int lastPercent = 0;
+
+	std::vector<std::pair<int, Transform> > nodes;
+	nodes.reserve(optimizedPoses.size());
 	for(std::map<int, Transform>::iterator iter=optimizedPoses.begin(); iter!=optimizedPoses.end(); ++iter)
 	{
 		if(iter->first<0)
@@ -1503,26 +1511,50 @@ int main(int argc, char * argv[])
 
 			landmarkPoses.insert(*iter);
 			landmarkStamps.insert(std::make_pair(iter->first, 0));
-			continue;
 		}
-		
-		Transform p, gt;
-		int m;
-		std::string l;
-		GPS gps;
-		std::vector<float> v;
-		EnvSensors s;
+		else
+		{
+			nodes.push_back(*iter);
+		}
+	}
+
+	struct NodeExportData
+	{
 		int weight = -1;
 		double stamp = 0.0;
-		dbDriver->getNodeInfo(iter->first, p, m, weight, l, stamp, gt, v, gps, s);
-
+		Transform gt;
+		GPS gps;
 		SensorData data;
+		std::vector<CameraModel> models;
+		std::vector<StereoCameraModel> stereoModels;
+		cv::Mat depth;
+		pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud;
+		pcl::PointCloud<pcl::PointXYZI>::Ptr cloudI;
+		bool imageExported = false;
+		cv::Mat groundCells, obstacleCells, emptyCells;
+		Transform scanLocalTransform;
+	};
+
+	auto loadNode = [&](int nodeId, const Transform & pose, NodeExportData & out)
+	{
+		Transform p;
+		Transform & gt = out.gt;
+		int m;
+		std::string l;
+		GPS & gps = out.gps;
+		std::vector<float> v;
+		EnvSensors s;
+		int & weight = out.weight;
+		double & stamp = out.stamp;
+		dbDriver->getNodeInfo(nodeId, p, m, weight, l, stamp, gt, v, gps, s);
+
+		SensorData & data = out.data;
 		bool loadImages = ((exportCloud || exportMesh) && (!cloudFromScan || texture || camProjection)) || exportImages;
 		bool loadScan = ((exportCloud || exportMesh) && cloudFromScan) || exportPosesScan;
 		if(loadImages || loadScan || export2DMap || exportOctomap)
 		{
 			dbDriver->getNodeData(
-				iter->first, 
+				nodeId, 
 				data, 
 				loadImages, 
 				loadScan,
@@ -1531,22 +1563,22 @@ int main(int argc, char * argv[])
 		}
 
 		// uncompress data
-		std::vector<CameraModel> models;
-		std::vector<StereoCameraModel> stereoModels;
+		std::vector<CameraModel> & models = out.models;
+		std::vector<StereoCameraModel> & stereoModels = out.stereoModels;
 		if(loadImages || exportPosesCamera)
 		{
-			dbDriver->getCalibration(iter->first, models, stereoModels);
+			dbDriver->getCalibration(nodeId, models, stereoModels);
 		}
 
 		if(exportCloud || exportMesh || exportImages)
 		{
-			bool densityFiltered = !densityPoses.empty() && densityPoses.find(iter->first) == densityPoses.end();
+			bool densityFiltered = !densityPoses.empty() && densityPoses.find(nodeId) == densityPoses.end();
 			cv::Mat rgb;
-			cv::Mat depth;
+			cv::Mat & depth = out.depth;
 			cv::Mat confidence;
 			pcl::IndicesPtr indices(new std::vector<int>);
-			pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud;
-			pcl::PointCloud<pcl::PointXYZI>::Ptr cloudI;
+			pcl::PointCloud<pcl::PointXYZRGB>::Ptr & cloud = out.cloud;
+			pcl::PointCloud<pcl::PointXYZI>::Ptr & cloudI = out.cloudI;
 			if(weight != -1)
 			{
 				if(!densityFiltered && cloudFromScan && (exportCloud || exportMesh))
@@ -1555,7 +1587,7 @@ int main(int argc, char * argv[])
 					data.uncompressData(exportImages?&rgb:0, (texture||exportImages)&&!data.depthOrRightCompressed().empty()?&depth:0, &scan, 0, 0, 0, 0, exportImages?&confidence:0);
 					if(scan.empty())
 					{
-						printf("Node %d doesn't have scan data, empty cloud is created.\n", iter->first);
+						printf("Node %d doesn't have scan data, empty cloud is created.\n", nodeId);
 					}
 					if(decimation>1 || minRange>0.0f || maxRange)
 					{
@@ -1586,7 +1618,7 @@ int main(int argc, char * argv[])
 						if(depth.empty())
 						{
 							printf("Node %d doesn't have depth or stereo data, empty cloud is "
-									"created (if you want to create point cloud from scan, use --scan option).\n", iter->first);
+									"created (if you want to create point cloud from scan, use --scan option).\n", nodeId);
 						}
 						else if(!data.depthRaw().empty() && depthEdgeBleedingFilterError>0.0f)
 						{
@@ -1617,9 +1649,9 @@ int main(int argc, char * argv[])
 				if(!UDirectory::exists(dir)) {
 					UDirectory::makeDir(dir);
 				}
-				std::string outputPath=dir+"/"+(exportImagesId?uNumber2Str(iter->first):uFormat("%f", stamp))+".jpg";
+				std::string outputPath=dir+"/"+(exportImagesId?uNumber2Str(nodeId):uFormat("%f", stamp))+".jpg";
 				cv::imwrite(outputPath, rgb);
-				++imagesExported;
+				out.imageExported = true;
 				if(!depth.empty())
 				{
 					std::string ext;
@@ -1642,7 +1674,7 @@ int main(int argc, char * argv[])
 						UDirectory::makeDir(dir);
 					}
 
-					outputPath=dir+"/"+(exportImagesId?uNumber2Str(iter->first):uFormat("%f", stamp))+ext;
+					outputPath=dir+"/"+(exportImagesId?uNumber2Str(nodeId):uFormat("%f", stamp))+ext;
 					cv::imwrite(outputPath, depthExported);
 				}
 				if(!confidence.empty())
@@ -1652,7 +1684,7 @@ int main(int argc, char * argv[])
 						UDirectory::makeDir(dir);
 					}
 
-					outputPath=dir+"/"+(exportImagesId?uNumber2Str(iter->first):uFormat("%f", stamp))+".png";
+					outputPath=dir+"/"+(exportImagesId?uNumber2Str(nodeId):uFormat("%f", stamp))+".png";
 					cv::imwrite(outputPath, confidence);
 				}
 
@@ -1660,7 +1692,7 @@ int main(int argc, char * argv[])
 				for(size_t i=0; i<models.size(); ++i)
 				{
 					CameraModel model = models[i];
-					std::string modelName = (exportImagesId?uNumber2Str(iter->first):uFormat("%f", stamp));
+					std::string modelName = (exportImagesId?uNumber2Str(nodeId):uFormat("%f", stamp));
 					if(models.size() > 1) {
 						modelName += "_" + uNumber2Str((int)i);
 					}
@@ -1674,7 +1706,7 @@ int main(int argc, char * argv[])
 				for(size_t i=0; i<stereoModels.size(); ++i)
 				{
 					StereoCameraModel model = stereoModels[i];
-					std::string modelName = (exportImagesId?uNumber2Str(iter->first):uFormat("%f", stamp));
+					std::string modelName = (exportImagesId?uNumber2Str(nodeId):uFormat("%f", stamp));
 					if(stereoModels.size() > 1) {
 						modelName += "_" + uNumber2Str((int)i);
 					}
@@ -1694,20 +1726,20 @@ int main(int argc, char * argv[])
 					if(cloud.get() && !cloud->empty()) {
 						cloud = rtabmap::util3d::voxelize(cloud, indices, voxelSize);
 						if(!cloud->empty())
-							cloud = rtabmap::util3d::transformPointCloud(cloud, iter->second);
+							cloud = rtabmap::util3d::transformPointCloud(cloud, pose);
 					}
 					else if(cloudI.get() && !cloudI->empty()) {
 						cloudI = rtabmap::util3d::voxelize(cloudI, indices, voxelSize);
 						if(!cloudI->empty())
-							cloudI = rtabmap::util3d::transformPointCloud(cloudI, iter->second);
+							cloudI = rtabmap::util3d::transformPointCloud(cloudI, pose);
 					}
 				}
 				else
 				{
 					if(cloud.get() && !cloud->empty())
-						cloud = rtabmap::util3d::transformPointCloud(cloud, indices, iter->second);
+						cloud = rtabmap::util3d::transformPointCloud(cloud, indices, pose);
 					else if(cloudI.get() && !cloudI->empty())
-						cloudI = rtabmap::util3d::transformPointCloud(cloudI, indices, iter->second);
+						cloudI = rtabmap::util3d::transformPointCloud(cloudI, indices, pose);
 				}
 
 				if(filter_ceiling != 0.0 || filter_floor != 0.0f)
@@ -1722,54 +1754,85 @@ int main(int argc, char * argv[])
 					}
 				}
 
-				if(cloudFromScan)
+			}
+		}
+
+		if(out.weight != -1 && (export2DMap || exportOctomap))
+		{
+			out.data.uncompressDataConst(0, 0, 0, 0, &out.groundCells, &out.obstacleCells, &out.emptyCells);
+		}
+
+		out.scanLocalTransform = out.data.laserScanRaw().localTransform();
+		out.data.clearRawData();
+	};
+
+	auto flushNode = [&](int nodeId, const Transform & pose, NodeExportData & node)
+	{
+		SensorData & data = node.data;
+		std::vector<CameraModel> & models = node.models;
+		std::vector<StereoCameraModel> & stereoModels = node.stereoModels;
+		pcl::PointCloud<pcl::PointXYZRGB>::Ptr & cloud = node.cloud;
+		pcl::PointCloud<pcl::PointXYZI>::Ptr & cloudI = node.cloudI;
+		cv::Mat & depth = node.depth;
+		double stamp = node.stamp;
+		int weight = node.weight;
+		GPS & gps = node.gps;
+		Transform & gt = node.gt;
+
+		if(node.imageExported)
+		{
+			++imagesExported;
+		}
+
+		if(exportCloud || exportMesh)
+		{
+			if(cloudFromScan)
+			{
+				Transform lidarViewpoint = pose * node.scanLocalTransform;
+				rawViewpoints.insert(std::make_pair(nodeId, lidarViewpoint));
+			}
+			else if(!models.empty() && !models[0].localTransform().isNull())
+			{
+				Transform cameraViewpoint = pose * models[0].localTransform(); // take the first camera
+				rawViewpoints.insert(std::make_pair(nodeId, cameraViewpoint));
+			}
+			else if(!stereoModels.empty() && !stereoModels[0].localTransform().isNull())
+			{
+				Transform cameraViewpoint = pose * stereoModels[0].localTransform();
+				rawViewpoints.insert(std::make_pair(nodeId, cameraViewpoint));
+			}
+			else
+			{
+				rawViewpoints.insert(std::make_pair(nodeId, pose));
+			}
+
+			if(cloud.get() && !cloud->empty())
+			{
+				if(assembledCloud->empty())
 				{
-					Transform lidarViewpoint = iter->second * data.laserScanRaw().localTransform();
-					rawViewpoints.insert(std::make_pair(iter->first, lidarViewpoint));
-				}
-				else if(!models.empty() && !models[0].localTransform().isNull())
-				{
-					Transform cameraViewpoint = iter->second * models[0].localTransform(); // take the first camera
-					rawViewpoints.insert(std::make_pair(iter->first, cameraViewpoint));
-				}
-				else if(!stereoModels.empty() && !stereoModels[0].localTransform().isNull())
-				{
-					Transform cameraViewpoint = iter->second * stereoModels[0].localTransform();
-					rawViewpoints.insert(std::make_pair(iter->first, cameraViewpoint));
+					*assembledCloud = *cloud;
 				}
 				else
 				{
-					rawViewpoints.insert(*iter);
+					*assembledCloud += *cloud;
 				}
-
-				if(cloud.get() && !cloud->empty())
+				rawViewpointIndices.resize(assembledCloud->size(), nodeId);
+			}
+			else if(cloudI.get() && !cloudI->empty())
+			{
+				if(assembledCloudI->empty())
 				{
-					if(assembledCloud->empty())
-					{
-						*assembledCloud = *cloud;
-					}
-					else
-					{
-						*assembledCloud += *cloud;
-					}
-					rawViewpointIndices.resize(assembledCloud->size(), iter->first);
+					*assembledCloudI = *cloudI;
 				}
-				else if(cloudI.get() && !cloudI->empty())
+				else
 				{
-					if(assembledCloudI->empty())
-					{
-						*assembledCloudI = *cloudI;
-					}
-					else
-					{
-						*assembledCloudI += *cloudI;
-					}
-					rawViewpointIndices.resize(assembledCloudI->size(), iter->first);
+					*assembledCloudI += *cloudI;
 				}
-				if(texture && !depth.empty() && (depth.type() == CV_16UC1 || depth.type() == CV_32FC1))
-				{
-					cameraDepths.insert(std::make_pair(iter->first, depth));
-				}
+				rawViewpointIndices.resize(assembledCloudI->size(), nodeId);
+			}
+			if(texture && !depth.empty() && (depth.type() == CV_16UC1 || depth.type() == CV_32FC1))
+			{
+				cameraDepths.insert(std::make_pair(nodeId, depth));
 			}
 		}
 
@@ -1781,8 +1844,8 @@ int main(int argc, char * argv[])
 			}
 		}
 
-		robotPoses.insert(std::make_pair(iter->first, iter->second));
-		robotStamps.insert(std::make_pair(iter->first, stamp));
+		robotPoses.insert(std::make_pair(nodeId, pose));
+		robotStamps.insert(std::make_pair(nodeId, stamp));
 		if(models.empty() && weight == -1 && !cameraModels.empty())
 		{
 			// For intermediate nodes, use latest models
@@ -1792,7 +1855,7 @@ int main(int argc, char * argv[])
 		{
 			if(!data.imageCompressed().empty())
 			{
-				cameraModels.insert(std::make_pair(iter->first, models));
+				cameraModels.insert(std::make_pair(nodeId, models));
 			}
 			if(exportPosesCamera)
 			{
@@ -1804,15 +1867,15 @@ int main(int argc, char * argv[])
 				UASSERT_MSG(models.size() == cameraPoses.size(), "Not all nodes have same number of cameras to export camera poses.");
 				for(size_t i=0; i<models.size(); ++i)
 				{
-					cameraPoses[i].insert(std::make_pair(iter->first, iter->second*models[i].localTransform()));
-					cameraStamps[i].insert(std::make_pair(iter->first, stamp));
+					cameraPoses[i].insert(std::make_pair(nodeId, pose*models[i].localTransform()));
+					cameraStamps[i].insert(std::make_pair(nodeId, stamp));
 				}
 			}
 		}
 		if(exportPosesScan && !data.laserScanCompressed().empty())
 		{
-			scanPoses.insert(std::make_pair(iter->first, iter->second*data.laserScanCompressed().localTransform()));
-			scanStamps.insert(std::make_pair(iter->first, stamp));
+			scanPoses.insert(std::make_pair(nodeId, pose*data.laserScanCompressed().localTransform()));
+			scanStamps.insert(std::make_pair(nodeId, stamp));
 		}
 
 		if(exportPosesGps || exportGps>=0)
@@ -1832,56 +1895,80 @@ int main(int argc, char * argv[])
 						gpsOrigin = gps;
 					}
 					Transform pose(p.x, p.y, p.z, 0.0f, 0.0f, (float)((-(gps.bearing()-90))*M_PI/180.0));
-					gpsPoses.insert(std::make_pair(iter->first, pose));
+					gpsPoses.insert(std::make_pair(nodeId, pose));
 				}
 				if(exportGps>=0)
 				{
-					gpsValues.insert(std::make_pair(iter->first, gps));
+					gpsValues.insert(std::make_pair(nodeId, gps));
 				}
-				gpsStamps.insert(std::make_pair(iter->first, gps.stamp()));
+				gpsStamps.insert(std::make_pair(nodeId, gps.stamp()));
 			}
 		}
 
 		if(exportPosesGt && !gt.isNull())
 		{
-			gtPoses.insert(std::make_pair(iter->first, gt));
-			gtStamps.insert(std::make_pair(iter->first, stamp));
+			gtPoses.insert(std::make_pair(nodeId, gt));
+			gtStamps.insert(std::make_pair(nodeId, stamp));
 		}
 
 		if(weight != -1 && (export2DMap || exportOctomap)) {
-			cv::Mat ground;
-			cv::Mat obstacles;
-			cv::Mat empty;
-			data.uncompressDataConst(0, 0, 0, 0, &ground, &obstacles, &empty);
+			cv::Mat & ground = node.groundCells;
+			cv::Mat & obstacles = node.obstacleCells;
+			cv::Mat & empty = node.emptyCells;
 			if(ground.empty() && obstacles.empty() && empty.empty()) {
-				printf("Node %d doesn't have local occupancy grid, ignored!\n", iter->first);
+				printf("Node %d doesn't have local occupancy grid, ignored!\n", nodeId);
 			}
 			else {
-				addedPosesToMap.insert(*iter);
-				localGridCache.add(iter->first, ground, obstacles, empty, data.gridCellSize(), data.gridViewPoint());
+				addedPosesToMap.insert(std::make_pair(nodeId, pose));
+				localGridCache.add(nodeId, ground, obstacles, empty, data.gridCellSize(), data.gridViewPoint());
 				if(export2DMap && !grid.update(addedPosesToMap)) {
-					printf("Failed to assemble local grid %d to global occupancy grid!\n", iter->first);
+					printf("Failed to assemble local grid %d to global occupancy grid!\n", nodeId);
 				}
 #ifdef RTABMAP_OCTOMAP
 				if(exportOctomap && !octomap.update(addedPosesToMap)) {
-					printf("Failed to assemble local grid %d to OctoMap!\n", iter->first);
+					printf("Failed to assemble local grid %d to OctoMap!\n", nodeId);
 				}
 #endif
 				localGridCache.clear();
 			}
 		}
 
-		if(optimizedPoses.size() >= 500)
+	};
+
+#ifdef _OPENMP
+	const size_t chunkSize = std::max(1, omp_get_max_threads()*4);
+#else
+	const size_t chunkSize = 1;
+#endif
+	std::vector<NodeExportData> chunkData;
+	for(size_t chunkStart=0; chunkStart<nodes.size(); chunkStart+=chunkSize)
+	{
+		size_t chunkNodes = std::min(chunkSize, nodes.size()-chunkStart);
+		chunkData.assign(chunkNodes, NodeExportData());
+
+		#pragma omp parallel for schedule(dynamic)
+		for(int i=0; i<(int)chunkNodes; ++i)
 		{
-			++processedNodes;
-			int percent = processedNodes*100/(int)optimizedPoses.size();
-			if(percent != lastPercent)
+			loadNode(nodes[chunkStart+i].first, nodes[chunkStart+i].second, chunkData[i]);
+		}
+
+		for(size_t i=0; i<chunkNodes; ++i)
+		{
+			flushNode(nodes[chunkStart+i].first, nodes[chunkStart+i].second, chunkData[i]);
+			chunkData[i] = NodeExportData();
+
+			if(optimizedPoses.size() >= 500)
 			{
-				printf("Processed %d/%d (%d%%) nodes...\n",
-					processedNodes,
-					(int)optimizedPoses.size(),
-					percent);
-				lastPercent = percent;
+				++processedNodes;
+				int percent = processedNodes*100/(int)optimizedPoses.size();
+				if(percent != lastPercent)
+				{
+					printf("Processed %d/%d (%d%%) nodes...\n",
+						processedNodes,
+						(int)optimizedPoses.size(),
+						percent);
+					lastPercent = percent;
+				}
 			}
 		}
 	}

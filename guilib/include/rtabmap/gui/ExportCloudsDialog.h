@@ -32,6 +32,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <QDialog>
 #include <QMap>
+#include <QColor>
 #include <QtCore/QSettings>
 
 #include <rtabmap/core/Signature.h>
@@ -45,6 +46,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 class Ui_ExportCloudsDialog;
 class QAbstractButton;
+
+namespace clams {
+class DiscreteDepthDistortionModel;
+}
 
 namespace rtabmap {
 class ProgressDialog;
@@ -133,6 +138,28 @@ private Q_SLOTS:
 
 private:
 	std::map<int, Transform> filterNodes(const std::map<int, Transform> & poses);
+	struct CloudGenResult
+	{
+		pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr cloud;
+		pcl::IndicesPtr indices;
+		bool hasScan = false;
+		bool scanHasRGB = false;
+		std::vector<std::pair<QString, QColor> > messages;
+	};
+	CloudGenResult generateCloudForNode(
+			int nodeId,
+			const Transform & pose,
+			int index,
+			int totalPoses,
+			const std::vector<float> & roiRatios,
+			const clams::DiscreteDepthDistortionModel * model,
+			const QMap<int, Signature> & cachedSignatures,
+			const std::map<int, std::pair<pcl::PointCloud<pcl::PointXYZRGB>::Ptr, pcl::IndicesPtr> > & cachedClouds,
+			const std::map<int, LaserScan> & cachedScans,
+			const ParametersMap & parameters,
+			pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr * previousCloud,
+			pcl::IndicesPtr * previousIndices,
+			Transform * previousPose) const;
 	std::map<int, std::pair<pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr, pcl::IndicesPtr> > getClouds(
 			const std::map<int, Transform> & poses,
 			const QMap<int, Signature> & cachedSignatures,
