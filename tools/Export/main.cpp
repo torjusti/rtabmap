@@ -190,8 +190,8 @@ void showUsage()
 			"    --density_angle #     Filter poses up to angle (deg) in the --density_radius.\n"
 			"    --filter_ceiling #    Filter points over a custom height (default 0 m, 0=disabled).\n"
 			"    --filter_floor #      Filter points below a custom height (default 0 m, 0=disabled).\n"
-			"    --threads       #     Number of threads used to generate the clouds (default 0=one per core,\n"
-			"                              1=generate the clouds sequentially).\n"
+			"    --threads       #     Number of threads used to generate the clouds and to texture the mesh\n"
+			"                              (default 0=one per core, 1=process them sequentially).\n"
 
 			"\n%s", Parameters::showUsage());
 	;
@@ -2775,7 +2775,8 @@ int main(int argc, char * argv[])
 							textureRoiRatios,
 							&progressState,
 							&vertexToPixels,
-							distanceToCamPolicy);
+							distanceToCamPolicy,
+							usedThreads);
 					printf("Texturing... done (%fs).\n", timer.ticks());
 
 					// Remove occluded polygons (polygons with no texture)

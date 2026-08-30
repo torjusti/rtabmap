@@ -137,6 +137,7 @@ private Q_SLOTS:
 	void cancel();
 
 private:
+	int numThreads() const; // resolves the "Auto" value of the threads spin box
 	std::map<int, Transform> filterNodes(const std::map<int, Transform> & poses);
 	struct CloudGenResult
 	{
