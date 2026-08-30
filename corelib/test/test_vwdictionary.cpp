@@ -22,8 +22,9 @@ using namespace rtabmap;
 
 namespace {
 // Spelled out rather than taken from VWDictionary: the point is to check the
-// strategies that are expected to build an index, not to agree with whatever
-// the implementation classifies as one.
+// strategies that are expected to serialize an index, not to agree with
+// whatever the implementation classifies as one. kNNHnsw is index-backed but
+// its index is not serializable (rebuilt on load), so it is left out.
 bool hasFlannIndex(VWDictionary::NNStrategy strategy)
 {
     return strategy == VWDictionary::kNNFlannNaive ||
@@ -68,7 +69,8 @@ TEST_F(VWDictionaryTest, AddNewWordsIncremental)
         VWDictionary::kNNBruteForce,
         VWDictionary::kNNBruteForceGPU,
         VWDictionary::kNNNanoFlannKdTree,
-        VWDictionary::kNNFlannKdTreeSingle
+        VWDictionary::kNNFlannKdTreeSingle,
+        VWDictionary::kNNHnsw
     };
 
     // That will mke logic below works with numbers chosen
@@ -574,6 +576,7 @@ TEST_F(VWDictionaryTest, NNStrategyName)
     EXPECT_EQ(VWDictionary::nnStrategyName(VWDictionary::kNNBruteForceGPU), "BRUTE FORCE GPU");
     EXPECT_EQ(VWDictionary::nnStrategyName(VWDictionary::kNNNanoFlannKdTree), "NANOFLANN KD-TREE");
     EXPECT_EQ(VWDictionary::nnStrategyName(VWDictionary::kNNFlannKdTreeSingle), "FLANN KD-TREE SINGLE");
+    EXPECT_EQ(VWDictionary::nnStrategyName(VWDictionary::kNNHnsw), "HNSW");
     EXPECT_EQ(VWDictionary::nnStrategyName(VWDictionary::kNNUndef), "Unknown");
 }
 
@@ -651,7 +654,8 @@ TEST_F(VWDictionaryTest, SerializeDeserializeIndex)
         VWDictionary::kNNBruteForce,
         VWDictionary::kNNBruteForceGPU,
         VWDictionary::kNNNanoFlannKdTree,
-        VWDictionary::kNNFlannKdTreeSingle
+        VWDictionary::kNNFlannKdTreeSingle,
+        VWDictionary::kNNHnsw
     };
 
     for(VWDictionary::NNStrategy strategy : strategies)
@@ -1021,6 +1025,89 @@ TEST_F(VWDictionaryTest, FindNNWithVisualWords)
     }
 }
 
+
+// The dictionary lifecycle on the HNSW index: batched incremental inserts,
+// lazy removals (words leave through deleteUnusedWords() and are dropped from
+// the index on the next update()) and insertions reusing the removed slots.
+// Orthogonal descriptors, so every word is far from every other one and the
+// approximate search has no excuse to miss.
+TEST_F(VWDictionaryTest, HnswIncrementalAddRemoveSearch)
+{
+    dict->setNNStrategy(VWDictionary::kNNHnsw);
+    EXPECT_EQ(dict->getNNStrategy(), VWDictionary::kNNHnsw);
+
+    const int dim = 64;
+    cv::Mat batch1(20, dim, CV_32F, cv::Scalar(0));
+    for(int i=0; i<batch1.rows; ++i)
+    {
+        batch1.at<float>(i, i) = 1000.0f;
+    }
+    std::list<int> ids1List = dict->addNewWords(batch1, 1);
+    ASSERT_EQ(ids1List.size(), 20u);
+    dict->update();
+    EXPECT_EQ(dict->getIndexedWordsCount(), 20u);
+    const std::vector<int> ids1(ids1List.begin(), ids1List.end());
+
+    // Every word finds itself
+    std::vector<int> matches = dict->findNN(batch1);
+    ASSERT_EQ(matches.size(), 20u);
+    for(int i=0; i<20; ++i)
+    {
+        EXPECT_EQ(matches[i], ids1[i]) << "i=" << i;
+    }
+
+    // Remove the first five words
+    for(int i=0; i<5; ++i)
+    {
+        dict->removeAllWordRef(ids1[i], 1);
+    }
+    ASSERT_EQ(dict->getUnusedWordsSize(), 5u);
+    dict->deleteUnusedWords();
+    dict->update();
+    EXPECT_EQ(dict->getIndexedWordsCount(), 15u);
+
+    // Their queries have nothing close left: every survivor is equidistant,
+    // so the NNDR check fails and no word is returned.
+    matches = dict->findNN(batch1.rowRange(0, 5));
+    ASSERT_EQ(matches.size(), 5u);
+    for(int i=0; i<5; ++i)
+    {
+        EXPECT_EQ(matches[i], VWDictionary::ID_INVALID) << "i=" << i;
+    }
+
+    // A second batch goes into the slots the removals left behind
+    cv::Mat batch2(10, dim, CV_32F, cv::Scalar(0));
+    for(int i=0; i<batch2.rows; ++i)
+    {
+        batch2.at<float>(i, 32+i) = 1000.0f;
+    }
+    std::list<int> ids2List = dict->addNewWords(batch2, 2);
+    ASSERT_EQ(ids2List.size(), 10u);
+    dict->update();
+    EXPECT_EQ(dict->getIndexedWordsCount(), 25u);
+    const std::vector<int> ids2(ids2List.begin(), ids2List.end());
+
+    // The survivors and the new words are all found
+    matches = dict->findNN(batch1.rowRange(5, 20));
+    ASSERT_EQ(matches.size(), 15u);
+    for(int i=0; i<15; ++i)
+    {
+        EXPECT_EQ(matches[i], ids1[5+i]) << "i=" << i;
+    }
+    matches = dict->findNN(batch2);
+    ASSERT_EQ(matches.size(), 10u);
+    for(int i=0; i<10; ++i)
+    {
+        EXPECT_EQ(matches[i], ids2[i]) << "i=" << i;
+    }
+    // The removed ones still match nothing
+    matches = dict->findNN(batch1.rowRange(0, 5));
+    ASSERT_EQ(matches.size(), 5u);
+    for(int i=0; i<5; ++i)
+    {
+        EXPECT_EQ(matches[i], VWDictionary::ID_INVALID) << "i=" << i;
+    }
+}
 
 // What Kp/ByteToFloat costs in matching quality. Both conversions feed the same
 // exact index, so any difference comes from the distance they induce: expanding
