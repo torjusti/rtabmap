@@ -82,7 +82,6 @@ public:
 		kNNBruteForceGPU,   ///< Brute force GPU-accelerated search (requires CUDA)
 		kNNFlannKdTreeSingle, ///< FLANN single exact kd-tree index (rebuilt whenever a word is added, for an index built once)
 		kNNNanoFlannKdTree,   ///< nanoflann kd-tree index (float descriptors only, incremental)
-		kNNHnsw,            ///< hnswlib HNSW graph (float descriptors only, incremental, never rebuilt: scales to very large dictionaries)
 		kNNUndef            ///< Undefined strategy
 	};
 	
@@ -118,8 +117,6 @@ public:
 			return "NANOFLANN KD-TREE";
 		case kNNFlannKdTreeSingle:
 			return "FLANN KD-TREE SINGLE";
-		case kNNHnsw:
-			return "HNSW";
 		default:
 			return "Unknown";
 		}

@@ -35,7 +35,6 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "rtflann/flann.hpp"
 #include "nanoflann/NanoFlannIndex.h"
-#include "hnswlib/HnswIndex.h"
 #include <boost/crc.hpp>
 #ifdef _OPENMP
 #include <omp.h>
@@ -67,7 +66,6 @@ int resolveCores(int cores)
 FlannIndex::FlannIndex():
 		index_(0),
 		nanoIndex_(0),
-		hnswIndex_(0),
 		nextIndex_(0),
 		featuresType_(0),
 		featuresDim_(0),
@@ -88,13 +86,6 @@ void FlannIndex::release()
 		delete nanoIndex_;
 		nanoIndex_ = 0;
 		UDEBUG("Clearing nanoflann index... done!");
-	}
-	if(hnswIndex_)
-	{
-		UDEBUG("Clearing HNSW index...");
-		delete hnswIndex_;
-		hnswIndex_ = 0;
-		UDEBUG("Clearing HNSW index... done!");
 	}
 	if(index_)
 	{
@@ -209,13 +200,6 @@ static void fillIndexHeader(
 }
 
 std::vector<unsigned char> FlannIndex::serializeIndex(bool computeChecksum) const {
-	if(hnswIndex_)
-	{
-		// The HNSW graph is not serialized: an index loaded back is rebuilt
-		// from the features instead, which parallel insertion keeps affordable.
-		UINFO("HNSW index is not serializable, it will be rebuilt on load.");
-		return std::vector<unsigned char>();
-	}
 	if(nanoIndex_)
 	{
 		std::vector<unsigned char> nanoIndexData = nanoIndex_->serializeIndex();
@@ -376,10 +360,6 @@ size_t FlannIndex::indexedFeatures() const
 	{
 		return nanoIndex_->indexedFeatures();
 	}
-	if(hnswIndex_)
-	{
-		return hnswIndex_->indexedFeatures();
-	}
 	if(!index_)
 	{
 		return 0;
@@ -411,10 +391,6 @@ size_t FlannIndex::memoryUsed() const
 	if(nanoIndex_)
 	{
 		return nanoIndex_->memoryUsed();
-	}
-	if(hnswIndex_)
-	{
-		return hnswIndex_->memoryUsed();
 	}
 	if(!index_)
 	{
@@ -474,21 +450,6 @@ void FlannIndex::buildIndex(
 			useDistanceL1_,
 			rebalancingFactor_ > 1.0f,
 			removedRatioThreshold(rebalancingFactor_));
-		return;
-	}
-
-	if(algorithm == HNSW_INDEX)
-	{
-		UASSERT_MSG(features.type() == CV_32FC1, "HNSW only supports float descriptors (CV_32FC1), convert binary descriptors first.");
-		if(useDistanceL1)
-		{
-			UWARN("HNSW only supports the L2 distance, searching with L2 instead of the requested L1.");
-			useDistanceL1_ = false;
-		}
-		// The graph copies the points and is never rebuilt, so
-		// addedDescriptors_ and the rebalancing factor are not used here.
-		hnswIndex_ = new HnswIndex();
-		hnswIndex_->buildIndex(features);
 		return;
 	}
 
@@ -593,14 +554,6 @@ bool FlannIndex::loadIndex(
 		return false;
 	}
 	UASSERT(indexData!=NULL);
-	if(algorithm == HNSW_INDEX) {
-		// Never serialized, see serializeIndex(): whatever the data is, it is
-		// not an HNSW index.
-		if(error) {
-			*error = "HNSW indexes are not serialized, the index has to be rebuilt.";
-		}
-		return false;
-	}
 #ifdef WIN32
 	if(!isNanoFlannAlgorithm(algorithm)) {
 		UERROR("FLANN index deserialization is not yet implemented on Windows. Index cannot be loaded from memory buffer.");
@@ -822,7 +775,7 @@ bool FlannIndex::loadIndex(
 
 bool FlannIndex::isBuilt()
 {
-	return index_!=0 || nanoIndex_!=0 || hnswIndex_!=0;
+	return index_!=0 || nanoIndex_!=0;
 }
 
 std::vector<unsigned int> FlannIndex::addPoints(const cv::Mat & features)
@@ -830,10 +783,6 @@ std::vector<unsigned int> FlannIndex::addPoints(const cv::Mat & features)
 	if(nanoIndex_)
 	{
 		return nanoIndex_->addPoints(features);
-	}
-	if(hnswIndex_)
-	{
-		return hnswIndex_->addPoints(features);
 	}
 	if(!index_)
 	{
@@ -947,11 +896,6 @@ void FlannIndex::removePoint(unsigned int index)
 		nanoIndex_->removePoint(index);
 		return;
 	}
-	if(hnswIndex_)
-	{
-		hnswIndex_->removePoint(index);
-		return;
-	}
 	if(!index_)
 	{
 		UERROR("Flann index not yet created!");
@@ -997,13 +941,6 @@ void FlannIndex::knnSearch(
 	{
 		// exact search, "checks", "eps" and "sorted" don't apply
 		nanoIndex_->knnSearch(query, indices, dists, knn);
-		return;
-	}
-	if(hnswIndex_)
-	{
-		// "checks" is the search budget (hnswlib's "ef"); "eps" doesn't apply
-		// and the neighbors always come back sorted
-		hnswIndex_->knnSearch(query, indices, dists, knn, checks, cores);
 		return;
 	}
 	if(!index_)
@@ -1070,11 +1007,6 @@ void FlannIndex::radiusSearch(
 	{
 		// "checks" and "cores" don't apply, it searches on one core
 		nanoIndex_->radiusSearch(query, indices, dists, radius, maxNeighbors, eps, sorted);
-		return;
-	}
-	if(hnswIndex_)
-	{
-		UERROR("Radius search is not supported by the HNSW index!");
 		return;
 	}
 	if(!index_)
