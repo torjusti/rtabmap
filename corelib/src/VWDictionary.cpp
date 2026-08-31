@@ -64,18 +64,16 @@ static bool isFlannStrategy(VWDictionary::NNStrategy strategy)
 		   strategy == VWDictionary::kNNFlannKdTree ||
 		   strategy == VWDictionary::kNNFlannLSH ||
 		   strategy == VWDictionary::kNNNanoFlannKdTree ||
-		   strategy == VWDictionary::kNNFlannKdTreeSingle ||
-		   strategy == VWDictionary::kNNHnsw;
+		   strategy == VWDictionary::kNNFlannKdTreeSingle;
 }
 
-// Whether the strategy indexes float descriptors only (kd-trees and the HNSW
-// graph), in which case binary descriptors have to be converted first.
+// Whether the strategy indexes float descriptors in a kd-tree, in which case
+// binary descriptors have to be converted first.
 static bool isKdTreeStrategy(VWDictionary::NNStrategy strategy)
 {
 	return strategy == VWDictionary::kNNFlannKdTree ||
 		   strategy == VWDictionary::kNNNanoFlannKdTree ||
-		   strategy == VWDictionary::kNNFlannKdTreeSingle ||
-		   strategy == VWDictionary::kNNHnsw;
+		   strategy == VWDictionary::kNNFlannKdTreeSingle;
 }
 
 static FlannIndex::flann_algorithm_t flannAlgorithm(VWDictionary::NNStrategy strategy)
@@ -90,8 +88,6 @@ static FlannIndex::flann_algorithm_t flannAlgorithm(VWDictionary::NNStrategy str
 		return FlannIndex::NANOFLANN_INDEX_KDTREE_SINGLE;
 	case VWDictionary::kNNFlannKdTreeSingle:
 		return FlannIndex::FLANN_INDEX_KDTREE_SINGLE;
-	case VWDictionary::kNNHnsw:
-		return FlannIndex::HNSW_INDEX;
 	default:
 		return FlannIndex::FLANN_INDEX_KDTREE; // kNNFlannKdTree
 	}
@@ -577,14 +573,6 @@ void VWDictionary::update()
 				UTimer timer;
 				timer.start();
 				ULOGGER_DEBUG("Incremental FLANN: Inserting %d words (byteToFloat=%s)...", (int)_notIndexedWords.size(), _byteToFloat?"true":"false");
-				// The insertions are batched in one matrix: a single
-				// addPoints() call lets the backend index the whole batch in
-				// parallel, which is what keeps the per-node cost of the HNSW
-				// graph comparable to a kd-tree append.
-				cv::Mat batch;
-				std::vector<int> wordIds;
-				wordIds.reserve(_notIndexedWords.size());
-				int row = 0;
 				for(std::set<int>::iterator iter=_notIndexedWords.begin(); iter!=_notIndexedWords.end(); ++iter)
 				{
 					VisualWord* w = uValue(_visualWords, *iter, (VisualWord*)0);
@@ -607,48 +595,28 @@ void VWDictionary::update()
 					{
 						descriptor = w->getDescriptor();
 					}
-					UASSERT(descriptor.rows == 1);
 
-					if(batch.empty())
+					int index = 0;
+					if(!_flannIndex->isBuilt())
 					{
-						batch = cv::Mat((int)_notIndexedWords.size(), descriptor.cols, descriptor.type());
+						UDEBUG("Building FLANN index... (strategy=%s, byteToFloat=%s, useDistanceL1=%s, rebalancingFactor=%f)",
+							nnStrategyName(_strategy).c_str(), _byteToFloat?"true":"false", useDistanceL1_?"true":"false", _rebalancingFactor);
+						_flannIndex->buildIndex(
+							flannAlgorithm(_strategy),
+							descriptor, useDistanceL1_, _rebalancingFactor);
+						UDEBUG("Building FLANN index... done!");
 					}
-					UASSERT(descriptor.cols == batch.cols);
-					UASSERT(descriptor.type() == batch.type());
-					descriptor.copyTo(batch.row(row++));
-					wordIds.push_back(w->id());
-				}
-				UASSERT(row == batch.rows);
-
-				std::vector<unsigned int> indexes;
-				if(!_flannIndex->isBuilt())
-				{
-					UDEBUG("Building FLANN index... (strategy=%s, byteToFloat=%s, useDistanceL1=%s, rebalancingFactor=%f)",
-						nnStrategyName(_strategy).c_str(), _byteToFloat?"true":"false", useDistanceL1_?"true":"false", _rebalancingFactor);
-					_flannIndex->buildIndex(
-						flannAlgorithm(_strategy),
-						batch, useDistanceL1_, _rebalancingFactor);
-					UDEBUG("Building FLANN index... done!");
-					// buildIndex() indexes the rows in order
-					indexes.resize(batch.rows);
-					for(int i=0; i<batch.rows; ++i)
+					else
 					{
-						indexes[i] = (unsigned int)i;
+						UASSERT(descriptor.cols == _flannIndex->featuresDim());
+						UASSERT(descriptor.type() == _flannIndex->featuresType());
+						UASSERT(descriptor.rows == 1);
+						index = _flannIndex->addPoints(descriptor).front();
 					}
-				}
-				else
-				{
-					UASSERT(batch.cols == _flannIndex->featuresDim());
-					UASSERT(batch.type() == _flannIndex->featuresType());
-					indexes = _flannIndex->addPoints(batch);
-				}
-				UASSERT(indexes.size() == wordIds.size());
-				for(size_t i=0; i<indexes.size(); ++i)
-				{
 					std::pair<std::map<int, int>::iterator, bool> inserted;
-					inserted = _mapIndexId.insert(std::pair<int, int>((int)indexes[i], wordIds[i]));
+					inserted = _mapIndexId.insert(std::pair<int, int>(index, w->id()));
 					UASSERT(inserted.second);
-					inserted = _mapIdIndex.insert(std::pair<int, int>(wordIds[i], (int)indexes[i]));
+					inserted = _mapIdIndex.insert(std::pair<int, int>(w->id(), index));
 					UASSERT(inserted.second);
 				}
 				ULOGGER_DEBUG("Incremental FLANN: Inserting %d words... done! (in %f s)", (int)_notIndexedWords.size(), timer.ticks());

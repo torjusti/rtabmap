@@ -9,8 +9,6 @@ INPUT="/media/torjusti/Files/Chaos - Koda/merged.db"
 OUTDIR="/media/torjusti/Files/rtabmap-bench/profile-stages"
 STOP=${1:-19700}
 LABEL=${2:-koda_userparams}
-shift $(( $# > 2 ? 2 : $# ))
-EXTRA=("$@")   # extra --Param value pairs
 export LD_LIBRARY_PATH=$BIN${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 mkdir -p "$OUTDIR"
 DB="$OUTDIR/profile_${LABEL}_${STOP}.db"
@@ -51,7 +49,7 @@ PARAMS=(
 )
 
 echo "======== $(date -Is) KODA USERPARAMS reprocess stop=$STOP ========"
-/usr/bin/time -v "$BIN/rtabmap-reprocess" "${PARAMS[@]}" ${EXTRA[@]+"${EXTRA[@]}"} "$INPUT" "$DB" > "$LOG" 2>&1
+/usr/bin/time -v "$BIN/rtabmap-reprocess" "${PARAMS[@]}" "$INPUT" "$DB" > "$LOG" 2>&1
 echo "--- wall / closures ---"
 grep -aE "Elapsed \(wall clock\)|Total loop closures|Percent of CPU" "$LOG" || true
 echo "======== $(date -Is) DONE ========"

@@ -35,17 +35,15 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 namespace rtabmap {
 
 class NanoFlannIndex;
-class HnswIndex;
 
 /**
  * @class FlannIndex
  * @brief Nearest neighbor index over a set of features
  *
- * Wraps the search structures of the vendored rtflann, nanoflann and hnswlib
- * libraries behind one interface, the structure being chosen with
- * flann_algorithm_t at build time. Used for the visual word dictionary
- * (VWDictionary) and for the 2D point searches of visual registration
- * (RegistrationVis).
+ * Wraps the search structures of the vendored rtflann and nanoflann libraries
+ * behind one interface, the structure being chosen with flann_algorithm_t at
+ * build time. Used for the visual word dictionary (VWDictionary) and for the
+ * 2D point searches of visual registration (RegistrationVis).
  *
  * The features are not copied: the index refers to the matrices it is given and
  * keeps them alive, cv::Mat data being reference counted, so they must not be
@@ -86,15 +84,6 @@ public:
 		/// weight-balanced tree accepting addPoints()/removePoint(), which
 		/// cannot be serialized while some of its points are removed.
 		NANOFLANN_INDEX_KDTREE_SINGLE = 100,
-
-		/// hnswlib HNSW graph (float features, squared L2 only). Approximate
-		/// like the randomized rtflann kd-trees, but never rebuilt: its recall
-		/// doesn't degrade as points are added and removed, and there is no
-		/// rebuild stall, making it the structure that scales to very large
-		/// dictionaries. "checks" is its search budget (hnswlib's "ef") and the
-		/// rebalancing factor is ignored. Cannot be serialized: it is rebuilt
-		/// when loaded back. See HnswIndex.
-		HNSW_INDEX = 200,
 	};
 
 	FlannIndex();
@@ -250,8 +239,7 @@ public:
 
 private:
 	void * index_;               // rtflann backend
-	NanoFlannIndex * nanoIndex_; // nanoflann backend
-	HnswIndex * hnswIndex_;      // hnswlib backend, only one of the three is set
+	NanoFlannIndex * nanoIndex_; // nanoflann backend, only one of the two is set
 	unsigned int nextIndex_;
 	int featuresType_;
 	int featuresDim_;
