@@ -113,6 +113,8 @@ Rtabmap::Rtabmap() :
 	_verifyLoopClosureHypothesis(Parameters::defaultVhEpEnabled()),
 	_maxRetrieved(Parameters::defaultRtabmapMaxRetrieved()),
 	_maxLocalRetrieved(Parameters::defaultRGBDMaxLocalRetrieved()),
+	_optimizeEveryNSteps(Parameters::defaultRGBDOptimizeEveryNSteps()),
+	_optimizationsDeferred(0),
 	_maxRepublished(Parameters::defaultRtabmapMaxRepublished()),
 	_rawDataKept(Parameters::defaultMemImageKept()),
 	_statisticLogsBufferedInRAM(Parameters::defaultRtabmapStatisticLogsBufferedInRAM()),
@@ -526,6 +528,19 @@ void Rtabmap::close(bool databaseSaved, const std::string & ouputDatabasePath)
 		}
 		if(databaseSaved)
 		{
+			if((_optimizationsDeferred > 0 || !_deferredClosureLinks.empty()) &&
+			   _rgbdSlamMode &&
+			   _memory->isIncremental() &&
+			   _optimizedPoses.size() &&
+			   _memory->getLastWorkingSignature(true))
+			{
+				// Some optimizations were deferred (RGBD/OptimizeEveryNSteps), make sure
+				// the saved poses include the closures accepted since the last one.
+				UINFO("Running final graph optimization before saving (%d deferred closure links)",
+						(int)_deferredClosureLinks.size());
+				cv::Mat covariance;
+				this->optimizeCurrentMap(_memory->getLastWorkingSignature(true)->id(), false, _optimizedPoses, covariance, &_constraints);
+			}
 			if(_memory->isGraphReduced() && _memory->isIncremental())
 			{
 				// Force reducing graph, then remove filtered nodes from the optimized poses
@@ -543,6 +558,8 @@ void Rtabmap::close(bool databaseSaved, const std::string & ouputDatabasePath)
 		_memory = 0;
 	}
 	_optimizedPoses.clear();
+	_optimizationsDeferred = 0;
+	_deferredClosureLinks.clear();
 	_lastLocalizationPose.setNull();
 
 	if(_bayesFilter)
@@ -594,6 +611,11 @@ void Rtabmap::parseParameters(const ParametersMap & parameters)
 	Parameters::parse(parameters, Parameters::kVhEpEnabled(), _verifyLoopClosureHypothesis);
 	Parameters::parse(parameters, Parameters::kRtabmapMaxRetrieved(), _maxRetrieved);
 	Parameters::parse(parameters, Parameters::kRGBDMaxLocalRetrieved(), _maxLocalRetrieved);
+	Parameters::parse(parameters, Parameters::kRGBDOptimizeEveryNSteps(), _optimizeEveryNSteps);
+	if(_optimizeEveryNSteps < 1)
+	{
+		_optimizeEveryNSteps = 1;
+	}
 	Parameters::parse(parameters, Parameters::kRtabmapMaxRepublished(), _maxRepublished);
 	if(_maxRepublished == 0 || !_publishLastSignatureData)
 	{
@@ -1122,6 +1144,8 @@ void Rtabmap::resetMemory()
 	_globalScanMap.clear();
 	_globalScanMapPoses.clear();
 	_nodesToRepublish.clear();
+	_optimizationsDeferred = 0;
+	_deferredClosureLinks.clear();
 	_lastRejectedLoopClosureIds = std::make_pair(0,0);
 	this->clearPath(0);
 
@@ -3926,9 +3950,26 @@ bool Rtabmap::process(
 				rejectedLoopClosure = true;
 			}
 		}
+		else if(_memory->isIncremental() &&
+				_optimizeEveryNSteps > 1 &&
+				statistics_.reducedIds().empty() &&
+				++_optimizationsDeferred < _optimizeEveryNSteps)
+		{
+			// Deferred optimization (RGBD/OptimizeEveryNSteps): keep chaining poses with
+			// odometry and the current map correction. Accumulated closures will be
+			// checked against RGBD/OptimizeMaxError at the next real optimization.
+			_deferredClosureLinks.insert(_deferredClosureLinks.end(), loopClosureLinksAdded.begin(), loopClosureLinksAdded.end());
+			UINFO("Map optimization deferred (%d/%d, %d closure links pending)",
+					_optimizationsDeferred, _optimizeEveryNSteps, (int)_deferredClosureLinks.size());
+		}
 		else
 		{
 			UINFO("Update map correction");
+			_optimizationsDeferred = 0;
+			// Include links accepted while optimization was deferred, so the
+			// wrong-loop-closure check below covers them too.
+			loopClosureLinksAdded.insert(loopClosureLinksAdded.end(), _deferredClosureLinks.begin(), _deferredClosureLinks.end());
+			_deferredClosureLinks.clear();
 			std::map<int, Transform> poses = _optimizedPoses;
 
 			// if _optimizeFromGraphEnd parameter just changed state, don't use optimized poses as guess
