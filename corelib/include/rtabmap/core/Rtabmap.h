@@ -962,6 +962,9 @@ private:
 	bool _verifyLoopClosureHypothesis;
 	unsigned int _maxRetrieved;
 	unsigned int _maxLocalRetrieved;
+	int _optimizeEveryNSteps;
+	int _optimizationsDeferred;
+	std::list<std::pair<int, int> > _deferredClosureLinks;
 	unsigned int _maxRepublished;
 	bool _rawDataKept;
 	bool _statisticLogsBufferedInRAM;
