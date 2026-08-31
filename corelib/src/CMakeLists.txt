@@ -135,7 +135,6 @@ SET(SRC_FILES
     rtflann/ext/lz4hc.c
     FlannIndex.cpp
     nanoflann/NanoFlannIndex.cpp
-    hnswlib/HnswIndex.cpp
 
     #clams stuff
     clams/discrete_depth_distortion_model_helpers.cpp
