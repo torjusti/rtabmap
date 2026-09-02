@@ -38,6 +38,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QInputDialog>
 #include <QColorDialog>
 #include <QFormLayout>
+#include <QLabel>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QCheckBox>
@@ -130,6 +131,14 @@ namespace rtabmap {
 // small enough to keep the information matrix numerically sane.
 const double kAnchorSigmaZFree = 1e6;
 
+// Poses and clouds are 32-bit floats: beyond ~30 km from the origin, ulp is
+// centimetres or worse. The first anchor is stored as (0, 0); later CRS
+// coordinates (Web Mercator, UTM, Lambert-93, local TM) are stored as metres
+// from that point.
+const double kAnchorCoordLimitM = 30000.0;
+const char * kAnchorFrameOffsetXParam = "DatabaseViewer/AnchorFrameOffsetX";
+const char * kAnchorFrameOffsetYParam = "DatabaseViewer/AnchorFrameOffsetY";
+
 // Table item displaying formatted text but sorting by a numeric value, so
 // that e.g. "10.00" sorts after "9.00" in the anchor points table.
 class NumericTableWidgetItem : public QTableWidgetItem
@@ -164,6 +173,9 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	linkRefiningDialog_(new LinkRefiningDialog(this)),
 	exportDataDialog_(new ExportDialog(this)),
 	cloudViewer3dNodeId_(0),
+	anchorFrameOffsetSet_(false),
+	anchorFrameOffsetX_(0.0),
+	anchorFrameOffsetY_(0.0),
 	savedMaximized_(false),
 	firstCall_(true),
 	iniFilePath_(ini),
@@ -1044,6 +1056,7 @@ bool DatabaseViewer::openDatabase(const QString & path, const ParametersMap & ov
 
 				// add overridden parameters
 				uInsert(parameters, overriddenParameters);
+				loadAnchorFrameOffset(parameters);
 
 				if(parameters.size())
 				{
@@ -1254,9 +1267,15 @@ bool DatabaseViewer::closeDatabase()
 				{
 					uInsert(dbParameters, ParametersPair(Parameters::kOptimizerPriorsIgnored(), "false"));
 					uInsert(dbParameters, ParametersPair(Parameters::kOptimizerRobust(), "false"));
+					mergeAnchorFrameOffset(dbParameters);
 					dbDriver_->addInfoAfterRun(0, 0, 0, 0, 0, dbParameters);
 				}
 			}
+		}
+
+		if(anchorFrameOffsetSet_)
+		{
+			saveAnchorFrameOffset();
 		}
 
 		if(	generatedLocalMaps_.size() &&
@@ -1351,6 +1370,9 @@ bool DatabaseViewer::closeDatabase()
 		ui_->graphViewer->clearAll();
 		occupancyGridViewer_->clear();
 		anchorResidualsXY_.clear();
+		anchorFrameOffsetSet_ = false;
+		anchorFrameOffsetX_ = 0.0;
+		anchorFrameOffsetY_ = 0.0;
 		updateAnchorPointsTable();
 		ui_->menuEdit->setEnabled(false);
 		ui_->actionGenerate_3D_map_pcd->setEnabled(false);
@@ -7567,16 +7589,21 @@ void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal)
 	if(!getAnchorPointInput(
 			tr("Add anchor point (seen from node %1)").arg(nodeId),
 			tr("Enter the known world coordinates of the picked point "
-			   "(e.g. from your 2D map, in a local CRS with small coordinates).\n"
+			   "(paste from QGIS is fine, including Web Mercator / UTM / Lambert-93).\n"
+			   "The first anchor becomes (0, 0) in the map; later anchors are stored relative to it.\n"
 			   "Picked point is currently at %1, %2, %3 in the map frame.")
 			   .arg(pointWorld.x(),0,'f',2).arg(pointWorld.y(),0,'f',2).arg(pointWorld.z(),0,'f',2),
 			worldX, worldY, worldZ, sigmaXY, sigmaZ))
 	{
 		return;
 	}
+	if(!applyAnchorFrameOffset(worldX, worldY, !hasAnchorPriors()))
+	{
+		return;
+	}
 
 	UINFO("Anchor %d created: observing node %d, local offset=(%.2f, %.2f, %.2f) (%.2f m from node), "
-		  "current estimated world position=(%.2f, %.2f, %.2f), entered coordinates=(%.3f, %.3f, %.3f), "
+		  "current estimated world position=(%.2f, %.2f, %.2f), map-frame prior=(%.3f, %.3f, %.3f)%s, "
 		  "sigma XY=%.2f m, sigma Z=%s",
 			-landmarkId,
 			nodeId,
@@ -7584,6 +7611,7 @@ void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal)
 			tLocal.getNorm(),
 			pointWorld.x(), pointWorld.y(), pointWorld.z(),
 			worldX, worldY, worldZ,
+			anchorFrameOffsetSet_?uFormat(" (CRS origin %.3f, %.3f)", anchorFrameOffsetX_, anchorFrameOffsetY_).c_str():"",
 			sigmaXY, sigmaZ>=kAnchorSigmaZFree?"unconstrained":uFormat("%.2f m", sigmaZ).c_str());
 
 	// Observation link: node -> landmark, orientation-less (angular variance
@@ -7670,9 +7698,10 @@ bool DatabaseViewer::getAnchorPointInput(
 	// Paste "X,Y" (or "X,Y,Z") directly, e.g. coordinates copied from QGIS,
 	// to fill the spin boxes below in one go.
 	QLineEdit * pasteEdit = new QLineEdit(&dialog);
-	pasteEdit->setPlaceholderText(tr("e.g. 2679.3077,5568.9452 (copied from QGIS)"));
+	pasteEdit->setPlaceholderText(tr("e.g. 291910.3,6250216.8 (copied from QGIS)"));
 	pasteEdit->setToolTip(tr("Paste coordinates as \"X,Y\" or \"X,Y,Z\" (decimal point, separated "
-			"by comma, semicolon or spaces) to fill the fields below automatically."));
+			"by comma, semicolon or spaces) to fill the fields below automatically. "
+			"The first point is stored as (0, 0); later points are metres from that origin."));
 	QCheckBox * checkZFree = new QCheckBox(tr("Elevation (Z) unknown, leave unconstrained"), &dialog);
 	connect(pasteEdit, &QLineEdit::textChanged, &dialog, [spinX, spinY, spinZ, checkZFree](const QString & text)
 	{
@@ -7697,6 +7726,16 @@ bool DatabaseViewer::getAnchorPointInput(
 	form->addRow(tr("World X (easting):"), spinX);
 	form->addRow(tr("World Y (northing):"), spinY);
 	form->addRow(tr("World Z (elevation):"), spinZ);
+
+	if(anchorFrameOffsetSet_)
+	{
+		QLabel * originLabel = new QLabel(
+				tr("Stored relative to first anchor at X=%1, Y=%2 (map frame origin).")
+				.arg(anchorFrameOffsetX_, 0, 'f', 3)
+				.arg(anchorFrameOffsetY_, 0, 'f', 3), &dialog);
+		originLabel->setWordWrap(true);
+		form->addRow(originLabel);
+	}
 
 	checkZFree->setChecked(zUnconstrained);
 	checkZFree->setToolTip(tr("When checked, the prior does not constrain Z at all; the optimizer keeps "
@@ -7731,19 +7770,10 @@ bool DatabaseViewer::getAnchorPointInput(
 		{
 			return false;
 		}
-		if(fabs(spinX->value()) >= 30000.0 ||
-		   fabs(spinY->value()) >= 30000.0 ||
-		   fabs(spinZ->value()) >= 30000.0)
+		if(fabs(spinZ->value()) >= kAnchorCoordLimitM)
 		{
-			// Poses and clouds are stored/rendered with 32-bit floats: at
-			// e.g. UTM northing magnitudes (millions of meters), resolution
-			// drops to half a meter, silently corrupting the optimized map.
 			QMessageBox::warning(this, title,
-					tr("Coordinates are limited to +/-30 km. RTAB-Map stores poses with "
-					   "32-bit floats, so large coordinates (e.g. raw EPSG/UTM easting/northing) "
-					   "would lose sub-meter precision and corrupt the optimized map. "
-					   "Use a local CRS instead: subtract a constant site offset from your "
-					   "map coordinates, and use the same offset for all anchor points."));
+					tr("Elevation is limited to +/-30 km. RTAB-Map stores poses with 32-bit floats."));
 			continue;
 		}
 		break;
@@ -7770,6 +7800,110 @@ cv::Mat DatabaseViewer::makeAnchorPriorInfMatrix(double sigmaXY, double sigmaZ)
 	inf.at<double>(2,2) = 1.0/(sigmaZ*sigmaZ);
 	inf.at<double>(3,3) = inf.at<double>(4,4) = inf.at<double>(5,5) = 1.0/9999.0;
 	return inf;
+}
+
+void DatabaseViewer::loadAnchorFrameOffset(const ParametersMap & parameters)
+{
+	anchorFrameOffsetSet_ = false;
+	anchorFrameOffsetX_ = 0.0;
+	anchorFrameOffsetY_ = 0.0;
+	ParametersMap::const_iterator xIter = parameters.find(kAnchorFrameOffsetXParam);
+	ParametersMap::const_iterator yIter = parameters.find(kAnchorFrameOffsetYParam);
+	if(xIter != parameters.end() && yIter != parameters.end() &&
+	   !xIter->second.empty() && !yIter->second.empty())
+	{
+		anchorFrameOffsetX_ = uStr2Double(xIter->second);
+		anchorFrameOffsetY_ = uStr2Double(yIter->second);
+		anchorFrameOffsetSet_ = true;
+		UINFO("Loaded anchor frame offset X=%.6f Y=%.6f", anchorFrameOffsetX_, anchorFrameOffsetY_);
+	}
+}
+
+void DatabaseViewer::mergeAnchorFrameOffset(ParametersMap & parameters) const
+{
+	if(anchorFrameOffsetSet_)
+	{
+		uInsert(parameters, ParametersPair(kAnchorFrameOffsetXParam, uNumber2Str(anchorFrameOffsetX_, 12, true)));
+		uInsert(parameters, ParametersPair(kAnchorFrameOffsetYParam, uNumber2Str(anchorFrameOffsetY_, 12, true)));
+	}
+}
+
+void DatabaseViewer::saveAnchorFrameOffset()
+{
+	if(!dbDriver_ || !anchorFrameOffsetSet_)
+	{
+		return;
+	}
+	ParametersMap dbParameters = dbDriver_->getLastParameters();
+	mergeAnchorFrameOffset(dbParameters);
+	dbDriver_->addInfoAfterRun(0, 0, 0, 0, 0, dbParameters);
+}
+
+bool DatabaseViewer::hasAnchorPriors()
+{
+	std::multimap<int, Link> allLinks = updateLinksWithModifications(links_);
+	for(std::multimap<int, Link>::iterator iter=allLinks.begin(); iter!=allLinks.end(); ++iter)
+	{
+		if(iter->second.from() == iter->second.to() &&
+		   iter->second.from() < 0 &&
+		   iter->second.type() == Link::kPosePrior)
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool DatabaseViewer::applyAnchorFrameOffset(double & x, double & y, bool allowSetOrigin)
+{
+	if(!anchorFrameOffsetSet_)
+	{
+		if(!allowSetOrigin)
+		{
+			if(fabs(x) >= kAnchorCoordLimitM || fabs(y) >= kAnchorCoordLimitM)
+			{
+				QMessageBox::warning(this, tr("Anchor point"),
+						tr("Coordinates are more than 30 km from the map origin. "
+						   "Later anchors must use the same CRS as the first one "
+						   "(they are stored relative to it)."));
+				return false;
+			}
+			return true;
+		}
+		const bool largeCrs = fabs(x) >= kAnchorCoordLimitM || fabs(y) >= kAnchorCoordLimitM;
+		anchorFrameOffsetX_ = x;
+		anchorFrameOffsetY_ = y;
+		anchorFrameOffsetSet_ = true;
+		saveAnchorFrameOffset();
+		UINFO("Anchor frame origin set to CRS (%.6f, %.6f); first prior stored as (0, 0)",
+				anchorFrameOffsetX_, anchorFrameOffsetY_);
+		if(largeCrs)
+		{
+			QMessageBox::information(this, tr("Anchor frame"),
+					tr("This first anchor is stored as (0, 0) and later anchors will be "
+					   "stored relative to:\nX = %1\nY = %2\n\n"
+					   "RTAB-Map's map is in metres from this point. Paste further QGIS "
+					   "coordinates in the same CRS.")
+					.arg(anchorFrameOffsetX_, 0, 'f', 3)
+					.arg(anchorFrameOffsetY_, 0, 'f', 3));
+		}
+		x = 0.0;
+		y = 0.0;
+		return true;
+	}
+
+	x -= anchorFrameOffsetX_;
+	y -= anchorFrameOffsetY_;
+	if(fabs(x) >= kAnchorCoordLimitM || fabs(y) >= kAnchorCoordLimitM)
+	{
+		QMessageBox::warning(this, tr("Anchor point"),
+				tr("This point is more than 30 km from the first anchor "
+				   "(map origin at X=%1, Y=%2). Check that it was copied from the same CRS.")
+				.arg(anchorFrameOffsetX_, 0, 'f', 3)
+				.arg(anchorFrameOffsetY_, 0, 'f', 3));
+		return false;
+	}
+	return true;
 }
 
 void DatabaseViewer::removeAnchorPoint(int landmarkId)
@@ -7854,10 +7988,12 @@ void DatabaseViewer::updateAnchorPointsTable()
 		const Link & prior = iter->second;
 		double sigmaXY = prior.infMatrix().at<double>(0,0)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(0,0)):0.0;
 		double sigmaZ = prior.infMatrix().at<double>(2,2)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(2,2)):0.0;
+		const double displayX = prior.transform().x() + (anchorFrameOffsetSet_ ? anchorFrameOffsetX_ : 0.0);
+		const double displayY = prior.transform().y() + (anchorFrameOffsetSet_ ? anchorFrameOffsetY_ : 0.0);
 		table->setItem(row, 0, new NumericTableWidgetItem(QString::number(-iter->first), -iter->first));
 		table->setItem(row, 1, new QTableWidgetItem(nodes.isEmpty()?"-":nodes.join(", ")));
-		table->setItem(row, 2, new NumericTableWidgetItem(QString::number(prior.transform().x(), 'f', 3), prior.transform().x()));
-		table->setItem(row, 3, new NumericTableWidgetItem(QString::number(prior.transform().y(), 'f', 3), prior.transform().y()));
+		table->setItem(row, 2, new NumericTableWidgetItem(QString::number(displayX, 'f', 3), displayX));
+		table->setItem(row, 3, new NumericTableWidgetItem(QString::number(displayY, 'f', 3), displayY));
 		bool zFree = sigmaZ >= kAnchorSigmaZFree;
 		table->setItem(row, 4, zFree?
 				new NumericTableWidgetItem(tr("-"), std::numeric_limits<double>::max()):
@@ -7932,12 +8068,13 @@ void DatabaseViewer::editSelectedAnchorPoint()
 		return;
 	}
 	const Link & prior = priorIter->second;
-	double x = prior.transform().x();
-	double y = prior.transform().y();
+	double x = prior.transform().x() + (anchorFrameOffsetSet_ ? anchorFrameOffsetX_ : 0.0);
+	double y = prior.transform().y() + (anchorFrameOffsetSet_ ? anchorFrameOffsetY_ : 0.0);
 	double z = prior.transform().z();
 	double sigmaXY = prior.infMatrix().at<double>(0,0)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(0,0)):0.3;
 	double sigmaZ = prior.infMatrix().at<double>(2,2)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(2,2)):2.0;
-	if(getAnchorPointInput(tr("Edit anchor point %1").arg(-landmarkId), QString(), x, y, z, sigmaXY, sigmaZ))
+	if(getAnchorPointInput(tr("Edit anchor point %1").arg(-landmarkId), QString(), x, y, z, sigmaXY, sigmaZ) &&
+	   applyAnchorFrameOffset(x, y, false))
 	{
 		Link newPrior(landmarkId, landmarkId, Link::kPosePrior,
 				Transform((float)x, (float)y, (float)z, 0, 0, 0),

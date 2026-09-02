@@ -261,6 +261,14 @@ private:
 			double & worldX, double & worldY, double & worldZ,
 			double & sigmaXY, double & sigmaZ);
 	static cv::Mat makeAnchorPriorInfMatrix(double sigmaXY, double sigmaZ);
+	void loadAnchorFrameOffset(const ParametersMap & parameters);
+	void saveAnchorFrameOffset();
+	void mergeAnchorFrameOffset(ParametersMap & parameters) const;
+	bool hasAnchorPriors();
+	// Convert pasted/edited CRS coordinates into the map frame (metres from
+	// the first large anchor). Returns false if the point is still too far
+	// from that origin for float32 poses.
+	bool applyAnchorFrameOffset(double & x, double & y, bool allowSetOrigin);
 	void removeAnchorPoint(int landmarkId);
 	int selectedAnchorLandmarkId() const;
 	void exportPoses(int format);
@@ -322,6 +330,12 @@ private:
 	// point picked in that view can be expressed in the node's frame.
 	int cloudViewer3dNodeId_;
 	Transform cloudViewer3dPose_;
+
+	// First CRS coordinate becomes the map origin; later anchors are stored
+	// relative to it so poses stay in float32.
+	bool anchorFrameOffsetSet_;
+	double anchorFrameOffsetX_;
+	double anchorFrameOffsetY_;
 
 	bool savedMaximized_;
 	bool firstCall_;
