@@ -33,7 +33,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QDialog>
 
 class QLabel;
-class QTextEdit;
+class QPlainTextEdit;
 class QProgressBar;
 class QPushButton;
 class QCheckBox;
@@ -74,7 +74,7 @@ private Q_SLOTS:
 
 private:
 	QLabel * _text;
-	QTextEdit * _detailedText;
+	QPlainTextEdit * _detailedText;
 	QProgressBar * _progressBar;
 	QPushButton * _closeButton;
 	QPushButton * _cancelButton;
