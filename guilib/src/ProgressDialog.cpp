@@ -28,7 +28,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "rtabmap/gui/ProgressDialog.h"
 #include <QLayout>
 #include <QProgressBar>
-#include <QTextEdit>
+#include <QPlainTextEdit>
 #include <QLabel>
 #include <QPushButton>
 #include <QtGui/QCloseEvent>
@@ -36,6 +36,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QtCore/QTimer>
 #include <QtCore/QTime>
 #include <QScrollBar>
+#include <QTextCursor>
+#include <QTextCharFormat>
 #include "rtabmap/utilite/ULogger.h"
 
 namespace rtabmap {
@@ -49,13 +51,11 @@ ProgressDialog::ProgressDialog(QWidget *parent, Qt::WindowFlags flags) :
 	_text->setWordWrap(true);
 	_progressBar = new QProgressBar(this);
 	_progressBar->setMaximum(1);
-	_detailedText  = new QTextEdit(this);
+	_detailedText = new QPlainTextEdit(this);
 	_detailedText->setReadOnly(true);
-	_detailedText->setLineWrapMode(QTextEdit::NoWrap);
-	// appendText() scrolls to the bottom, which lays out the whole document:
-	// bound the number of kept lines so that appending stays cheap even when
-	// millions of lines are logged (oldest lines are dropped).
-	_detailedText->document()->setMaximumBlockCount(10000);
+	_detailedText->setLineWrapMode(QPlainTextEdit::NoWrap);
+	_detailedText->setUndoRedoEnabled(false);
+	_detailedText->setMaximumBlockCount(10000);
 	_closeButton = new QPushButton(this);
 	_closeButton->setText("Close");
 	_cancelButton = new QPushButton(this);
@@ -105,13 +105,23 @@ void ProgressDialog::setCancelButtonVisible(bool visible)
 
 void ProgressDialog::appendText(const QString & text, const QColor & color)
 {
-	//UDEBUG(text.toStdString().c_str());
 	_text->setText(text);
-	QString html = tr("<html><font color=\"#999999\">%1 </font><font color=\"%2\">%3</font></html>").arg(QTime::currentTime().toString("HH:mm:ss")).arg(color.name()).arg(text);
-	_detailedText->append(html);
-	_detailedText->ensureCursorVisible();
-	_detailedText->horizontalScrollBar()->setSliderPosition(0);
-	_detailedText->verticalScrollBar()->setSliderPosition(_detailedText->verticalScrollBar()->maximum());
+
+	QScrollBar * vbar = _detailedText->verticalScrollBar();
+	const bool stickToBottom = vbar->value() >= vbar->maximum() - 4;
+
+	QTextCharFormat fmt;
+	fmt.setForeground(color);
+	QTextCursor cursor = _detailedText->textCursor();
+	cursor.movePosition(QTextCursor::End);
+	cursor.setCharFormat(fmt);
+	cursor.insertText(QString("%1 %2\n").arg(QTime::currentTime().toString("HH:mm:ss")).arg(text));
+	_detailedText->setTextCursor(cursor);
+
+	if(stickToBottom)
+	{
+		vbar->setValue(vbar->maximum());
+	}
 }
 void ProgressDialog::setValue(int value)
 {
