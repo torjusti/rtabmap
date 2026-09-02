@@ -35,6 +35,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rtabmap/core/util3d_mapping.h>
 #include <rtabmap/core/optimizer/OptimizerG2O.h>
 #include <rtabmap/core/Graph.h>
+#include <rtabmap/core/Signature.h>
 #include <rtabmap/core/global_map/OccupancyGrid.h>
 #ifdef RTABMAP_OCTOMAP
 #include <rtabmap/core/global_map/OctoMap.h>
@@ -189,6 +190,8 @@ void showUsage()
 			"    --density_angle #     Filter poses up to angle (deg) in the --density_radius.\n"
 			"    --filter_ceiling #    Filter points over a custom height (default 0 m, 0=disabled).\n"
 			"    --filter_floor #      Filter points below a custom height (default 0 m, 0=disabled).\n"
+			"    --threads       #     Number of threads used to generate the clouds and to texture the mesh\n"
+			"                              (default 0=one per core, 1=process them sequentially).\n"
 
 			"\n%s", Parameters::showUsage());
 	;
@@ -261,6 +264,7 @@ int main(int argc, char * argv[])
 	float poissonSize = 0.03;
 	int maxPolygons = 300000;
 	int decimation = -1;
+	int numThreads = 0;
 	float depthEdgeBleedingFilterError = 0.0f;
 	unsigned char depthConfidenceThr = 0;
 	float minRange = 0.0f;
@@ -818,6 +822,23 @@ int main(int argc, char * argv[])
 			if(i<argc-1)
 			{
 				maxRange = uStr2Float(argv[i]);
+			}
+			else
+			{
+				showUsage();
+			}
+		}
+		else if(std::strcmp(argv[i], "--threads") == 0)
+		{
+			++i;
+			if(i<argc-1)
+			{
+				numThreads = uStr2Int(argv[i]);
+				if(numThreads < 0)
+				{
+					printf("--threads cannot be negative!\n");
+					showUsage();
+				}
 			}
 			else
 			{
@@ -1540,35 +1561,27 @@ int main(int argc, char * argv[])
 
 	struct NodeExportData
 	{
-		int weight = -1;
-		double stamp = 0.0;
-		Transform gt;
-		GPS gps;
-		SensorData data;
-		std::vector<CameraModel> models;
-		std::vector<StereoCameraModel> stereoModels;
-		cv::Mat depth;
+		// node info, calibration, compressed data, uncompressed local occupancy grid
+		// and uncompressed depth image (only if texturing)
+		Signature node;
 		pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud;
 		pcl::PointCloud<pcl::PointXYZI>::Ptr cloudI;
-		bool imageExported = false;
-		cv::Mat groundCells, obstacleCells, emptyCells;
-		Transform scanLocalTransform;
 	};
 
 	auto loadNode = [&](int nodeId, const Transform & pose, NodeExportData & out)
 	{
-		Transform p;
-		Transform & gt = out.gt;
+		Transform p, gt;
 		int m;
 		std::string l;
-		GPS & gps = out.gps;
+		GPS gps;
 		std::vector<float> v;
 		EnvSensors s;
-		int & weight = out.weight;
-		double & stamp = out.stamp;
+		int weight;
+		double stamp;
 		dbDriver->getNodeInfo(nodeId, p, m, weight, l, stamp, gt, v, gps, s);
 
-		SensorData & data = out.data;
+		out.node = Signature(nodeId, m, weight, stamp, l, pose, gt);
+		SensorData & data = out.node.sensorData();
 		bool loadImages = ((exportCloud || exportMesh) && (!cloudFromScan || texture || camProjection)) || exportImages;
 		bool loadScan = ((exportCloud || exportMesh) && cloudFromScan) || exportPosesScan;
 		if(loadImages || loadScan || export2DMap || exportOctomap)
@@ -1582,19 +1595,25 @@ int main(int argc, char * argv[])
 				export2DMap || exportOctomap);
 		}
 
+		data.setGPS(gps); // getNodeData() above overwrites the whole sensor data
+
 		// uncompress data
-		std::vector<CameraModel> & models = out.models;
-		std::vector<StereoCameraModel> & stereoModels = out.stereoModels;
 		if(loadImages || exportPosesCamera)
 		{
+			std::vector<CameraModel> models;
+			std::vector<StereoCameraModel> stereoModels;
 			dbDriver->getCalibration(nodeId, models, stereoModels);
+			data.setCameraModels(models);
+			data.setStereoCameraModels(stereoModels);
 		}
+		const std::vector<CameraModel> & models = data.cameraModels();
+		const std::vector<StereoCameraModel> & stereoModels = data.stereoCameraModels();
 
+		cv::Mat depth;
 		if(exportCloud || exportMesh || exportImages)
 		{
 			bool densityFiltered = !densityPoses.empty() && densityPoses.find(nodeId) == densityPoses.end();
 			cv::Mat rgb;
-			cv::Mat & depth = out.depth;
 			cv::Mat confidence;
 			pcl::IndicesPtr indices(new std::vector<int>);
 			pcl::PointCloud<pcl::PointXYZRGB>::Ptr & cloud = out.cloud;
@@ -1671,7 +1690,8 @@ int main(int argc, char * argv[])
 				}
 				std::string outputPath=dir+"/"+(exportImagesId?uNumber2Str(nodeId):uFormat("%f", stamp))+".jpg";
 				cv::imwrite(outputPath, rgb);
-				out.imageExported = true;
+				#pragma omp atomic
+				++imagesExported;
 				if(!depth.empty())
 				{
 					std::string ext;
@@ -1777,38 +1797,43 @@ int main(int argc, char * argv[])
 			}
 		}
 
-		if(out.weight != -1 && (export2DMap || exportOctomap))
+		if(weight != -1 && (export2DMap || exportOctomap))
 		{
-			out.data.uncompressDataConst(0, 0, 0, 0, &out.groundCells, &out.obstacleCells, &out.emptyCells);
+			cv::Mat ground, obstacles, empty;
+			data.uncompressData(0, 0, 0, 0, &ground, &obstacles, &empty);
 		}
 
-		out.scanLocalTransform = out.data.laserScanRaw().localTransform();
-		out.data.clearRawData();
+		data.clearRawData(true, true, true, false); // keep uncompressed occupancy grid
+		if(texture && !depth.empty() && (depth.type() == CV_16UC1 || depth.type() == CV_32FC1))
+		{
+			// Keep uncompressed depth for texturing, the compressed one is not needed anymore.
+			// The compressed image is passed back as is (rows==1), as flushNode() uses it to
+			// know if the node has an image.
+			data.setRGBDImage(data.imageCompressed(), depth, cv::Mat(), data.cameraModels());
+		}
 	};
 
-	auto flushNode = [&](int nodeId, const Transform & pose, NodeExportData & node)
+	auto flushNode = [&](NodeExportData & out)
 	{
-		SensorData & data = node.data;
-		std::vector<CameraModel> & models = node.models;
-		std::vector<StereoCameraModel> & stereoModels = node.stereoModels;
-		pcl::PointCloud<pcl::PointXYZRGB>::Ptr & cloud = node.cloud;
-		pcl::PointCloud<pcl::PointXYZI>::Ptr & cloudI = node.cloudI;
-		cv::Mat & depth = node.depth;
-		double stamp = node.stamp;
-		int weight = node.weight;
-		GPS & gps = node.gps;
-		Transform & gt = node.gt;
-
-		if(node.imageExported)
-		{
-			++imagesExported;
-		}
+		const Signature & node = out.node;
+		const SensorData & data = node.sensorData();
+		const int nodeId = node.id();
+		const Transform & pose = node.getPose();
+		std::vector<CameraModel> models = data.cameraModels();
+		const std::vector<StereoCameraModel> & stereoModels = data.stereoCameraModels();
+		pcl::PointCloud<pcl::PointXYZRGB>::Ptr & cloud = out.cloud;
+		pcl::PointCloud<pcl::PointXYZI>::Ptr & cloudI = out.cloudI;
+		const cv::Mat & depth = data.depthOrRightRaw();
+		double stamp = node.getStamp();
+		int weight = node.getWeight();
+		const GPS & gps = data.gps();
+		const Transform & gt = node.getGroundTruthPose();
 
 		if(exportCloud || exportMesh)
 		{
 			if(cloudFromScan)
 			{
-				Transform lidarViewpoint = pose * node.scanLocalTransform;
+				Transform lidarViewpoint = pose * data.laserScanCompressed().localTransform();
 				rawViewpoints.insert(std::make_pair(nodeId, lidarViewpoint));
 			}
 			else if(!models.empty() && !models[0].localTransform().isNull())
@@ -1850,7 +1875,7 @@ int main(int argc, char * argv[])
 				}
 				rawViewpointIndices.resize(assembledCloudI->size(), nodeId);
 			}
-			if(texture && !depth.empty() && (depth.type() == CV_16UC1 || depth.type() == CV_32FC1))
+			if(!depth.empty()) // depth is set only when texturing (see loadNode)
 			{
 				cameraDepths.insert(std::make_pair(nodeId, depth));
 			}
@@ -1932,9 +1957,9 @@ int main(int argc, char * argv[])
 		}
 
 		if(weight != -1 && (export2DMap || exportOctomap)) {
-			cv::Mat & ground = node.groundCells;
-			cv::Mat & obstacles = node.obstacleCells;
-			cv::Mat & empty = node.emptyCells;
+			const cv::Mat & ground = data.gridGroundCellsRaw();
+			const cv::Mat & obstacles = data.gridObstacleCellsRaw();
+			const cv::Mat & empty = data.gridEmptyCellsRaw();
 			if(ground.empty() && obstacles.empty() && empty.empty()) {
 				printf("Node %d doesn't have local occupancy grid, ignored!\n", nodeId);
 			}
@@ -1956,17 +1981,22 @@ int main(int argc, char * argv[])
 	};
 
 #ifdef _OPENMP
-	const size_t chunkSize = std::max(1, omp_get_max_threads()*4);
+	const int usedThreads = numThreads>0?numThreads:omp_get_max_threads();
 #else
-	const size_t chunkSize = 1;
+	const int usedThreads = 1;
 #endif
+	// Nodes are loaded by batch, a batch is generated in parallel then assembled sequentially
+	// (in node order) to keep the output independent of the thread count. More nodes than
+	// threads are batched so that a thread getting cheap nodes can pick up more work. With a
+	// single thread, nodes are processed one by one, keeping only one node in memory.
+	const size_t chunkSize = usedThreads>1?usedThreads*4:1;
 	std::vector<NodeExportData> chunkData;
 	for(size_t chunkStart=0; chunkStart<nodes.size(); chunkStart+=chunkSize)
 	{
 		size_t chunkNodes = std::min(chunkSize, nodes.size()-chunkStart);
 		chunkData.assign(chunkNodes, NodeExportData());
 
-		#pragma omp parallel for schedule(dynamic)
+		#pragma omp parallel for schedule(dynamic) num_threads(usedThreads)
 		for(int i=0; i<(int)chunkNodes; ++i)
 		{
 			loadNode(nodes[chunkStart+i].first, nodes[chunkStart+i].second, chunkData[i]);
@@ -1974,7 +2004,7 @@ int main(int argc, char * argv[])
 
 		for(size_t i=0; i<chunkNodes; ++i)
 		{
-			flushNode(nodes[chunkStart+i].first, nodes[chunkStart+i].second, chunkData[i]);
+			flushNode(chunkData[i]);
 			chunkData[i] = NodeExportData();
 
 			if(optimizedPoses.size() >= 500)
@@ -2765,7 +2795,8 @@ int main(int argc, char * argv[])
 							textureRoiRatios,
 							&progressState,
 							&vertexToPixels,
-							distanceToCamPolicy);
+							distanceToCamPolicy,
+							usedThreads);
 					printf("Texturing... done (%fs).\n", timer.ticks());
 
 					// Remove occluded polygons (polygons with no texture)

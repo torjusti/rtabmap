@@ -102,6 +102,19 @@ ExportCloudsDialog::ExportCloudsDialog(QWidget *parent) :
 	_ui = new Ui_ExportCloudsDialog();
 	_ui->setupUi(this);
 
+	// Cloud generation cannot use more threads than what OpenMP would create (0 means Auto).
+#ifdef _OPENMP
+	_ui->spinBox_numThreads->setMaximum(omp_get_max_threads());
+#else
+	// Without OpenMP the clouds are always generated one by one. The minimum also clamps
+	// any value restored from settings, so "Auto" can never be shown.
+	_ui->spinBox_numThreads->setMinimum(1);
+	_ui->spinBox_numThreads->setMaximum(1);
+	_ui->spinBox_numThreads->setValue(1);
+	_ui->spinBox_numThreads->setEnabled(false);
+	_ui->label_numThreads->setEnabled(false);
+#endif
+
 	connect(_ui->buttonBox->button(QDialogButtonBox::RestoreDefaults), SIGNAL(clicked()), this, SLOT(restoreDefaults()));
 	QPushButton * loadSettingsButton = _ui->buttonBox->addButton("Load Settings", QDialogButtonBox::ActionRole);
 	QPushButton * saveSettingsButton = _ui->buttonBox->addButton("Save Settings", QDialogButtonBox::ActionRole);
@@ -133,6 +146,7 @@ ExportCloudsDialog::ExportCloudsDialog(QWidget *parent) :
 
 	connect(_ui->checkBox_regenerate, SIGNAL(stateChanged(int)), this, SIGNAL(configChanged()));
 	connect(_ui->checkBox_regenerate, SIGNAL(stateChanged(int)), this, SLOT(updateReconstructionFlavor()));
+	connect(_ui->spinBox_numThreads, SIGNAL(valueChanged(int)), this, SIGNAL(configChanged()));
 	connect(_ui->spinBox_decimation, SIGNAL(valueChanged(int)), this, SIGNAL(configChanged()));
 	connect(_ui->doubleSpinBox_maxDepth, SIGNAL(valueChanged(double)), this, SIGNAL(configChanged()));
 	connect(_ui->doubleSpinBox_minDepth, SIGNAL(valueChanged(double)), this, SIGNAL(configChanged()));
@@ -388,6 +402,7 @@ void ExportCloudsDialog::saveSettings(QSettings & settings, const QString & grou
 	settings.setValue("nodes_filtering_zmax", _ui->doubleSpinBox_nodes_filtering_zmax->value());
 
 	settings.setValue("regenerate", _ui->checkBox_regenerate->isChecked());
+	settings.setValue("num_threads", _ui->spinBox_numThreads->value());
 	settings.setValue("regenerate_decimation", _ui->spinBox_decimation->value());
 	settings.setValue("regenerate_max_depth", _ui->doubleSpinBox_maxDepth->value());
 	settings.setValue("regenerate_min_depth", _ui->doubleSpinBox_minDepth->value());
@@ -573,6 +588,7 @@ void ExportCloudsDialog::loadSettings(QSettings & settings, const QString & grou
 	_ui->doubleSpinBox_nodes_filtering_zmax->setValue(settings.value("nodes_filtering_zmax", _ui->doubleSpinBox_nodes_filtering_zmax->value()).toInt());
 
 	_ui->checkBox_regenerate->setChecked(settings.value("regenerate", _ui->checkBox_regenerate->isChecked()).toBool());
+	_ui->spinBox_numThreads->setValue(settings.value("num_threads", _ui->spinBox_numThreads->value()).toInt());
 	_ui->spinBox_decimation->setValue(settings.value("regenerate_decimation", _ui->spinBox_decimation->value()).toInt());
 	_ui->doubleSpinBox_maxDepth->setValue(settings.value("regenerate_max_depth", _ui->doubleSpinBox_maxDepth->value()).toDouble());
 	_ui->doubleSpinBox_minDepth->setValue(settings.value("regenerate_min_depth", _ui->doubleSpinBox_minDepth->value()).toDouble());
@@ -761,6 +777,7 @@ void ExportCloudsDialog::restoreDefaults()
 	_ui->doubleSpinBox_nodes_filtering_zmax->setValue(0);
 
 	_ui->checkBox_regenerate->setChecked(_dbDriver!=0?true:false);
+	_ui->spinBox_numThreads->setValue(0);
 	_ui->spinBox_decimation->setValue(1);
 	_ui->doubleSpinBox_maxDepth->setValue(4);
 	_ui->doubleSpinBox_minDepth->setValue(0);
@@ -1129,6 +1146,21 @@ void ExportCloudsDialog::setOkButton()
 	_ui->checkBox_mesh_quad->setEnabled(true);
 	_ui->label_quad->setVisible(true);
 	updateReconstructionFlavor();
+}
+
+int ExportCloudsDialog::numThreads() const
+{
+	// 0 means one thread per core (the spin box is clamped to omp_get_max_threads())
+	int threads = _ui->spinBox_numThreads->value();
+	if(threads <= 0)
+	{
+#ifdef _OPENMP
+		threads = omp_get_max_threads();
+#else
+		threads = 1;
+#endif
+	}
+	return threads;
 }
 
 std::map<int, Transform> ExportCloudsDialog::filterNodes(const std::map<int, Transform> & poses)
@@ -3605,7 +3637,8 @@ bool ExportCloudsDialog::getExportedClouds(
 								roiRatios,
 								&texturingState,
 								cameraPoses.size()>1?&textureVertexToPixels:0, // only get vertexToPixels if merged clouds with multi textures
-								_ui->checkBox_distanceToCamPolicy->isChecked());
+								_ui->checkBox_distanceToCamPolicy->isChecked(),
+								numThreads());
 
 						if(_canceled)
 						{
@@ -4189,9 +4222,13 @@ std::map<int, std::pair<pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr, pcl::Indic
 		QApplication::processEvents();
 	};
 
-	// Point subtraction filtering compares each cloud with the previous one,
-	// so in that case nodes must be processed sequentially.
-	if(_ui->checkBox_subtraction->isChecked() && _ui->doubleSpinBox_subtractPointFilteringRadius->value() > 0.0)
+	const int threads = numThreads();
+
+	// Nodes are processed sequentially when a single thread is used, or when point subtraction
+	// filtering is used (it compares each cloud with the previous one).
+	bool sequential = threads == 1 ||
+			(_ui->checkBox_subtraction->isChecked() && _ui->doubleSpinBox_subtractPointFilteringRadius->value() > 0.0);
+	if(sequential)
 	{
 		pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr previousCloud;
 		pcl::IndicesPtr previousIndices;
@@ -4216,7 +4253,7 @@ std::map<int, std::pair<pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr, pcl::Indic
 		std::atomic<bool> cancelRequested(false);
 		int nextFlush = 0;
 
-		#pragma omp parallel for schedule(dynamic)
+		#pragma omp parallel for schedule(dynamic) num_threads(threads)
 		for(int i=0; i<totalPoses; ++i)
 		{
 			if(!cancelRequested)
@@ -4229,22 +4266,27 @@ std::map<int, std::pair<pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr, pcl::Indic
 			}
 
 #ifdef _OPENMP
+			// Thread 0 is the Qt Main Thread
 			if(omp_get_thread_num() == 0)
 #endif
 			{
-				while(nextFlush < totalPoses && done[nextFlush])
+				// flushResult() processes the events, so _canceled can be set while flushing:
+				// stop as soon as it happens, otherwise all the results already generated by the
+				// other threads would still be shown before the cancel is handled.
+				while(!_canceled && nextFlush < totalPoses && done[nextFlush])
 				{
 					flushResult(nextFlush++);
 				}
 				QApplication::processEvents();
-				if(_canceled)
+				if(_canceled && !cancelRequested)
 				{
+					UWARN("Cancel requested.");
 					cancelRequested = true;
 				}
 			}
 		}
 
-		while(nextFlush < totalPoses && done[nextFlush])
+		while(!_canceled && nextFlush < totalPoses && done[nextFlush])
 		{
 			flushResult(nextFlush++);
 		}

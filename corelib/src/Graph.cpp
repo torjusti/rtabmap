@@ -1985,21 +1985,21 @@ std::list<std::pair<int, Transform> > computePath(
 	return path;
 }
 
-std::map<int, int> computePathLengths(
+std::map<int, int> computePathDepths(
 			const std::multimap<int, int> & links,
 			int from,
-			int maxLength)
+			int maxDepth)
 {
-	std::map<int, int> pathLengths;
-	pathLengths.insert(std::make_pair(from, 1));
+	std::map<int, int> pathDepths;
+	pathDepths.insert(std::make_pair(from, 0));
 	std::list<int> frontier;
 	frontier.push_back(from);
 	while(!frontier.empty())
 	{
 		int currentId = frontier.front();
 		frontier.pop_front();
-		int currentLength = pathLengths.at(currentId);
-		if(maxLength > 0 && currentLength >= maxLength)
+		int currentDepth = pathDepths.at(currentId);
+		if(maxDepth > 0 && currentDepth >= maxDepth)
 		{
 			continue;
 		}
@@ -2008,14 +2008,14 @@ std::map<int, int> computePathLengths(
 			++iter)
 		{
 			int nextId = iter->second;
-			if(pathLengths.find(nextId) == pathLengths.end())
+			if(pathDepths.find(nextId) == pathDepths.end())
 			{
-				pathLengths.insert(std::make_pair(nextId, currentLength+1));
+				pathDepths.insert(std::make_pair(nextId, currentDepth+1));
 				frontier.push_back(nextId);
 			}
 		}
 	}
-	return pathLengths;
+	return pathDepths;
 }
 
 // Dijksta

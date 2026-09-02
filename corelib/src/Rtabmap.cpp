@@ -2804,10 +2804,10 @@ bool Rtabmap::process(
 						}
 					}
 				}
-				std::map<int, int> proximityPathLengths;
+				std::map<int, int> proximityPathDepths;
 				if(_memory->isIncremental() && _proximityMaxGraphDepth > 0)
 				{
-					proximityPathLengths = graph::computePathLengths(links, signature->id(), _proximityMaxGraphDepth);
+					proximityPathDepths = graph::computePathDepths(links, signature->id(), _proximityMaxGraphDepth);
 				}
 				for(std::map<int, float>::iterator iter=nearestIds.lower_bound(1); iter!=nearestIds.end(); ++iter)
 				{
@@ -2815,8 +2815,8 @@ bool Rtabmap::process(
 					{
 						if(_memory->isIncremental() && _proximityMaxGraphDepth > 0)
 						{
-							std::map<int, int>::const_iterator depthIter = proximityPathLengths.find(iter->first);
-							if(depthIter == proximityPathLengths.end())
+							std::map<int, int>::const_iterator depthIter = proximityPathDepths.find(iter->first);
+							if(depthIter == proximityPathDepths.end())
 							{
 								continue;
 							}

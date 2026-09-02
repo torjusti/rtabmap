@@ -515,18 +515,24 @@ std::list<std::pair<int, Transform> > RTABMAP_CORE_EXPORT computePath(
  * @brief Single-source graph depth via BFS.
  *
  * Runs one breadth-first search from @p from and returns, for every reached
- * node, the length of the shortest path from @p from.
+ * node, its depth from @p from (i.e., the number of links on the shortest
+ * path, @p from itself having depth 0).
+ *
+ * @note The depth is a number of hops, not a distance: it counts links, and the poses
+ *       of the nodes play no part in it. The path it stands for is thus not the one
+ *       @ref computePath() returns, which minimizes the Euclidean length instead and
+ *       can walk more links to save meters.
  *
  * @param links Directed edges (`from` → `to`) keyed by source id.
  * @param from Start node id.
- * @param maxLength If &gt; 0, only nodes with path length ≤ this value are returned (the
- *                  frontier is not expanded further); `0` explores the whole component.
- * @return Node id → path length mapping.
+ * @param maxDepth If &gt; 0, only nodes with depth ≤ this value are returned (the
+ *                 frontier is not expanded further); `0` explores the whole component.
+ * @return Node id → depth mapping.
  */
-std::map<int, int> RTABMAP_CORE_EXPORT computePathLengths(
+std::map<int, int> RTABMAP_CORE_EXPORT computePathDepths(
 			const std::multimap<int, int> & links,
 			int from,
-			int maxLength = 0);
+			int maxDepth = 0);
 
 /**
  * @brief Dijkstra shortest path on link constraints.
