@@ -51,8 +51,6 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <fstream>
 #include <string>
 
-#define KNN_CHECKS 32
-
 namespace rtabmap
 {
 
@@ -103,6 +101,7 @@ VWDictionary::VWDictionary(const ParametersMap & parameters) :
 	_rebalancingFactor(Parameters::defaultKpFlannRebalancingFactor()),
 	_byteToFloat(Parameters::defaultKpByteToFloat()),
 	_nndrRatio(Parameters::defaultKpNndrRatio()),
+	_flannSearchChecks(Parameters::defaultKpFlannSearchChecks()),
 	_newDictionaryPath(Parameters::defaultKpDictionaryPath()),
 	_newWordsComparedTogether(Parameters::defaultKpNewWordsComparedTogether()),
 	_serializeWithChecksum(Parameters::defaultKpSerializeWithChecksum()),
@@ -126,6 +125,11 @@ void VWDictionary::parseParameters(const ParametersMap & parameters)
 {
 	ParametersMap::const_iterator iter;
 	Parameters::parse(parameters, Parameters::kKpNndrRatio(), _nndrRatio);
+	Parameters::parse(parameters, Parameters::kKpFlannSearchChecks(), _flannSearchChecks);
+	if(_flannSearchChecks < 1)
+	{
+		_flannSearchChecks = 1;
+	}
 	Parameters::parse(parameters, Parameters::kKpNewWordsComparedTogether(), _newWordsComparedTogether);
 	Parameters::parse(parameters, Parameters::kKpSerializeWithChecksum(), _serializeWithChecksum);
 	Parameters::parse(parameters, Parameters::kKpIncrementalFlann(), _incrementalFlann);
@@ -1075,7 +1079,7 @@ std::list<int> VWDictionary::addNewWords(
 		if(isFlannStrategy(_strategy))
 		{
 			// parallelize the search over all cores, the queries are independent
-			_flannIndex->knnSearch(descriptors, results, dists, k, KNN_CHECKS, 0.0f, true, 0);
+			_flannIndex->knnSearch(descriptors, results, dists, k, _flannSearchChecks, 0.0f, true, 0);
 		}
 		else if(_strategy == kNNBruteForce)
 		{
@@ -1279,6 +1283,26 @@ std::list<int> VWDictionary::addNewWords(
 	return wordIds;
 }
 
+std::list<int> VWDictionary::addWordRefs(
+		const std::vector<int> & wordIds,
+		int signatureId)
+{
+	std::list<int> referenced;
+	if(_incrementalDictionary)
+	{
+		UERROR("Pre-assigned words can only be used with a fixed dictionary.");
+		return referenced;
+	}
+	for(unsigned int i=0; i<wordIds.size(); ++i)
+	{
+		if(wordIds[i] > 0 && this->addWordRef(wordIds[i], signatureId))
+		{
+			referenced.push_back(wordIds[i]);
+		}
+	}
+	return referenced;
+}
+
 std::vector<int> VWDictionary::findNN(const std::list<VisualWord *> & vws) const
 {
 	UTimer timer;
@@ -1398,7 +1422,7 @@ std::vector<int> VWDictionary::findNN(const cv::Mat & queryIn) const
 			if(isFlannStrategy(_strategy))
 			{
 				// parallelize the search over all cores, the queries are independent
-				_flannIndex->knnSearch(query, results, dists, k, KNN_CHECKS, 0.0f, true, 0);
+				_flannIndex->knnSearch(query, results, dists, k, _flannSearchChecks, 0.0f, true, 0);
 			}
 			else if(_strategy == kNNBruteForce)
 			{

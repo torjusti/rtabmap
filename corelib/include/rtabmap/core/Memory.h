@@ -241,10 +241,11 @@ public:
 	 *
 	 * @param ids Candidate ids; those already in WM/STM are ignored.
 	 * @param maxLoaded Hard cap on number of ids actually loaded (0 = unlimited).
-	 * @param timeDbAccess Output: time spent in the database driver (seconds).
+	 * @param timeDbAccess Output: time spent in loadSignatures (seconds).
+	 * @param timeEnableWords Optional output: time spent in enableWordsRef (seconds), including recursive queue loads.
 	 * @return Ids effectively brought back to WM.
 	 */
-	std::set<int> reactivateSignatures(const std::list<int> & ids, unsigned int maxLoaded, double & timeDbAccess);
+	std::set<int> reactivateSignatures(const std::list<int> & ids, unsigned int maxLoaded, double & timeDbAccess, double * timeEnableWords = 0);
 
 	/**
 	 * @brief Drops the last signature if flagged as bad, or any signature in localization mode.
@@ -902,6 +903,8 @@ private:
 	Feature2D * _feature2D;
 	float _badSignRatio;
 	bool _tfIdfLikelihoodUsed;
+	int _likelihoodThreads;
+	float _likelihoodMaxDfRatio;
 	bool _parallelized;
 
 	Registration * _registrationPipeline;

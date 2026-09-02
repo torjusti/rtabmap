@@ -169,6 +169,21 @@ public:
 	virtual std::list<int> addNewWords(
 			const cv::Mat & descriptors,
 			int signatureId);
+
+	/**
+	 * @brief Register words that were already matched by findNN() elsewhere
+	 * @param wordIds Word ids, one per descriptor, as returned by findNN()
+	 * @param signatureId ID of the signature (image) these words belong to
+	 * @return The word ids that were referenced, in the same order
+	 *
+	 * Does the reference bookkeeping addNewWords() would do, without the
+	 * nearest-neighbor search. Only valid with a fixed dictionary, whose index
+	 * does not change between the search and this call. Ids that are not in the
+	 * dictionary are dropped.
+	 */
+	std::list<int> addWordRefs(
+			const std::vector<int> & wordIds,
+			int signatureId);
 	
 	/**
 	 * @brief Add an existing visual word to the dictionary
@@ -507,6 +522,7 @@ private:
 	 * from Scale-Invariant Keypoints" by David Lowe (IJCV 2004).
 	 */
 	float _nndrRatio;
+	int _flannSearchChecks;
 	
 	/**
 	 * @brief Path to the pre-computed dictionary file (.txt or .db)

@@ -137,6 +137,8 @@ class RTABMAP_CORE_EXPORT Statistics
 	RTABMAP_STATS(Loop, Optimization_max_error_removed_from_id, );
 	RTABMAP_STATS(Loop, Optimization_max_error_removed_to_id, );
 	RTABMAP_STATS(Loop, Optimization_max_error_removed_count, );
+	RTABMAP_STATS(Loop, Optimization_deferred, );
+	RTABMAP_STATS(Loop, Optimization_pending_error, m);
 	RTABMAP_STATS(Loop, Linear_variance,);
 	RTABMAP_STATS(Loop, Angular_variance,);
 	RTABMAP_STATS(Loop, Landmark_detected,);
@@ -227,6 +229,8 @@ class RTABMAP_CORE_EXPORT Statistics
 	RTABMAP_STATS(Timing, Proximity_by_space, ms);
 	RTABMAP_STATS(Timing, Cleaning_neighbors, ms);
 	RTABMAP_STATS(Timing, Reactivation, ms);
+	RTABMAP_STATS(Timing, Reactivation_db, ms);
+	RTABMAP_STATS(Timing, Reactivation_words, ms);
 	RTABMAP_STATS(Timing, Add_loop_closure_link, ms);
 	RTABMAP_STATS(Timing, Map_optimization, ms);
 	RTABMAP_STATS(Timing, Likelihood_computation, ms);

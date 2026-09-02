@@ -842,6 +842,23 @@ public:
 	const cv::Mat & descriptors() const {return _descriptors;}
 
 	/**
+	 * @brief Sets the visual words the descriptors were quantized to, one per keypoint.
+	 *
+	 * Only meaningful with a fixed dictionary, whose index does not change while
+	 * the data is in flight. It lets the quantization be done ahead of time (see
+	 * Rtabmap/PrequantizeFeatures) instead of in Memory::createSignature().
+	 * Must be set after setFeatures(), which clears it.
+	 *
+	 * @param wordIds One word id per keypoint, or empty to clear
+	 */
+	void setWordIds(const std::vector<int> & wordIds);
+
+	/**
+	 * @brief Returns the pre-assigned visual words, empty if the descriptors were not quantized yet
+	 */
+	const std::vector<int> & wordIds() const {return _wordIds;}
+
+	/**
 	 * @brief Adds a global descriptor
 	 * @param descriptor Global descriptor to add
 	 */
@@ -1053,6 +1070,7 @@ private:
 	std::vector<cv::KeyPoint> _keypoints; ///< 2D keypoints in image coordinates
 	std::vector<cv::Point3f> _keypoints3D; ///< 3D points corresponding to keypoints (in base_link frame)
 	cv::Mat _descriptors; ///< Feature descriptors matrix (one row per keypoint)
+	std::vector<int> _wordIds; ///< Words the descriptors were quantized to, empty unless pre-quantized against a fixed dictionary
 
 	// Global descriptors
 	std::vector<GlobalDescriptor> _globalDescriptors; ///< Scene-level descriptors for place recognition

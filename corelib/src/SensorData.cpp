@@ -997,6 +997,14 @@ void SensorData::setFeatures(const std::vector<cv::KeyPoint> & keypoints, const 
 	_keypoints = keypoints;
 	_keypoints3D = keypoints3D;
 	_descriptors = descriptors;
+	_wordIds.clear();
+}
+
+void SensorData::setWordIds(const std::vector<int> & wordIds)
+{
+	UASSERT_MSG(wordIds.empty() || wordIds.size() == _keypoints.size(),
+			uFormat("wordIds=%d keypoints=%d", (int)wordIds.size(), (int)_keypoints.size()).c_str());
+	_wordIds = wordIds;
 }
 
 void SensorData::setIMU(const IMU & imu)

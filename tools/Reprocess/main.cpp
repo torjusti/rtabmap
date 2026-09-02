@@ -38,6 +38,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rtabmap/core/Features2d.h>
 #include <rtabmap/core/util2d.h>
 #include <rtabmap/core/SensorCaptureThread.h>
+#include <rtabmap/core/VocabularyBuilder.h>
+#include <rtabmap/core/VWDictionary.h>
 #include <rtabmap/core/Odometry.h>
 #include <rtabmap/core/OdometryInfo.h>
 #include <rtabmap/utilite/UFile.h>
@@ -105,11 +107,14 @@ void showUsage()
 			"     -pub_loops  Republish loop closures contained in input database.\n"
 			"     -pub_inter_as_normal Republish intermediate nodes as normal nodes.\n"
 			"     -parallel_features   Extract visual features in the data loading thread (pipelined with graph update).\n"
-			"                          Enabled by default when features are being re-extracted; automatically\n"
-			"                          skipped if features from the database are reused (Mem/UseOdomFeatures=true), if\n"
-			"                          odometry is recomputed or if rectification/floor-masking is enabled. Passing this\n"
-			"                          flag explicitly additionally prints why it was skipped when it cannot run.\n"
-			"     -no_parallel_features Disable parallel feature extraction (extract features on the main thread).\n"
+			"                          Equivalent to --Rtabmap/ParallelFeatureExtraction true (the default); this flag\n"
+			"                          takes precedence over the parameter. Automatically skipped if features from the\n"
+			"                          database are reused (Mem/UseOdomFeatures=true), if odometry is recomputed or if\n"
+			"                          rectification/floor-masking is enabled. Passing this flag explicitly additionally\n"
+			"                          prints why it was skipped when it cannot run.\n"
+			"     -no_parallel_features Disable parallel feature extraction (equivalent to\n"
+			"                          --Rtabmap/ParallelFeatureExtraction false). Prefetching of frames is controlled\n"
+			"                          separately by --Rtabmap/ParallelPrefetch (default true).\n"
 			"     -abort_disconnected_sessions Return error if not all sessions are connected together.\n"
 			"     -loc_null   On localization mode, reset localization pose to null and map correction to identity between sessions.\n"
 			"     -gt         When reprocessing a single database, load its original optimized graph, then \n"
@@ -149,7 +154,8 @@ class FramePrefetcher
 {
 public:
 	FramePrefetcher(SensorCapture * reader, SensorCaptureThread * postProcessor, bool clearScan, size_t maxQueueSize,
-			Feature2D * feature2D = 0, bool depthAsMask = true, unsigned int preDecimation = 1) :
+			Feature2D * feature2D = 0, bool depthAsMask = true, unsigned int preDecimation = 1,
+			const VWDictionary * dictionary = 0) :
 		reader_(reader),
 		postProcessor_(postProcessor),
 		clearScan_(clearScan),
@@ -157,6 +163,7 @@ public:
 		feature2D_(feature2D),
 		depthAsMask_(depthAsMask),
 		preDecimation_(preDecimation<1?1:preDecimation),
+		dictionary_(dictionary),
 		stopped_(false),
 		done_(false)
 	{
@@ -285,6 +292,14 @@ private:
 			}
 
 			data.setFeatures(keypoints, std::vector<cv::Point3f>(), descriptors);
+
+			// Quantize here too: with a fixed dictionary the search index is
+			// immutable while the frame is in flight, so this read-only search
+			// can leave the graph update with only the reference bookkeeping.
+			if(dictionary_ && !descriptors.empty())
+			{
+				data.setWordIds(dictionary_->findNN(descriptors));
+			}
 		}
 	}
 
@@ -324,6 +339,7 @@ private:
 	Feature2D * feature2D_;
 	bool depthAsMask_;
 	unsigned int preDecimation_;
+	const VWDictionary * dictionary_;
 	bool stopped_;
 	bool done_;
 	std::queue<std::pair<SensorData, SensorCaptureInfo> > queue_;
@@ -1072,6 +1088,16 @@ int main(int argc, char * argv[])
 	bool intermediateNodes = Parameters::defaultRtabmapCreateIntermediateNodes();
 	Parameters::parse(parameters, Parameters::kRtabmapCreateIntermediateNodes(), intermediateNodes);
 
+	// Resolve parallel-offload defaults from parameters. The command-line flags
+	// -parallel_features/-no_parallel_features still take precedence when given.
+	bool prefetchEnabled = Parameters::defaultRtabmapParallelPrefetch();
+	Parameters::parse(parameters, Parameters::kRtabmapParallelPrefetch(), prefetchEnabled);
+	if(!parallelFeaturesExplicit)
+	{
+		parallelFeatures = Parameters::defaultRtabmapParallelFeatureExtraction();
+		Parameters::parse(parameters, Parameters::kRtabmapParallelFeatureExtraction(), parallelFeatures);
+	}
+
 	// Setup parallel feature extraction (-parallel_features). Features are extracted in the
 	// prefetch thread and forwarded to Memory through the Mem/UseOdomFeatures mechanism.
 	Feature2D * parallelFeature2D = 0;
@@ -1248,6 +1274,53 @@ int main(int argc, char * argv[])
 	uInsert(parameters, ParametersPair(Parameters::kRtabmapWorkingDirectory(), workingDirectory));
 	uInsert(parameters, ParametersPair(Parameters::kRtabmapPublishStats(), "true")); // to log status below
 
+	bool prebuildDictionary = Parameters::defaultKpPrebuildDictionary();
+	Parameters::parse(parameters, Parameters::kKpPrebuildDictionary(), prebuildDictionary);
+	if(prebuildDictionary && !uValue(parameters, Parameters::kKpDictionaryPath(), std::string()).empty())
+	{
+		printf("Parameter \"%s\" is set, using that dictionary instead of building one.\n",
+				Parameters::kKpDictionaryPath().c_str());
+	}
+	else if(prebuildDictionary)
+	{
+		int dictionarySize = Parameters::defaultKpPrebuildDictionarySize();
+		int samplesPerWord = Parameters::defaultKpPrebuildDictionarySampleRatio();
+		int iterations = Parameters::defaultKpPrebuildDictionaryIterations();
+		int checks = Parameters::defaultKpFlannSearchChecks();
+		Parameters::parse(parameters, Parameters::kKpPrebuildDictionarySize(), dictionarySize);
+		Parameters::parse(parameters, Parameters::kKpPrebuildDictionarySampleRatio(), samplesPerWord);
+		Parameters::parse(parameters, Parameters::kKpPrebuildDictionaryIterations(), iterations);
+		Parameters::parse(parameters, Parameters::kKpFlannSearchChecks(), checks);
+
+		// Kept next to the output database, with the size in the name so that
+		// asking for a different dictionary builds a new one instead of
+		// silently reusing the one left over from a previous run.
+		std::string dictionaryPath = outputDatabasePath;
+		const std::string extension = UFile::getExtension(outputDatabasePath);
+		if(!extension.empty())
+		{
+			dictionaryPath.resize(dictionaryPath.size() - extension.size() - 1);
+		}
+		dictionaryPath = uFormat("%s_vocab_%d.db", dictionaryPath.c_str(), dictionarySize);
+		if(UFile::exists(dictionaryPath))
+		{
+			printf("Reusing the dictionary of a previous run, \"%s\".\n", dictionaryPath.c_str());
+		}
+		else
+		{
+			printf("Building a fixed dictionary of %d words from %d input database(s), this may take a while...\n",
+					dictionarySize, (int)databases.size());
+			if(!VocabularyBuilder::build(databases, dictionaryPath, dictionarySize, samplesPerWord, iterations, checks))
+			{
+				printf("[Error] Could not build the dictionary asked by --%s. Aborting.\n",
+						Parameters::kKpPrebuildDictionary().c_str());
+				return 1;
+			}
+		}
+		uInsert(parameters, ParametersPair(Parameters::kKpDictionaryPath(), dictionaryPath));
+		uInsert(parameters, ParametersPair(Parameters::kKpIncrementalDictionary(), "false"));
+	}
+
 	if((!incrementalMemory || appendMode ) && databases.size() > 1)
 	{
 		UFile::copy(databases.front(), outputDatabasePath);
@@ -1395,7 +1468,20 @@ int main(int argc, char * argv[])
 		printf("[Warning] -parallel_features has no performance benefit with -pub_loops "
 				"(prefetching is disabled), features are extracted synchronously.\n");
 	}
-	FramePrefetcher prefetcher(dbReader, &camThread, scanFromDepth, republishLoopClosures?0:2, parallelFeature2D, parallelDepthAsMask, parallelPreDecimation);
+	// Quantizing in the prefetch thread requires a dictionary that doesn't change
+	// under it, i.e. a fixed one, and features extracted there in the first place.
+	const VWDictionary * parallelDictionary = 0;
+	bool parallelQuantization = Parameters::defaultRtabmapParallelQuantization();
+	Parameters::parse(parameters, Parameters::kRtabmapParallelQuantization(), parallelQuantization);
+	if(parallelQuantization && parallelFeature2D && rtabmap.getMemory() &&
+	   rtabmap.getMemory()->getVWDictionary() &&
+	   !rtabmap.getMemory()->getVWDictionary()->isIncremental())
+	{
+		parallelDictionary = rtabmap.getMemory()->getVWDictionary();
+		printf("Descriptors will be quantized in the data loading thread (%s).\n",
+				Parameters::kRtabmapParallelQuantization().c_str());
+	}
+	FramePrefetcher prefetcher(dbReader, &camThread, scanFromDepth, (!prefetchEnabled || republishLoopClosures)?0:2, parallelFeature2D, parallelDepthAsMask, parallelPreDecimation, parallelDictionary);
 	SensorCaptureInfo info;
 	SensorData data;
 	prefetcher.take(data, info);

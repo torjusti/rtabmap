@@ -963,7 +963,10 @@ private:
 	unsigned int _maxRetrieved;
 	unsigned int _maxLocalRetrieved;
 	int _optimizeEveryNSteps;
+	bool _optimizeOnlyOnClosures;
+	float _optimizeMaxPendingError;
 	int _optimizationsDeferred;
+	float _pendingClosureError;
 	std::list<std::pair<int, int> > _deferredClosureLinks;
 	unsigned int _maxRepublished;
 	bool _rawDataKept;

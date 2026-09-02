@@ -67,6 +67,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <opencv2/geometry.hpp>
 #endif
 
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
 namespace rtabmap {
 
 const int Memory::kIdStart = 0;
@@ -139,6 +143,8 @@ Memory::Memory(const ParametersMap & parameters) :
 	_receivingOdometryFeatures(false),
 	_badSignRatio(Parameters::defaultKpBadSignRatio()),
 	_tfIdfLikelihoodUsed(Parameters::defaultKpTfIdfLikelihoodUsed()),
+	_likelihoodThreads(Parameters::defaultKpLikelihoodThreads()),
+	_likelihoodMaxDfRatio(Parameters::defaultKpLikelihoodMaxDfRatio()),
 	_parallelized(Parameters::defaultKpParallelized()),
 	_registrationVis(0),
 	_dummyDictionary(false)
@@ -896,6 +902,8 @@ void Memory::parseParameters(const ParametersMap & parameters)
 	_vwd->parseParameters(params);
 
 	Parameters::parse(params, Parameters::kKpTfIdfLikelihoodUsed(), _tfIdfLikelihoodUsed);
+	Parameters::parse(params, Parameters::kKpLikelihoodThreads(), _likelihoodThreads);
+	Parameters::parse(params, Parameters::kKpLikelihoodMaxDfRatio(), _likelihoodMaxDfRatio);
 	Parameters::parse(params, Parameters::kKpParallelized(), _parallelized);
 	Parameters::parse(params, Parameters::kKpBadSignRatio(), _badSignRatio);
 
@@ -2341,52 +2349,101 @@ std::map<int, float> Memory::computeLikelihood(const Signature * signature, cons
 			likelihood.insert(likelihood.end(), std::pair<int, float>(*iter, 0.0f));
 		}
 
-		const std::list<int> & wordIds = uUniqueKeys(signature->getWords());
+		const std::vector<int> wordIds = uListToVector(uUniqueKeys(signature->getWords()));
 
-		float nwi; // nwi is the number of a specific word referenced by a place
-		float ni; // ni is the total of words referenced by a place
-		float nw; // nw is the number of places referenced by a specific word
-		float N; // N is the total number of places
-
-		float logNnw;
-		const VisualWord * vw;
-
-		N = this->getSignatures().size();
+		// N is the total number of places
+		const float N = this->getSignatures().size();
 
 		if(N)
 		{
 			UDEBUG("processing... ");
-			// Pour chaque mot dans la signature SURF
-			for(std::list<int>::const_iterator i=wordIds.begin(); i!=wordIds.end(); ++i)
-			{
-				if(*i>0)
-				{
-					// "Inverted index" - Pour chaque endroit contenu dans chaque mot
-					vw = _vwd->getWord(*i);
-					UASSERT_MSG(vw!=0, uFormat("Word %d not found in dictionary!?", *i).c_str());
 
-					const std::map<int, int> & refs = vw->getReferences();
-					nw = refs.size();
-					if(nw)
+			int threads = _likelihoodThreads;
+#ifdef _OPENMP
+			if(threads <= 0)
+			{
+				threads = omp_get_max_threads();
+			}
+#endif
+			if(threads < 1)
+			{
+				threads = 1;
+			}
+
+			// Dense index of the candidates, with their word counts (ni) fetched
+			// once instead of once per inverted-index reference.
+			std::map<int, unsigned int> indexes;
+			std::vector<std::map<int, float>::iterator> iterators(likelihood.size());
+			std::vector<float> nis(likelihood.size(), 0.0f);
+			unsigned int index = 0;
+			for(std::map<int, float>::iterator iter=likelihood.begin(); iter!=likelihood.end(); ++iter, ++index)
+			{
+				indexes.insert(indexes.end(), std::make_pair(iter->first, index));
+				iterators[index] = iter;
+				if(iter->first > 0)
+				{
+					nis[index] = (float)this->getNi(iter->first);
+				}
+			}
+
+			// The inverted-index walk is a read-only reduction: each thread
+			// accumulates scores in its own dense vector, merged below.
+			std::vector<std::vector<float> > sums(threads, std::vector<float>(likelihood.size(), 0.0f));
+#ifdef _OPENMP
+			#pragma omp parallel for schedule(dynamic, 64) num_threads(threads) if(threads > 1)
+#endif
+			for(int i=0; i<(int)wordIds.size(); ++i)
+			{
+				if(wordIds[i] <= 0)
+				{
+					continue;
+				}
+				// "Inverted index" - Pour chaque endroit contenu dans chaque mot
+				const VisualWord * vw = _vwd->getWord(wordIds[i]);
+				UASSERT_MSG(vw!=0, uFormat("Word %d not found in dictionary!?", wordIds[i]).c_str());
+
+				const std::map<int, int> & refs = vw->getReferences();
+				// nw is the number of places referenced by a specific word
+				const float nw = refs.size();
+				if(nw == 0.0f)
+				{
+					continue;
+				}
+				if(_likelihoodMaxDfRatio > 0.0f && nw > _likelihoodMaxDfRatio * N)
+				{
+					// Stop word: referenced nearly everywhere, near-zero idf but
+					// the longest references to walk (Kp/LikelihoodMaxDfRatio).
+					continue;
+				}
+				const float logNnw = log10(N/nw);
+				if(logNnw == 0.0f)
+				{
+					continue;
+				}
+				int thread = 0;
+#ifdef _OPENMP
+				thread = omp_get_thread_num();
+#endif
+				std::vector<float> & sum = sums[thread];
+				for(std::map<int, int>::const_iterator j=refs.begin(); j!=refs.end(); ++j)
+				{
+					std::map<int, unsigned int>::const_iterator iter = indexes.find(j->first);
+					// nwi is the number of a specific word referenced by a place,
+					// ni is the total of words referenced by a place
+					if(iter != indexes.end() && nis[iter->second] != 0.0f)
 					{
-						logNnw = log10(N/nw);
-						if(logNnw)
-						{
-							for(std::map<int, int>::const_iterator j=refs.begin(); j!=refs.end(); ++j)
-							{
-								std::map<int, float>::iterator iter = likelihood.find(j->first);
-								if(iter != likelihood.end())
-								{
-									nwi = j->second;
-									ni = this->getNi(j->first);
-									if(ni != 0)
-									{
-										//UDEBUG("%d, %f %f %f %f", vw->id(), logNnw, nwi, ni, ( nwi  * logNnw ) / ni);
-										iter->second += ( nwi  * logNnw ) / ni;
-									}
-								}
-							}
-						}
+						sum[iter->second] += (float(j->second) * logNnw) / nis[iter->second];
+					}
+				}
+			}
+
+			for(int t=0; t<threads; ++t)
+			{
+				for(unsigned int k=0; k<iterators.size(); ++k)
+				{
+					if(sums[t][k] != 0.0f)
+					{
+						iterators[k]->second += sums[t][k];
 					}
 				}
 			}
@@ -6163,8 +6220,46 @@ Signature * Memory::createSignature(const SensorData & inputData, const Transfor
 								oi, inliersCount, _feature2D->getMaxFeatures(), _feature2D->getGridCols(), _feature2D->getGridRows()).c_str());
 			}
 
-			// Quantization to vocabulary
-			wordIds = _vwd->addNewWords(descriptorsForQuantization, id);
+			// Quantization to vocabulary. Word ids assigned ahead of time (fixed
+			// dictionary, see SensorData::setWordIds()) are reused as-is; they are
+			// only trusted when no keypoint was dropped on the way here, so that
+			// they still line up with the descriptors index for index.
+			const bool prequantized =
+					!_vwd->isIncremental() &&
+					!data.wordIds().empty() &&
+					data.wordIds().size() == data.keypoints().size() &&
+					keypoints.size() == data.keypoints().size();
+			if(prequantized)
+			{
+				// One entry per keypoint, 0 where the descriptor matched no word
+				// or was left out of the quantization subset.
+				std::vector<int> allWordIds(keypoints.size(), 0);
+				if(quantizedToRawIndices.empty())
+				{
+					allWordIds = data.wordIds();
+				}
+				else
+				{
+					for(unsigned int k=0; k<quantizedToRawIndices.size(); ++k)
+					{
+						allWordIds[quantizedToRawIndices[k]] = data.wordIds()[quantizedToRawIndices[k]];
+					}
+				}
+				_vwd->addWordRefs(allWordIds, id);
+				int negIndex = -1;
+				for(unsigned int k=0; k<allWordIds.size(); ++k)
+				{
+					if(allWordIds[k] <= 0)
+					{
+						allWordIds[k] = negIndex--;
+					}
+				}
+				wordIds = uVectorToList(allWordIds);
+			}
+			else
+			{
+				wordIds = _vwd->addNewWords(descriptorsForQuantization, id);
+			}
 			addedToDictionary = true;
 
 			// Set ID -1 to features not used for quantization
@@ -7187,7 +7282,7 @@ void Memory::enableWordsRef(const std::list<int> & signatureIds)
 	UDEBUG("%d words total ref added from %d signatures, time=%fs...", count, (int)surfSigns.size(), timer.ticks());
 }
 
-std::set<int> Memory::reactivateSignatures(const std::list<int> & ids, unsigned int maxLoaded, double & timeDbAccess)
+std::set<int> Memory::reactivateSignatures(const std::list<int> & ids, unsigned int maxLoaded, double & timeDbAccess, double * timeEnableWords)
 {
 	// get the signatures, if not in the working memory, they
 	// will be loaded from the database in an more efficient way
@@ -7271,8 +7366,13 @@ std::set<int> Memory::reactivateSignatures(const std::list<int> & ids, unsigned 
 		//append to working memory
 		this->addSignatureToWmFromLTM(*i);
 	}
-	this->enableWordsRef(idsLoaded);
-	UDEBUG("time = %fs", timer.ticks());
+	double wordsTime = 0.0;
+	{
+		UTimer wordsTimer;
+		this->enableWordsRef(idsLoaded);
+		wordsTime = wordsTimer.ticks();
+	}
+	UDEBUG("time = %fs (enableWordsRef=%fs)", timer.ticks(), wordsTime);
 
 	std::set<int> totalLoaded(idsToLoad.begin(), idsToLoad.end());
 	
@@ -7280,9 +7380,16 @@ std::set<int> Memory::reactivateSignatures(const std::list<int> & ids, unsigned 
 	if(intermediateNodesLoaded > 0 && (int)idsInQueue.size() >= intermediateNodesLoaded)
 	{
 		double queueTimeDbAccess = 0.0;
-		std::set<int> queueLoaded = reactivateSignatures(idsInQueue, maxLoaded-intermediateNodesLoaded, queueTimeDbAccess);
+		double queueTimeWords = 0.0;
+		std::set<int> queueLoaded = reactivateSignatures(idsInQueue, maxLoaded-intermediateNodesLoaded, queueTimeDbAccess, &queueTimeWords);
 		timeDbAccess += queueTimeDbAccess;
+		wordsTime += queueTimeWords;
 		totalLoaded.insert(queueLoaded.begin(), queueLoaded.end());
+	}
+
+	if(timeEnableWords)
+	{
+		*timeEnableWords = wordsTime;
 	}
 
 	return totalLoaded;

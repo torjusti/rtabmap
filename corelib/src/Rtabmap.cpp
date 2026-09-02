@@ -114,7 +114,10 @@ Rtabmap::Rtabmap() :
 	_maxRetrieved(Parameters::defaultRtabmapMaxRetrieved()),
 	_maxLocalRetrieved(Parameters::defaultRGBDMaxLocalRetrieved()),
 	_optimizeEveryNSteps(Parameters::defaultRGBDOptimizeEveryNSteps()),
+	_optimizeOnlyOnClosures(Parameters::defaultRGBDOptimizeOnlyOnClosures()),
+	_optimizeMaxPendingError(Parameters::defaultRGBDOptimizeMaxPendingError()),
 	_optimizationsDeferred(0),
+	_pendingClosureError(0.0f),
 	_maxRepublished(Parameters::defaultRtabmapMaxRepublished()),
 	_rawDataKept(Parameters::defaultMemImageKept()),
 	_statisticLogsBufferedInRAM(Parameters::defaultRtabmapStatisticLogsBufferedInRAM()),
@@ -559,6 +562,7 @@ void Rtabmap::close(bool databaseSaved, const std::string & ouputDatabasePath)
 	}
 	_optimizedPoses.clear();
 	_optimizationsDeferred = 0;
+	_pendingClosureError = 0.0f;
 	_deferredClosureLinks.clear();
 	_lastLocalizationPose.setNull();
 
@@ -616,6 +620,8 @@ void Rtabmap::parseParameters(const ParametersMap & parameters)
 	{
 		_optimizeEveryNSteps = 1;
 	}
+	Parameters::parse(parameters, Parameters::kRGBDOptimizeOnlyOnClosures(), _optimizeOnlyOnClosures);
+	Parameters::parse(parameters, Parameters::kRGBDOptimizeMaxPendingError(), _optimizeMaxPendingError);
 	Parameters::parse(parameters, Parameters::kRtabmapMaxRepublished(), _maxRepublished);
 	if(_maxRepublished == 0 || !_publishLastSignatureData)
 	{
@@ -1145,6 +1151,7 @@ void Rtabmap::resetMemory()
 	_globalScanMapPoses.clear();
 	_nodesToRepublish.clear();
 	_optimizationsDeferred = 0;
+	_pendingClosureError = 0.0f;
 	_deferredClosureLinks.clear();
 	_lastRejectedLoopClosureIds = std::make_pair(0,0);
 	this->clearPath(0);
@@ -1268,6 +1275,8 @@ bool Rtabmap::process(
 	double timeAddLoopClosureLink = 0;
 	double timeMapOptimization = 0;
 	double timeRetrievalDbAccess = 0;
+	double timeRetrievalWords = 0;
+	double timeLoadSignatures = 0;
 	double timeLikelihoodCalculation = 0;
 	double timePosteriorCalculation = 0;
 	double timeHypothesesCreation = 0;
@@ -2691,9 +2700,12 @@ bool Rtabmap::process(
 		signaturesRetrieved = _memory->reactivateSignatures(
 				reactivatedIds,
 				_maxRetrieved+(unsigned int)retrievalLocalIds.size(), // add path retrieved
-				timeRetrievalDbAccess);
+				timeRetrievalDbAccess,
+				&timeRetrievalWords);
 
-		ULOGGER_INFO("retrieval of %d (db time = %fs)", (int)signaturesRetrieved.size(), timeRetrievalDbAccess);
+		ULOGGER_INFO("retrieval of %d (db time = %fs, enableWordsRef = %fs)", (int)signaturesRetrieved.size(), timeRetrievalDbAccess, timeRetrievalWords);
+
+		timeLoadSignatures = timeRetrievalDbAccess;
 
 		timeRetrievalDbAccess += timeGetNeighborsTimeDb + timeGetNeighborsSpaceDb;
 		UINFO("total timeRetrievalDbAccess=%fs", timeRetrievalDbAccess);
@@ -3339,6 +3351,77 @@ bool Rtabmap::process(
 	{
 		UASSERT(uContains(_optimizedPoses, signature->id()));
 
+		// Decide whether this optimization request may be deferred (RGBD/OptimizeEveryNSteps,
+		// RGBD/OptimizeOnlyOnClosures, RGBD/OptimizeMaxPendingError). Requests without new
+		// constraints barely move the poses, so they can be skipped nearly losslessly; new
+		// constraints accumulate the pose error they imply, so that deferral can be bounded
+		// by the correction left pending instead of by a blind count of requests.
+		bool deferOptimization = false;
+		if(_memory->isIncremental() &&
+		   statistics_.reducedIds().empty() &&
+		   (_optimizeEveryNSteps > 1 || _optimizeOnlyOnClosures || _optimizeMaxPendingError > 0.0f))
+		{
+			const bool newConstraints = !loopClosureLinksAdded.empty() ||
+					proximityDetectionsInTimeFound > 0 ||
+					!landmarksDetected.empty();
+			deferOptimization = true;
+			if(newConstraints)
+			{
+				if(_optimizeMaxPendingError > 0.0f)
+				{
+					// Sum the translational error of the new links against the current
+					// poses: the correction that optimization would apply if run now.
+					for(std::list<std::pair<int, int> >::const_iterator iter=loopClosureLinksAdded.begin(); iter!=loopClosureLinksAdded.end(); ++iter)
+					{
+						std::map<int, Transform>::const_iterator fromPose = _optimizedPoses.find(iter->first);
+						std::map<int, Transform>::const_iterator toPose = _optimizedPoses.find(iter->second);
+						if(fromPose == _optimizedPoses.end() || toPose == _optimizedPoses.end())
+						{
+							continue;
+						}
+						for(std::multimap<int, Link>::const_iterator jter=signature->getLinks().lower_bound(iter->second);
+							jter!=signature->getLinks().end() && jter->first == iter->second;
+							++jter)
+						{
+							if(jter->second.type() != Link::kNeighbor &&
+							   jter->second.from() == iter->first &&
+							   !jter->second.transform().isNull())
+							{
+								_pendingClosureError += (fromPose->second * jter->second.transform()).getDistance(toPose->second);
+								break;
+							}
+						}
+					}
+					for(std::map<int, Link>::const_iterator iter=signature->getLandmarks().begin(); iter!=signature->getLandmarks().end(); ++iter)
+					{
+						std::map<int, Transform>::const_iterator landmarkPose = _optimizedPoses.find(iter->first);
+						std::map<int, Transform>::const_iterator fromPose = _optimizedPoses.find(signature->id());
+						if(landmarkPose != _optimizedPoses.end() &&
+						   fromPose != _optimizedPoses.end() &&
+						   !iter->second.transform().isNull())
+						{
+							_pendingClosureError += (fromPose->second * iter->second.transform()).getDistance(landmarkPose->second);
+						}
+					}
+					if(_pendingClosureError > _optimizeMaxPendingError)
+					{
+						deferOptimization = false;
+					}
+				}
+				else
+				{
+					// Without a pending-error bound, new constraints may only be
+					// deferred by the request counter (RGBD/OptimizeEveryNSteps alone).
+					deferOptimization = !_optimizeOnlyOnClosures && _optimizeEveryNSteps > 1;
+				}
+			}
+			if(deferOptimization && _optimizeEveryNSteps > 1 && _optimizationsDeferred + 1 >= _optimizeEveryNSteps)
+			{
+				// Counter backstop.
+				deferOptimization = false;
+			}
+		}
+
 		//used in localization mode: filter virtual links
 		std::multimap<int, Link> localizationLinks = graph::filterLinks(signature->getLinks(), Link::kVirtualClosure);
 		localizationLinks = graph::filterLinks(localizationLinks, Link::kSelfRefLink);
@@ -3950,22 +4033,79 @@ bool Rtabmap::process(
 				rejectedLoopClosure = true;
 			}
 		}
-		else if(_memory->isIncremental() &&
-				_optimizeEveryNSteps > 1 &&
-				statistics_.reducedIds().empty() &&
-				++_optimizationsDeferred < _optimizeEveryNSteps)
+		else if(deferOptimization)
 		{
-			// Deferred optimization (RGBD/OptimizeEveryNSteps): keep chaining poses with
-			// odometry and the current map correction. Accumulated closures will be
-			// checked against RGBD/OptimizeMaxError at the next real optimization.
+			// Deferred optimization: keep chaining poses with odometry and the current
+			// map correction. Accumulated closures will be checked against
+			// RGBD/OptimizeMaxError at the next real optimization.
+			++_optimizationsDeferred;
 			_deferredClosureLinks.insert(_deferredClosureLinks.end(), loopClosureLinksAdded.begin(), loopClosureLinksAdded.end());
-			UINFO("Map optimization deferred (%d/%d, %d closure links pending)",
-					_optimizationsDeferred, _optimizeEveryNSteps, (int)_deferredClosureLinks.size());
+
+			// Nodes retrieved while deferring would only get a pose from the skipped
+			// optimization: chain them through their links instead, so that they stay
+			// proximity-detection candidates.
+			if(!signaturesRetrieved.empty())
+			{
+				std::list<int> missing;
+				for(std::set<int>::const_iterator iter=signaturesRetrieved.begin(); iter!=signaturesRetrieved.end(); ++iter)
+				{
+					if(!uContains(_optimizedPoses, *iter))
+					{
+						missing.push_back(*iter);
+					}
+				}
+				// Chained in passes: a retrieved node may connect only to other
+				// retrieved ones, placed by an earlier pass.
+				bool progress = !missing.empty();
+				while(progress)
+				{
+					progress = false;
+					for(std::list<int>::iterator iter=missing.begin(); iter!=missing.end();)
+					{
+						Transform chained;
+						const std::multimap<int, Link> links = _memory->getLinks(*iter, false);
+						for(std::multimap<int, Link>::const_iterator jter=links.begin(); jter!=links.end(); ++jter)
+						{
+							std::map<int, Transform>::const_iterator toPose = _optimizedPoses.find(jter->first);
+							if(toPose != _optimizedPoses.end() && !jter->second.transform().isNull())
+							{
+								// the link goes from *iter to jter->first
+								chained = toPose->second * jter->second.transform().inverse();
+								break;
+							}
+						}
+						if(!chained.isNull())
+						{
+							_optimizedPoses.insert(std::make_pair(*iter, chained));
+							iter = missing.erase(iter);
+							progress = true;
+						}
+						else
+						{
+							++iter;
+						}
+					}
+				}
+				if(!missing.empty())
+				{
+					UWARN("%d retrieved nodes have no link to a node with a pose, "
+							"they won't be proximity candidates until the next map optimization.",
+							(int)missing.size());
+				}
+			}
+
+			UINFO("Map optimization deferred (%d in a row, %d closure links and %f m of correction pending)",
+					_optimizationsDeferred, (int)_deferredClosureLinks.size(), _pendingClosureError);
+			statistics_.addStatistic(Statistics::kLoopOptimization_deferred(), (float)_optimizationsDeferred);
+			statistics_.addStatistic(Statistics::kLoopOptimization_pending_error(), _pendingClosureError);
 		}
 		else
 		{
 			UINFO("Update map correction");
+			statistics_.addStatistic(Statistics::kLoopOptimization_deferred(), 0.0f);
+			statistics_.addStatistic(Statistics::kLoopOptimization_pending_error(), _pendingClosureError);
 			_optimizationsDeferred = 0;
+			_pendingClosureError = 0.0f;
 			// Include links accepted while optimization was deferred, so the
 			// wrong-loop-closure check below covers them too.
 			loopClosureLinksAdded.insert(loopClosureLinksAdded.end(), _deferredClosureLinks.begin(), _deferredClosureLinks.end());
@@ -4412,6 +4552,8 @@ bool Rtabmap::process(
 			statistics_.addStatistic(Statistics::kTimingProximity_by_space_visual(), timeProximityBySpaceVisualDetection*1000);
 			statistics_.addStatistic(Statistics::kTimingProximity_by_space(), timeProximityBySpaceDetection*1000);
 			statistics_.addStatistic(Statistics::kTimingReactivation(), timeReactivations*1000);
+			statistics_.addStatistic(Statistics::kTimingReactivation_db(), timeLoadSignatures*1000);
+			statistics_.addStatistic(Statistics::kTimingReactivation_words(), timeRetrievalWords*1000);
 			statistics_.addStatistic(Statistics::kTimingAdd_loop_closure_link(), timeAddLoopClosureLink*1000);
 			statistics_.addStatistic(Statistics::kTimingMap_optimization(), timeMapOptimization*1000);
 			statistics_.addStatistic(Statistics::kTimingLikelihood_computation(), timeLikelihoodCalculation*1000);

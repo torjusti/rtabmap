@@ -46,6 +46,7 @@ SET(SRC_FILES
     EpipolarGeometry.cpp
     VisualWord.cpp
     VWDictionary.cpp
+    VocabularyBuilder.cpp
     BayesFilter.cpp
     bayes/PredictionModel.cpp
     bayes/DensePrediction.cpp
