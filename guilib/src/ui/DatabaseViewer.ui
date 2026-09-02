@@ -3660,7 +3660,7 @@
           <bool>false</bool>
          </property>
          <property name="toolTip">
-          <string>Show the first observing node in the other views</string>
+          <string>Show the first observing node in the other views and zoom the Graph view onto it</string>
          </property>
          <property name="text">
           <string>Show node</string>

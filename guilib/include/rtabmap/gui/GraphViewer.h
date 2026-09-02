@@ -181,6 +181,17 @@ public:
 	void setFastZoomMinNodes(int value);
 	QPointF getNodeScenePosition(int id) const;
 	void centerOnNode(int id);
+	// Snapshot the current view as (nearest node to the viewport center, that
+	// node's viewport position, scale) so it can be restored after the graph
+	// moves in scene coordinates (e.g. after optimization).
+	bool captureView(int & nodeId, QPointF & nodeViewportPos, qreal & scale) const;
+	void restoreView(int nodeId, const QPointF & nodeViewportPos, qreal scale);
+	// Center on the node and zoom in so about radiusMeters around it fills the
+	// view. Does not zoom out if the current view is already closer.
+	void zoomOnNode(int id, qreal radiusMeters = 40.0);
+	// Fit the pose graph in the viewport (nodes only, not the origin
+	// referential at 0,0, which otherwise leaves the map as a speck in a corner).
+	void fitGraphInView();
 
 Q_SIGNALS:
 	void configChanged();
