@@ -7991,7 +7991,7 @@ void DatabaseViewer::showSelectedAnchorPoint()
 			ui_->horizontalSlider_A->setValue(idToIndex_.value(nodeId));
 			if(ui_->dockWidget_graphView->isVisible())
 			{
-				ui_->graphViewer->centerOnNode(nodeId);
+				ui_->graphViewer->zoomOnNode(nodeId);
 			}
 		}
 	}
@@ -8779,6 +8779,11 @@ void DatabaseViewer::fitInViewClicked()
 void DatabaseViewer::sliderIterationsValueChanged(int value)
 {
 	UDEBUG("sender=%s value=%d currentValue = %d", sender()?sender()->objectName().toStdString().c_str():"NA", value, ui_->horizontalSlider_iterations->value());
+	int iterationNodeId = 0;
+	QPointF iterationNodeViewportPos;
+	qreal iterationScale = 0.0;
+	const bool preserveIterationView = !ui_->checkBox_fit_in_view->isChecked() &&
+			ui_->graphViewer->captureView(iterationNodeId, iterationNodeViewportPos, iterationScale);
 	if(dbDriver_ && value >=0 && value < (int)graphes_.size())
 	{
 		std::map<int, rtabmap::Transform> graph = uValueAt(graphes_, value);
@@ -9202,7 +9207,11 @@ void DatabaseViewer::sliderIterationsValueChanged(int value)
 			delete rectScaleItem;
 		}
 		else if(ui_->checkBox_fit_in_view->isChecked()) {
-			ui_->graphViewer->fitInView(ui_->graphViewer->sceneRect(), Qt::KeepAspectRatio);
+			ui_->graphViewer->fitGraphInView();
+		}
+		else if(preserveIterationView)
+		{
+			ui_->graphViewer->restoreView(iterationNodeId, iterationNodeViewportPos, iterationScale);
 		}
 
 		ui_->graphViewer->update();
@@ -9487,6 +9496,14 @@ void DatabaseViewer::updateGraphView()
 	ui_->label_loopClosures->clear();
 	ui_->label_poses->clear();
 	ui_->label_rmse->clear();
+
+	// Remember where the user is looking so we can put the same neighborhood
+	// back after optimization (poses jump in scene coordinates).
+	int preservedNodeId = 0;
+	QPointF preservedNodeViewportPos;
+	qreal preservedScale = 0.0;
+	const bool preserveView = ui_->graphViewer->isVisible() &&
+			ui_->graphViewer->captureView(preservedNodeId, preservedNodeViewportPos, preservedScale);
 
 	if(sender() == ui_->checkBox_alignPosesWithGPS && ui_->checkBox_alignPosesWithGPS->isChecked())
 	{
@@ -10199,6 +10216,14 @@ void DatabaseViewer::updateGraphView()
 		ui_->horizontalSlider_iterations->setEnabled(true);
 		ui_->spinBox_optimizationsFrom->setEnabled(true);
 		sliderIterationsValueChanged((int)graphes_.size()-1);
+		if(preserveView)
+		{
+			ui_->graphViewer->restoreView(preservedNodeId, preservedNodeViewportPos, preservedScale);
+		}
+		else
+		{
+			ui_->graphViewer->fitGraphInView();
+		}
 	}
 	else
 	{

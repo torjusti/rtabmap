@@ -893,7 +893,7 @@ void GraphViewer::updateGraph(const std::map<int, Transform> & poses,
 	
 	if(wasEmpty)
 	{
-		this->fitInView(rect.adjusted(-rect.width()/2.0f, -rect.height()/2.0f, rect.width()/2.0f, rect.height()/2.0f), Qt::KeepAspectRatio);
+		this->fitGraphInView();
 	}
 
 	UDEBUG("_nodeItems=%d, _linkItems=%d, timer=%fs", _nodeItems.size(), _linkItems.size(), timer.ticks());
@@ -2268,6 +2268,154 @@ void GraphViewer::centerOnNode(int id)
 	{
 		this->centerOn(center);
 	}
+}
+
+bool GraphViewer::captureView(int & nodeId, QPointF & nodeViewportPos, qreal & scale) const
+{
+	scale = this->transform().m11();
+	if(scale <= 0.0 || _nodeItems.isEmpty() || !this->viewport())
+	{
+		return false;
+	}
+
+	const QPointF sceneCenter = this->mapToScene(this->viewport()->rect().center());
+	int bestId = 0;
+	qreal bestDist = 0.0;
+	for(QMap<int, NodeItem*>::const_iterator iter=_nodeItems.constBegin(); iter!=_nodeItems.constEnd(); ++iter)
+	{
+		if(iter.key() <= 0 || !iter.value() || !iter.value()->isVisible())
+		{
+			continue;
+		}
+		const QPointF p = iter.value()->sceneBoundingRect().center();
+		const qreal dx = p.x() - sceneCenter.x();
+		const qreal dy = p.y() - sceneCenter.y();
+		const qreal dist = dx*dx + dy*dy;
+		if(bestId == 0 || dist < bestDist)
+		{
+			bestId = iter.key();
+			bestDist = dist;
+		}
+	}
+	if(bestId == 0)
+	{
+		return false;
+	}
+
+	nodeId = bestId;
+	nodeViewportPos = this->mapFromScene(this->getNodeScenePosition(bestId));
+	return true;
+}
+
+void GraphViewer::restoreView(int nodeId, const QPointF & nodeViewportPos, qreal scale)
+{
+	if(nodeId == 0 || scale <= 0.0)
+	{
+		return;
+	}
+	const QPointF nodeScenePos = this->getNodeScenePosition(nodeId);
+	if(nodeScenePos.isNull())
+	{
+		return;
+	}
+
+	this->resetTransform();
+	this->scale(scale, scale);
+
+	if(!this->viewport())
+	{
+		return;
+	}
+	const QPointF viewportCenter = this->viewport()->rect().center();
+	const QPointF sceneDelta = (viewportCenter - nodeViewportPos) / scale;
+	this->centerOn(nodeScenePos + sceneDelta);
+}
+
+void GraphViewer::zoomOnNode(int id, qreal radiusMeters)
+{
+	const QPointF center = this->getNodeScenePosition(id);
+	if(center.isNull() || radiusMeters <= 0.0 || !this->viewport())
+	{
+		return;
+	}
+
+	// Scene units are centimetres (pose metres * 100).
+	const qreal r = radiusMeters * 100.0;
+	const QRectF target(center.x() - r, center.y() - r, 2.0 * r, 2.0 * r);
+	const QRectF current = this->mapToScene(this->viewport()->rect()).boundingRect();
+	if(current.width() > target.width() || current.height() > target.height())
+	{
+		const ViewportAnchor oldAnchor = this->transformationAnchor();
+		this->setTransformationAnchor(QGraphicsView::AnchorViewCenter);
+		this->fitInView(target, Qt::KeepAspectRatio);
+		this->setTransformationAnchor(oldAnchor);
+	}
+	this->centerOn(center);
+}
+
+void GraphViewer::fitGraphInView()
+{
+	if(!this->viewport())
+	{
+		return;
+	}
+	if(this->viewport()->rect().isEmpty())
+	{
+		// Opening a database can update the graph before the dock is laid out.
+		QTimer::singleShot(0, this, [this]() {
+			if(this->viewport() && !this->viewport()->rect().isEmpty())
+			{
+				fitGraphInView();
+			}
+		});
+		return;
+	}
+
+	QRectF bounds;
+	bool hasNode = false;
+	for(QMap<int, NodeItem*>::const_iterator iter=_nodeItems.constBegin(); iter!=_nodeItems.constEnd(); ++iter)
+	{
+		if(iter.key() <= 0 || !iter.value() || !iter.value()->isVisible())
+		{
+			continue;
+		}
+		const QRectF r = iter.value()->sceneBoundingRect();
+		if(!hasNode)
+		{
+			bounds = r;
+			hasNode = true;
+		}
+		else
+		{
+			bounds |= r;
+		}
+	}
+	if(!hasNode)
+	{
+		return;
+	}
+
+	// Scene units are centimetres. Keep a usable size for a tiny/single-node graph.
+	const qreal minSize = 1000.0; // 10 m
+	if(bounds.width() < minSize)
+	{
+		const qreal extra = (minSize - bounds.width()) / 2.0;
+		bounds.adjust(-extra, 0, extra, 0);
+	}
+	if(bounds.height() < minSize)
+	{
+		const qreal extra = (minSize - bounds.height()) / 2.0;
+		bounds.adjust(0, -extra, 0, extra);
+	}
+
+	const qreal padX = qMax(bounds.width() * 0.08, 200.0);
+	const qreal padY = qMax(bounds.height() * 0.08, 200.0);
+	bounds.adjust(-padX, -padY, padX, padY);
+
+	const ViewportAnchor oldAnchor = this->transformationAnchor();
+	this->setTransformationAnchor(QGraphicsView::AnchorViewCenter);
+	this->fitInView(bounds, Qt::KeepAspectRatio);
+	this->setTransformationAnchor(oldAnchor);
 }
 
 void GraphViewer::contextMenuEvent(QContextMenuEvent * event)
