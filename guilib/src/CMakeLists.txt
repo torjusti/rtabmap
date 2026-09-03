@@ -37,6 +37,7 @@ SET(headers_ui
 	../include/${PROJECT_PREFIX}/gui/MultiSessionLocWidget.h
 	../include/${PROJECT_PREFIX}/gui/MultiSessionLocSubView.h
 	../include/${PROJECT_PREFIX}/gui/LinkRefiningDialog.h
+	../include/${PROJECT_PREFIX}/gui/BasemapTileSource.h
 )
 
 SET(qrc 
@@ -83,6 +84,9 @@ SET(SRC_FILES
 	./ParametersToolBox.cpp
 	./DepthCalibrationDialog.cpp
 	./LinkRefiningDialog.cpp
+	./GeoRaster.cpp
+	./BasemapTileSource.cpp
+	./CloudViewerBasemap.cpp
 	./3rdParty/QMultiComboBox.cpp
 	./opencv/vtkImageMatSource.cpp
 	${qrc}
@@ -167,6 +171,15 @@ IF(VTK_USE_QVTK)
 	SET(INCLUDE_DIRS ${INCLUDE_DIRS} ${QVTK_INCLUDE_DIR})
 	SET(LIBRARIES ${LIBRARIES} ${QVTK_LIBRARY})
 ENDIF(VTK_USE_QVTK)
+
+IF(GDAL_FOUND)
+	IF(TARGET GDAL::GDAL)
+		SET(LIBRARIES ${LIBRARIES} GDAL::GDAL)
+	ELSE()
+		SET(INCLUDE_DIRS ${INCLUDE_DIRS} ${GDAL_INCLUDE_DIRS})
+		SET(LIBRARIES ${LIBRARIES} ${GDAL_LIBRARIES})
+	ENDIF()
+ENDIF(GDAL_FOUND)
 
 add_definitions(${PCL_DEFINITIONS})
 

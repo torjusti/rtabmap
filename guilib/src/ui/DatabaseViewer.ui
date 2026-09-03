@@ -972,6 +972,9 @@
     <addaction name="separator"/>
     <addaction name="actionView_3D_map"/>
     <addaction name="actionView_3D_map_from_file"/>
+    <addaction name="separator"/>
+    <addaction name="actionLoad_basemap"/>
+    <addaction name="actionClear_basemap"/>
    </widget>
    <widget class="QMenu" name="menuView">
     <property name="title">
@@ -3731,6 +3734,19 @@
    </property>
    <property name="toolTip">
     <string>View a previously exported 3D map without regenerating it. The file must be in the same frame as the current optimized graph for anchor points to be placed correctly.</string>
+   </property>
+  </action>
+  <action name="actionLoad_basemap">
+   <property name="text">
+    <string>Load basemap (GeoTIFF)...</string>
+   </property>
+   <property name="toolTip">
+    <string>Load a georeferenced raster (e.g. an orthophoto or a 2D plan exported from QGIS as GeoTIFF with overviews) drawn under the graph and the 3D map views. Its CRS must be the one used for the anchor point coordinates.</string>
+   </property>
+  </action>
+  <action name="actionClear_basemap">
+   <property name="text">
+    <string>Clear basemap</string>
    </property>
   </action>
   <action name="actionRefine_links">

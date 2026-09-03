@@ -47,6 +47,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QPushButton>
+#include <QShortcut>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGraphicsLineItem>
@@ -96,6 +97,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "rtabmap/core/Recovery.h"
 #include "rtabmap/gui/DataRecorder.h"
 #include "rtabmap/gui/ExportCloudsDialog.h"
+#include "rtabmap/gui/BasemapTileSource.h"
+#include "rtabmap/gui/GeoRaster.h"
 #include "rtabmap/gui/EditDepthArea.h"
 #include "rtabmap/gui/EditMapArea.h"
 #include "rtabmap/core/SensorData.h"
@@ -138,6 +141,8 @@ const double kAnchorSigmaZFree = 1e6;
 const double kAnchorCoordLimitM = 30000.0;
 const char * kAnchorFrameOffsetXParam = "DatabaseViewer/AnchorFrameOffsetX";
 const char * kAnchorFrameOffsetYParam = "DatabaseViewer/AnchorFrameOffsetY";
+// Percent-encoded path (relative to the database directory when possible)
+const char * kBasemapPathParam = "DatabaseViewer/BasemapPath";
 
 // Table item displaying formatted text but sorting by a numeric value, so
 // that e.g. "10.00" sorts after "9.00" in the anchor points table.
@@ -176,6 +181,7 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	anchorFrameOffsetSet_(false),
 	anchorFrameOffsetX_(0.0),
 	anchorFrameOffsetY_(0.0),
+	assembledViewerHintShown_(false),
 	savedMaximized_(false),
 	firstCall_(true),
 	iniFilePath_(ini),
@@ -270,6 +276,16 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	connect(occupancyGridViewer_, SIGNAL(pointPicked(float,float,float)), this, SLOT(anchorPointPickedFromMap(float,float,float)));
 	exportDialog_->setAnchorPointActionEnabled(true);
 	connect(exportDialog_, SIGNAL(pointPicked(float,float,float)), this, SLOT(anchorPointPickedFromMap(float,float,float)));
+	connect(exportDialog_, SIGNAL(viewerCreated(CloudViewer*)), this, SLOT(mapViewerCreated(CloudViewer*)));
+	connect(occupancyGridViewer_, SIGNAL(anchorPairPicked(float,float,float,double,double)), this, SLOT(anchorPairPickedFromMap(float,float,float,double,double)));
+	connect(ui_->actionLoad_basemap, SIGNAL(triggered()), this, SLOT(loadBasemap()));
+	connect(ui_->actionClear_basemap, SIGNAL(triggered()), this, SLOT(clearBasemap()));
+	ui_->actionClear_basemap->setEnabled(false);
+	if(!GeoRaster::isAvailable())
+	{
+		ui_->actionLoad_basemap->setEnabled(false);
+		ui_->actionLoad_basemap->setToolTip(tr("RTAB-Map was built without GDAL (WITH_GDAL=OFF or GDAL not found), basemaps are not available."));
+	}
 
 	ui_->tableWidget_anchors->horizontalHeader()->setStretchLastSection(true);
 	ui_->tableWidget_anchors->setSortingEnabled(true);
@@ -1057,6 +1073,7 @@ bool DatabaseViewer::openDatabase(const QString & path, const ParametersMap & ov
 				// add overridden parameters
 				uInsert(parameters, overriddenParameters);
 				loadAnchorFrameOffset(parameters);
+				loadBasemapPath(parameters);
 
 				if(parameters.size())
 				{
@@ -1115,6 +1132,15 @@ bool DatabaseViewer::openDatabase(const QString & path, const ParametersMap & ov
 
 				updateIds();
 				this->setWindowTitle("RTAB-Map Database Viewer - " + path + "[*]");
+				if(!basemapPath_.isEmpty())
+				{
+					QString basemapPath = basemapPath_;
+					basemapPath_.clear();
+					if(!openBasemap(basemapPath, false))
+					{
+						UWARN("Basemap \"%s\" saved with this database could not be loaded.", basemapPath.toStdString().c_str());
+					}
+				}
 				return true;
 			}
 		}
@@ -1340,6 +1366,20 @@ bool DatabaseViewer::closeDatabase()
 
 		delete dbDriver_;
 		dbDriver_ = 0;
+		if(basemap_)
+		{
+			basemap_->clear();
+			basemapPath_.clear();
+			ui_->actionClear_basemap->setEnabled(false);
+		}
+		for(int i=0; i<mapViewers_.size(); ++i)
+		{
+			if(mapViewers_[i].viewer)
+			{
+				mapViewers_[i].viewer->window()->close();
+			}
+		}
+		mapViewers_.clear();
 		ids_.clear();
 		idToIndex_.clear();
 		neighborLinks_.clear();
@@ -4566,6 +4606,118 @@ void DatabaseViewer::view3DMapFromFile()
 	// optimized against world-referenced anchor points), start centered on it.
 	viewer->centerCameraOnVisible();
 	viewer->refreshView();
+	registerMapViewer(viewer, true);
+}
+
+void DatabaseViewer::mapViewerCreated(CloudViewer * viewer)
+{
+	registerMapViewer(viewer, false);
+}
+
+void DatabaseViewer::registerMapViewer(CloudViewer * viewer, bool fromFile)
+{
+	if(!viewer)
+	{
+		return;
+	}
+	// prune closed windows
+	for(int i=0; i<mapViewers_.size();)
+	{
+		if(!mapViewers_[i].viewer)
+		{
+			mapViewers_.removeAt(i);
+		}
+		else
+		{
+			++i;
+		}
+	}
+	MapViewerInfo info;
+	info.viewer = viewer;
+	info.fromFile = fromFile;
+	mapViewers_.append(info);
+	connect(viewer, SIGNAL(anchorPairPicked(float,float,float,double,double)), this, SLOT(anchorPairPickedFromMap(float,float,float,double,double)), Qt::UniqueConnection);
+	// F5 in the 3D view: re-optimize the graph with the current links/priors
+	// and move the displayed clouds to the new poses (reposeMapViewers() is
+	// called at the end of the graph update).
+	QShortcut * refresh = new QShortcut(QKeySequence(Qt::Key_F5), viewer);
+	refresh->setContext(Qt::WindowShortcut);
+	connect(refresh, SIGNAL(activated()), this, SLOT(updateGraphView()));
+	if(basemap_ && basemap_->isLoaded())
+	{
+		viewer->setBasemap(basemap_);
+		viewer->setCameraTopDown();
+	}
+}
+
+bool DatabaseViewer::reposeMapViewers(const std::map<int, Transform> & poses)
+{
+	bool assembledFound = false;
+	int perNodeViewers = 0;
+	for(int i=0; i<mapViewers_.size(); ++i)
+	{
+		CloudViewer * viewer = mapViewers_[i].viewer;
+		if(!viewer || mapViewers_[i].fromFile)
+		{
+			continue;
+		}
+		++perNodeViewers;
+		int updated = 0;
+		QMap<std::string, Transform> clouds = viewer->getAddedClouds();
+		for(QMap<std::string, Transform>::const_iterator iter=clouds.constBegin(); iter!=clouds.constEnd(); ++iter)
+		{
+			const std::string & id = iter.key();
+			std::string suffix;
+			if(id.compare(0, 5, "cloud") == 0)
+			{
+				suffix = id.substr(5);
+			}
+			else if(id.compare(0, 4, "mesh") == 0)
+			{
+				suffix = id.substr(4);
+			}
+			else
+			{
+				continue;
+			}
+			// An assembled map is added as "cloud0"/"cloud-1": a single merged
+			// cloud with the poses baked in, impossible to re-pose.
+			int nodeId = uIsInteger(suffix, true)?uStr2Int(suffix):0;
+			if(nodeId <= 0)
+			{
+				assembledFound = true;
+			}
+			else
+			{
+				std::map<int, Transform>::const_iterator jter = poses.find(nodeId);
+				if(jter != poses.end() && !jter->second.isNull() && jter->second != iter.value())
+				{
+					viewer->updateCloudPose(id, jter->second);
+					++updated;
+				}
+			}
+		}
+		if(updated)
+		{
+			UINFO("3D map view: %d clouds moved to the new optimized poses.", updated);
+			viewer->refreshView();
+		}
+		else
+		{
+			UINFO("3D map view: no cloud to move (%d clouds displayed, %d optimized poses, assembled=%s).",
+					clouds.size(), (int)poses.size(), assembledFound?"true":"false");
+		}
+	}
+	if(assembledFound && !assembledViewerHintShown_)
+	{
+		assembledViewerHintShown_ = true;
+		QMessageBox::information(this, tr("3D map view"),
+				tr("This 3D map was generated with \"Assemble\" checked: it is a single "
+				   "merged cloud that cannot follow re-optimizations.\n\n"
+				   "Uncheck \"Assemble\" in the export dialog when viewing the 3D map so "
+				   "that the clouds move with the optimized graph (F5)."));
+	}
+	return perNodeViewers > 0 && !assembledFound;
 }
 
 void DatabaseViewer::generate3DMap()
@@ -7495,7 +7647,49 @@ void DatabaseViewer::anchorPointPickedFromMap(float x, float y, float z)
 	addAnchorPointFromWorld(refPoses, x, y, z);
 }
 
-void DatabaseViewer::addAnchorPointFromWorld(const std::map<int, Transform> & refPoses, float x, float y, float z)
+void DatabaseViewer::anchorPairPickedFromMap(float x, float y, float z, double mapX, double mapY)
+{
+	if(!dbDriver_ || ids_.empty())
+	{
+		return;
+	}
+	// Which pose snapshot was this view rendered with?
+	std::map<int, Transform> refPoses;
+	if(sender() == occupancyGridViewer_)
+	{
+		refPoses = gridViewRefPoses_;
+	}
+	else
+	{
+		for(int i=0; i<mapViewers_.size(); ++i)
+		{
+			if(mapViewers_[i].viewer && mapViewers_[i].viewer == sender())
+			{
+				refPoses = mapViewers_[i].fromFile?fileViewRefPoses_:exportViewRefPoses_;
+				break;
+			}
+		}
+	}
+	if(refPoses.empty() && !graphes_.empty())
+	{
+		refPoses = uValueAt(graphes_, ui_->horizontalSlider_iterations->value());
+	}
+	if(refPoses.empty())
+	{
+		QMessageBox::warning(this, tr("Add anchor point"),
+				tr("The optimized graph is empty, cannot add an anchor point."));
+		return;
+	}
+	// The basemap is drawn in the map frame (CRS minus the anchor frame origin)
+	double crsXY[2] = {mapX, mapY};
+	if(basemap_)
+	{
+		basemap_->mapToCrs(mapX, mapY, crsXY[0], crsXY[1]);
+	}
+	addAnchorPointFromWorld(refPoses, x, y, z, crsXY);
+}
+
+void DatabaseViewer::addAnchorPointFromWorld(const std::map<int, Transform> & refPoses, float x, float y, float z, const double * knownCrsXY)
 {
 	Transform pointWorld(x, y, z, 0, 0, 0);
 	int nodeId = 0;
@@ -7544,10 +7738,10 @@ void DatabaseViewer::addAnchorPointFromWorld(const std::map<int, Transform> & re
 			refPoses.at(nodeId).x(), refPoses.at(nodeId).y(), refPoses.at(nodeId).z(),
 			std::sqrt(bestSqrdDist),
 			tLocal.x(), tLocal.y(), tLocal.z());
-	addAnchorPoint(nodeId, tLocal);
+	addAnchorPoint(nodeId, tLocal, knownCrsXY);
 }
 
-void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal)
+void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal, const double * knownCrsXY)
 {
 	// Estimate current world coordinates of that point using the latest optimized graph
 	Transform nodeWorldPose = odomPoses_.at(nodeId);
@@ -7581,18 +7775,33 @@ void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal)
 	double worldX = pointWorld.x();
 	double worldY = pointWorld.y();
 	double worldZ = pointWorld.z();
-	double sigmaXY = 0.3;
+	double sigmaXY = 0.1;
 	// Default to an unconstrained elevation: the prefilled Z is the current
 	// (possibly drift-corrupted) estimate, not a measurement, so constraining
 	// it would anchor the very drift the user is trying to correct.
 	double sigmaZ = kAnchorSigmaZFree;
+	QString header;
+	if(knownCrsXY)
+	{
+		worldX = knownCrsXY[0];
+		worldY = knownCrsXY[1];
+		header = tr("Coordinates below were read from the basemap where you clicked%1.\n"
+				"Adjust them if needed, or just set the uncertainty and press OK.\n"
+				"Picked point is currently at %2, %3, %4 in the map frame.")
+				.arg(basemap_ && !basemap_->crsName().isEmpty()?tr(" (CRS: %1)").arg(basemap_->crsName()):QString())
+				.arg(pointWorld.x(),0,'f',2).arg(pointWorld.y(),0,'f',2).arg(pointWorld.z(),0,'f',2);
+	}
+	else
+	{
+		header = tr("Enter the known world coordinates of the picked point "
+				"(paste from QGIS is fine, including Web Mercator / UTM / Lambert-93).\n"
+				"The first anchor becomes (0, 0) in the map; later anchors are stored relative to it.\n"
+				"Picked point is currently at %1, %2, %3 in the map frame.")
+				.arg(pointWorld.x(),0,'f',2).arg(pointWorld.y(),0,'f',2).arg(pointWorld.z(),0,'f',2);
+	}
 	if(!getAnchorPointInput(
 			tr("Add anchor point (seen from node %1)").arg(nodeId),
-			tr("Enter the known world coordinates of the picked point "
-			   "(paste from QGIS is fine, including Web Mercator / UTM / Lambert-93).\n"
-			   "The first anchor becomes (0, 0) in the map; later anchors are stored relative to it.\n"
-			   "Picked point is currently at %1, %2, %3 in the map frame.")
-			   .arg(pointWorld.x(),0,'f',2).arg(pointWorld.y(),0,'f',2).arg(pointWorld.z(),0,'f',2),
+			header,
 			worldX, worldY, worldZ, sigmaXY, sigmaZ))
 	{
 		return;
@@ -7875,6 +8084,7 @@ bool DatabaseViewer::applyAnchorFrameOffset(double & x, double & y, bool allowSe
 		anchorFrameOffsetY_ = y;
 		anchorFrameOffsetSet_ = true;
 		saveAnchorFrameOffset();
+		updateBasemapFrameOffset();
 		UINFO("Anchor frame origin set to CRS (%.6f, %.6f); first prior stored as (0, 0)",
 				anchorFrameOffsetX_, anchorFrameOffsetY_);
 		if(largeCrs)
@@ -7904,6 +8114,271 @@ bool DatabaseViewer::applyAnchorFrameOffset(double & x, double & y, bool allowSe
 		return false;
 	}
 	return true;
+}
+
+void DatabaseViewer::loadBasemap()
+{
+	if(!dbDriver_)
+	{
+		QMessageBox::warning(this, tr("Load basemap"), tr("Open a database first."));
+		return;
+	}
+	QString dir = basemapPath_.isEmpty()?pathDatabase_:QFileInfo(basemapPath_).absolutePath();
+	QString path = QFileDialog::getOpenFileName(this, tr("Select a georeferenced raster (GeoTIFF)"), dir,
+			QString::fromStdString(GeoRaster::fileFilter()));
+	if(path.isEmpty())
+	{
+		return;
+	}
+	openBasemap(path, true);
+}
+
+void DatabaseViewer::clearBasemap()
+{
+	if(basemap_)
+	{
+		basemap_->clear();
+	}
+	basemapPath_.clear();
+	ui_->actionClear_basemap->setEnabled(false);
+	saveBasemapPath();
+	applyBasemapToViewers();
+}
+
+bool DatabaseViewer::openBasemap(const QString & path, bool interactive)
+{
+	if(!basemap_)
+	{
+		basemap_.reset(new BasemapTileSource());
+	}
+	QString error;
+	if(!basemap_->load(path, &error))
+	{
+		if(interactive)
+		{
+			QMessageBox::critical(this, tr("Load basemap"), error);
+		}
+		else
+		{
+			UERROR("%s", error.toStdString().c_str());
+		}
+		basemapPath_.clear();
+		ui_->actionClear_basemap->setEnabled(false);
+		applyBasemapToViewers();
+		return false;
+	}
+	basemapPath_ = path;
+	ui_->actionClear_basemap->setEnabled(true);
+
+	// The map frame origin: anchors are stored as CRS minus this offset. If no
+	// origin exists yet, use the raster centre so that the basemap and the
+	// (future) anchors share a frame with small coordinates.
+	if(!anchorFrameOffsetSet_)
+	{
+		if(hasAnchorPriors())
+		{
+			// Existing priors were stored as raw coordinates: keep that frame.
+			anchorFrameOffsetX_ = 0.0;
+			anchorFrameOffsetY_ = 0.0;
+		}
+		else
+		{
+			double cx, cy;
+			basemap_->rasterCenterCrs(cx, cy);
+			anchorFrameOffsetX_ = std::floor(cx);
+			anchorFrameOffsetY_ = std::floor(cy);
+		}
+		anchorFrameOffsetSet_ = true;
+		UINFO("Anchor frame origin set from the basemap to CRS (%.3f, %.3f)", anchorFrameOffsetX_, anchorFrameOffsetY_);
+	}
+
+	// In the map frame (CRS minus anchor-frame offset) the graph lives around
+	// the origin. If the raster ends up far from it, the basemap is rendered
+	// but cannot be seen with the graph. Typical cause: the frame origin was
+	// created from anchor points in another CRS than the raster.
+	{
+		double cx, cy;
+		basemap_->rasterCenterCrs(cx, cy);
+		double halfW = basemap_->width() * basemap_->pixelSize(0) / 2.0;
+		double halfH = basemap_->height() * basemap_->pixelSize(0) / 2.0;
+		double dx = std::max(0.0, fabs(cx - anchorFrameOffsetX_) - halfW);
+		double dy = std::max(0.0, fabs(cy - anchorFrameOffsetY_) - halfH);
+		if(dx >= kAnchorCoordLimitM || dy >= kAnchorCoordLimitM)
+		{
+			// Without anchor points the stored origin protects nothing:
+			// recenter silently (a stale origin can be left behind by an
+			// older session or another raster).
+			bool recenter = true;
+			if(hasAnchorPriors())
+			{
+				QString msg = tr("The basemap is %1 km away from the map origin "
+						"(current anchor frame origin: CRS X=%2, Y=%3), so it cannot be seen "
+						"together with the graph. This usually means the existing anchor points "
+						"were not created in the raster CRS (%4).\n\n"
+						"Recenter the map frame on the basemap?\n\n"
+						"Existing anchor points will then be misplaced: remove them and create "
+						"new ones in the raster CRS (e.g. with \"Add anchor point: here, then on basemap\").")
+						.arg(std::sqrt(dx*dx + dy*dy)/1000.0, 0, 'f', 0)
+						.arg(anchorFrameOffsetX_, 0, 'f', 3)
+						.arg(anchorFrameOffsetY_, 0, 'f', 3)
+						.arg(basemap_->crsAuthority().isEmpty()?basemap_->crsName():basemap_->crsAuthority());
+				recenter = QMessageBox::question(this, tr("Load basemap"), msg,
+						QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::Yes;
+			}
+			if(recenter)
+			{
+				anchorFrameOffsetX_ = std::floor(cx);
+				anchorFrameOffsetY_ = std::floor(cy);
+				anchorFrameOffsetSet_ = true;
+				UINFO("Anchor frame origin recentered on the basemap to CRS (%.3f, %.3f)",
+						anchorFrameOffsetX_, anchorFrameOffsetY_);
+			}
+			else
+			{
+				UWARN("Basemap kept %.0f km away from the map origin: it will not be visible near the graph.",
+						std::sqrt(dx*dx + dy*dy)/1000.0);
+			}
+		}
+	}
+	updateBasemapFrameOffset();
+	// Single Info write: saveBasemapPath() also persists the anchor-frame
+	// offset. Calling saveAnchorFrameOffset() first would INSERT two rows in
+	// the same second and break getLastParametersQuery() (second-resolution
+	// time_enter).
+	saveBasemapPath();
+	applyBasemapToViewers();
+
+	QString crs = basemap_->crsName();
+	if(!basemap_->crsAuthority().isEmpty())
+	{
+		crs += QString(" [%1]").arg(basemap_->crsAuthority());
+	}
+	UINFO("Basemap \"%s\" loaded (%dx%d px, %.3f m/px, CRS: %s). Anchor coordinates must be in that CRS.",
+			path.toStdString().c_str(), basemap_->width(), basemap_->height(), basemap_->pixelSize(0),
+			crs.isEmpty()?"unknown":crs.toStdString().c_str());
+
+	QStringList warnings;
+	if(basemap_->isGeographic())
+	{
+		warnings << tr("The raster CRS is geographic (%1): its units are degrees, not metres. "
+				"Reproject it to a projected CRS (e.g. UTM or Lambert-93) in QGIS/gdalwarp for a usable overlay.").arg(crs);
+	}
+	if(!basemap_->hasOverviews() && basemap_->maxLevel() > 2)
+	{
+		warnings << tr("The raster has no overviews: zoomed-out views will be slow. Build them with\n"
+				"  gdaladdo -r average \"%1\" 2 4 8 16 32 64 128 256\n"
+				"or export from QGIS with \"Create overviews\" / as a Cloud Optimized GeoTIFF.").arg(path);
+	}
+	if(interactive)
+	{
+		QString msg = tr("Basemap loaded: %1\n%2x%3 px, %4 m/px\nCRS: %5\n\n"
+				"Anchor coordinates pasted or picked must be in this CRS. "
+				"Right-click in a 3D map view for basemap options "
+				"(and \"Add anchor point: here, then on basemap...\"). "
+				"Press F5 in a 3D map view to re-optimize and move the clouds to the new poses.")
+				.arg(QFileInfo(path).fileName())
+				.arg(basemap_->width()).arg(basemap_->height())
+				.arg(basemap_->pixelSize(0), 0, 'f', 3)
+				.arg(crs.isEmpty()?tr("unknown"):crs);
+		if(!warnings.isEmpty())
+		{
+			QMessageBox::warning(this, tr("Load basemap"), msg + "\n\n" + warnings.join("\n\n"));
+		}
+		else
+		{
+			QMessageBox::information(this, tr("Load basemap"), msg);
+		}
+	}
+	else
+	{
+		for(int i=0; i<warnings.size(); ++i)
+		{
+			UWARN("%s", warnings[i].toStdString().c_str());
+		}
+	}
+	return true;
+}
+
+void DatabaseViewer::updateBasemapFrameOffset()
+{
+	if(basemap_ && anchorFrameOffsetSet_)
+	{
+		basemap_->setFrameOffset(anchorFrameOffsetX_, anchorFrameOffsetY_);
+	}
+}
+
+void DatabaseViewer::applyBasemapToViewers()
+{
+	std::shared_ptr<BasemapTileSource> source;
+	if(basemap_ && basemap_->isLoaded())
+	{
+		source = basemap_;
+	}
+	occupancyGridViewer_->setBasemap(source);
+	ui_->graphViewer->setBasemap(source);
+	for(int i=0; i<mapViewers_.size(); ++i)
+	{
+		if(mapViewers_[i].viewer)
+		{
+			mapViewers_[i].viewer->setBasemap(source);
+			if(source)
+			{
+				mapViewers_[i].viewer->setCameraTopDown();
+			}
+		}
+	}
+}
+
+void DatabaseViewer::loadBasemapPath(const ParametersMap & parameters)
+{
+	basemapPath_.clear();
+	ParametersMap::const_iterator iter = parameters.find(kBasemapPathParam);
+	if(iter != parameters.end() && !iter->second.empty())
+	{
+		QString path = QString::fromUtf8(QByteArray::fromPercentEncoding(QByteArray(iter->second.c_str())));
+		if(QFileInfo(path).isRelative())
+		{
+			path = QDir(pathDatabase_).filePath(path);
+		}
+		if(QFileInfo(path).exists())
+		{
+			basemapPath_ = path;
+		}
+		else
+		{
+			UWARN("Basemap \"%s\" saved with this database does not exist anymore.", path.toStdString().c_str());
+		}
+	}
+}
+
+void DatabaseViewer::saveBasemapPath()
+{
+	if(!dbDriver_)
+	{
+		return;
+	}
+	ParametersMap dbParameters = dbDriver_->getLastParameters();
+	if(basemapPath_.isEmpty())
+	{
+		if(dbParameters.find(kBasemapPathParam) == dbParameters.end())
+		{
+			return;
+		}
+		dbParameters.erase(kBasemapPathParam);
+	}
+	else
+	{
+		// relative to the database when the raster lives next to it
+		QString stored = QDir(pathDatabase_).relativeFilePath(basemapPath_);
+		if(stored.startsWith(".."))
+		{
+			stored = QFileInfo(basemapPath_).absoluteFilePath();
+		}
+		std::string encoded = QString::fromUtf8(stored.toUtf8().toPercentEncoding()).toStdString();
+		uInsert(dbParameters, ParametersPair(kBasemapPathParam, encoded));
+	}
+	mergeAnchorFrameOffset(dbParameters);
+	dbDriver_->addInfoAfterRun(0, 0, 0, 0, 0, dbParameters);
 }
 
 void DatabaseViewer::removeAnchorPoint(int landmarkId)
@@ -8071,7 +8546,7 @@ void DatabaseViewer::editSelectedAnchorPoint()
 	double x = prior.transform().x() + (anchorFrameOffsetSet_ ? anchorFrameOffsetX_ : 0.0);
 	double y = prior.transform().y() + (anchorFrameOffsetSet_ ? anchorFrameOffsetY_ : 0.0);
 	double z = prior.transform().z();
-	double sigmaXY = prior.infMatrix().at<double>(0,0)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(0,0)):0.3;
+	double sigmaXY = prior.infMatrix().at<double>(0,0)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(0,0)):0.1;
 	double sigmaZ = prior.infMatrix().at<double>(2,2)>0.0?std::sqrt(1.0/prior.infMatrix().at<double>(2,2)):2.0;
 	if(getAnchorPointInput(tr("Edit anchor point %1").arg(-landmarkId), QString(), x, y, z, sigmaXY, sigmaZ) &&
 	   applyAnchorFrameOffset(x, y, false))
@@ -9063,6 +9538,29 @@ void DatabaseViewer::sliderIterationsValueChanged(int value)
 		ui_->graphViewer->updateGTGraph(groundTruthPoses_);
 		ui_->graphViewer->updateGPSGraph(gpsPoses_, gpsValues_);
 		ui_->graphViewer->updateGraph(graph, graphLinks_, mapIds_, weights_);
+
+		// Move the clouds of the open "View 3D map" windows to the new poses
+		// (same frame as view3DMap(): raw optimized poses, unless the clouds
+		// are aligned with ground truth, in which case they do not move).
+		if(!mapViewers_.empty() &&
+		   !(ui_->checkBox_alignScansCloudsWithGroundTruth->isEnabled() &&
+			 ui_->checkBox_alignScansCloudsWithGroundTruth->isChecked() &&
+			 !groundTruthPoses_.empty()))
+		{
+			std::map<int, Transform> rawGraph = uValueAt(graphes_, value);
+			if(reposeMapViewers(rawGraph) && !exportViewRefPoses_.empty())
+			{
+				// the views now show rawGraph: keep the pick snapshot in sync
+				for(std::map<int, Transform>::iterator iter=exportViewRefPoses_.begin(); iter!=exportViewRefPoses_.end(); ++iter)
+				{
+					std::map<int, Transform>::const_iterator jter = rawGraph.find(iter->first);
+					if(jter != rawGraph.end())
+					{
+						iter->second = jter->second;
+					}
+				}
+			}
+		}
 		if(ui_->comboBox_env_sensor_graph_colormap->currentIndex() != 0)
 		{
 			std::map<int, float> colors;

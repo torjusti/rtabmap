@@ -37,10 +37,12 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QGraphicsPixmapItem>
 #include <rtabmap/core/Link.h>
 #include <rtabmap/core/GPS.h>
+#include <rtabmap/gui/BasemapTileSource.h>
 #include <opencv2/opencv.hpp>
 #include <map>
 #include <set>
 #include <vector>
+#include <memory>
 
 class QGraphicsItem;
 class QGraphicsPixmapItem;
@@ -193,6 +195,18 @@ public:
 	// referential at 0,0, which otherwise leaves the map as a speck in a corner).
 	void fitGraphInView();
 
+	// Basemap: georeferenced raster drawn under the graph (XY plane only),
+	// as progressively loaded tiles. The source is shared with the 3D views.
+	void setBasemap(const std::shared_ptr<BasemapTileSource> & basemap);
+	bool hasBasemap() const;
+	void setBasemapVisible(bool visible);
+	bool isBasemapVisible() const {return _basemapVisible;}
+	void setBasemapOpacity(float opacity);
+	float getBasemapOpacity() const {return _basemapOpacity;}
+	// Draw the basemap over the occupancy grid map (otherwise under it)
+	void setBasemapAboveGridMap(bool above);
+	bool isBasemapAboveGridMap() const {return _basemapAboveGridMap;}
+
 Q_SIGNALS:
 	void configChanged();
 	void mapShownRequested();
@@ -202,6 +216,10 @@ Q_SIGNALS:
 
 public Q_SLOTS:
 	void restoreDefaults();
+
+private Q_SLOTS:
+	void pollBasemap();
+	void basemapTileReady(const rtabmap::BasemapTileKey & key);
 
 protected:
 	virtual void wheelEvent ( QWheelEvent * event );
@@ -215,6 +233,8 @@ private:
 	void startZoomOverlay();
 	void updateZoomOverlay();
 	void stopZoomOverlay();
+	void updateBasemapTiles(bool force = false);
+	void clearBasemapItems();
 private:
 	QString _workingDirectory;
 	QColor _nodeColor;
@@ -280,6 +300,18 @@ private:
 	QGraphicsPixmapItem * _zoomOverlayItem;
 	bool _zoomOverlayActive;
 	int _fastZoomMinNodes;
+
+	std::shared_ptr<BasemapTileSource> _basemap;
+	QGraphicsItem * _basemapRoot;
+	std::map<BasemapTileKey, QGraphicsPixmapItem*> _basemapItems;
+	QTimer _basemapTimer;
+	float _basemapOpacity;
+	bool _basemapVisible;
+	bool _basemapAboveGridMap;
+	bool _basemapDirty;
+	QTransform _basemapLastTransform;
+	QRect _basemapLastViewport;
+	int _basemapLastScroll[2];
 };
 
 } /* namespace rtabmap */
