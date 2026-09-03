@@ -59,6 +59,7 @@ using PCLQVTKWidget = QVTKWidget;
 
 #include <opencv2/opencv.hpp>
 #include <set>
+#include <memory>
 
 #include <pcl/PCLPointCloud2.h>
 
@@ -76,6 +77,8 @@ class vtkOBBTree;
 namespace rtabmap {
 
 class OctoMap;
+class BasemapTileSource;
+class CloudViewerBasemap;
 
 class RTABMAP_GUI_EXPORT CloudViewer : public PCLQVTKWidget
 {
@@ -423,6 +426,36 @@ public:
 	void setAnchorPointActionEnabled(bool enabled);
 	bool isAnchorPointActionEnabled() const;
 
+	// Basemap: a georeferenced raster (see BasemapTileSource) drawn as
+	// progressively loaded tiles at a fixed elevation under the data. The
+	// source can be shared between several viewers (one tile cache).
+	void setBasemap(const std::shared_ptr<BasemapTileSource> & source);
+	std::shared_ptr<BasemapTileSource> getBasemap() const;
+	bool hasBasemap() const;
+	void setBasemapVisible(bool visible);
+	bool isBasemapVisible() const;
+	void setBasemapOpacity(double opacity);
+	double getBasemapOpacity() const;
+	void setBasemapZ(double z);
+	double getBasemapZ() const;
+	// Places the basemap 0.5 m below (or above) the currently displayed data
+	void setBasemapZAuto(bool above = false);
+	// Picks the basemap under a widget position (map/viewer coordinates),
+	// ignoring the clouds drawn over it.
+	bool pickBasemap(const QPoint & widgetPos, double & mapX, double & mapY);
+	// Orthographic camera looking straight down with +Y (north) up, fitting
+	// the displayed data in the view.
+	void setCameraTopDown();
+	// Temporarily hides all clouds/meshes (e.g. to compare against the basemap)
+	void setCloudsHidden(bool hidden);
+	bool areCloudsHidden() const {return _cloudsHidden;}
+	// Starts the two-click anchor workflow programmatically: cloudPt is the
+	// picked 3D point, the next right-click on the basemap completes it
+	// through anchorPairPicked().
+	void startAnchorPairPick(const double cloudPt[3]);
+	void cancelAnchorPairPick();
+	bool isAnchorPairPickPending() const {return _anchorPairPending;}
+
 public Q_SLOTS:
 	void setDefaultBackgroundColor(const QColor & color);
 	void setBackgroundColor(const QColor & color);
@@ -435,6 +468,9 @@ public Q_SLOTS:
 Q_SIGNALS:
 	void configChanged();
 	void pointPicked(float x, float y, float z);
+	// A 3D point of the data and its matching position on the basemap (both
+	// in the viewer frame), see "Add anchor point: here, then on basemap..."
+	void anchorPairPicked(float cloudX, float cloudY, float cloudZ, double mapX, double mapY);
 
 protected:
 	virtual void keyReleaseEvent(QKeyEvent * event);
@@ -451,6 +487,9 @@ private:
 	void createMenu();
 	void addGrid();
 	void removeGrid();
+	bool pickPointUnderCursor(const QPoint & widgetPos, double pt[3]) const;
+	void finishAnchorPairPick(const QPoint & widgetPos);
+	bool computeVisibleBounds(double bounds[6]) const;
 
 private:
     pcl::visualization::PCLVisualizer * _visualizer;
@@ -490,6 +529,20 @@ private:
     QAction * _aBackfaceCulling;
     QAction * _aPolygonPicking;
     QAction * _aAddAnchorPoint;
+    QAction * _aAddAnchorFromBasemap;
+    QAction * _aCameraTopDown;
+    QMenu * _basemapMenu;
+    QAction * _aBasemapShow;
+    QAction * _aBasemapOpacity;
+    QAction * _aBasemapZ;
+    QAction * _aBasemapZBelow;
+    QAction * _aBasemapZAbove;
+    QAction * _aBasemapHideClouds;
+    CloudViewerBasemap * _basemap;
+    bool _cloudsHidden;
+    std::set<std::string> _hiddenClouds;
+    bool _anchorPairPending;
+    double _anchorPairCloudPt[3];
     QPoint _lastContextMenuPos;
     QMenu * _menu;
     std::set<std::string> _graphes;

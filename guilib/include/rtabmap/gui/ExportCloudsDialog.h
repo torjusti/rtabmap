@@ -55,6 +55,7 @@ namespace rtabmap {
 class ProgressDialog;
 class GainCompensator;
 class DBDriver;
+class CloudViewer;
 
 class RTABMAP_GUI_EXPORT ExportCloudsDialog : public QDialog
 {
@@ -126,6 +127,9 @@ public:
 Q_SIGNALS:
 	void configChanged();
 	void pointPicked(float x, float y, float z); // in the frame of the poses passed to viewClouds()
+	// Emitted once the viewer opened by viewClouds() is populated. Clouds/meshes
+	// are named "cloud<nodeId>" / "mesh<nodeId>" (or id 0 when assembled).
+	void viewerCreated(CloudViewer * viewer);
 
 public Q_SLOTS:
 	void restoreDefaults();

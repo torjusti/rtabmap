@@ -47,6 +47,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QToolTip>
+#include <QScrollBar>
 
 #include <QtCore/QDir>
 #include <QtCore/QDateTime>
@@ -349,12 +350,21 @@ GraphViewer::GraphViewer(QWidget * parent) :
 		_zoomDebounceTimer(this),
 		_zoomOverlayItem(0),
 		_zoomOverlayActive(false),
-		_fastZoomMinNodes(0)
+		_fastZoomMinNodes(0),
+		_basemapRoot(0),
+		_basemapTimer(this),
+		_basemapOpacity(1.0f),
+		_basemapVisible(true),
+		_basemapAboveGridMap(false),
+		_basemapDirty(false)
 {
 	this->setDragMode(QGraphicsView::ScrollHandDrag);
 	_workingDirectory = QDir::homePath();
 	_zoomDebounceTimer.setSingleShot(true);
 	connect(&_zoomDebounceTimer, &QTimer::timeout, this, &GraphViewer::stopZoomOverlay);
+	_basemapLastScroll[0] = _basemapLastScroll[1] = 0;
+	_basemapTimer.setInterval(100);
+	connect(&_basemapTimer, &QTimer::timeout, this, &GraphViewer::pollBasemap);
 
 	setupGraphicsScene();
 
@@ -501,6 +511,14 @@ void GraphViewer::setupGraphicsScene()
 	_gridMap = this->scene()->addPixmap(QPixmap());
 	_gridMap->setZValue(0);
 	_gridMap->setParentItem(_root);
+
+	// the scene was deleted, so were the tile items
+	_basemapItems.clear();
+	_basemapRoot = (QGraphicsItem *)this->scene()->addEllipse(QRectF(-0.0001,-0.0001,0.0001,0.0001));
+	_basemapRoot->setZValue(_basemapAboveGridMap?0.5:-1);
+	_basemapRoot->setParentItem(_root);
+	_basemapRoot->setOpacity(_basemapOpacity);
+	_basemapDirty = true;
 
 	_graphRoot = (QGraphicsItem *)this->scene()->addEllipse(QRectF(-0.0001,-0.0001,0.0001,0.0001));
 	_graphRoot->setZValue(4);
@@ -1600,6 +1618,9 @@ void GraphViewer::saveSettings(QSettings & settings, const QString & group) cons
 	settings.setValue("inter_session_color", this->getInterSessionLoopColor());
 	settings.setValue("intra_inter_session_colors_enabled", this->isIntraInterSessionColorsEnabled());
 	settings.setValue("grid_visible", this->isGridMapVisible());
+	settings.setValue("basemap_visible", this->isBasemapVisible());
+	settings.setValue("basemap_opacity", (double)this->getBasemapOpacity());
+	settings.setValue("basemap_above_grid", this->isBasemapAboveGridMap());
 	settings.setValue("origin_visible", this->isOriginVisible());
 	settings.setValue("referential_visible", this->isReferentialVisible());
 	settings.setValue("local_radius_visible", this->isLocalRadiusVisible());
@@ -1652,6 +1673,9 @@ void GraphViewer::loadSettings(QSettings & settings, const QString & group)
 	this->setIntraSessionLoopColor(settings.value("intra_session_color", this->getIntraSessionLoopColor()).value<QColor>());
 	this->setInterSessionLoopColor(settings.value("inter_session_color", this->getInterSessionLoopColor()).value<QColor>());
 	this->setGridMapVisible(settings.value("grid_visible", this->isGridMapVisible()).toBool());
+	this->setBasemapVisible(settings.value("basemap_visible", this->isBasemapVisible()).toBool());
+	this->setBasemapOpacity((float)settings.value("basemap_opacity", (double)this->getBasemapOpacity()).toDouble());
+	this->setBasemapAboveGridMap(settings.value("basemap_above_grid", this->isBasemapAboveGridMap()).toBool());
 	this->setOriginVisible(settings.value("origin_visible", this->isOriginVisible()).toBool());
 	this->setReferentialVisible(settings.value("referential_visible", this->isReferentialVisible()).toBool());
 	this->setLocalRadiusVisible(settings.value("local_radius_visible", this->isLocalRadiusVisible()).toBool());
@@ -2009,6 +2033,252 @@ void GraphViewer::setGridMapVisible(bool visible)
 		UWARN("Grid map can be shown only with view plane is XY.");
 	}
 	_gridMap->setVisible(_viewPlane==XY && visible);
+}
+
+void GraphViewer::setBasemap(const std::shared_ptr<BasemapTileSource> & basemap)
+{
+	if(_basemap == basemap)
+	{
+		return;
+	}
+	if(_basemap)
+	{
+		disconnect(_basemap.get(), 0, this, 0);
+	}
+	clearBasemapItems();
+	_basemap = basemap;
+	if(_basemap)
+	{
+		connect(_basemap.get(), SIGNAL(tileReady(const rtabmap::BasemapTileKey &)), this, SLOT(basemapTileReady(const rtabmap::BasemapTileKey &)));
+		connect(_basemap.get(), &BasemapTileSource::cleared, this, [this](){clearBasemapItems(); _basemapDirty = true;});
+		connect(_basemap.get(), &BasemapTileSource::loaded, this, [this](){_basemapDirty = true;});
+		_basemapTimer.start();
+	}
+	else
+	{
+		_basemapTimer.stop();
+	}
+	updateBasemapTiles(true);
+}
+
+bool GraphViewer::hasBasemap() const
+{
+	return _basemap && _basemap->isLoaded();
+}
+
+void GraphViewer::setBasemapVisible(bool visible)
+{
+	_basemapVisible = visible;
+	_basemapDirty = true;
+	updateBasemapTiles(true);
+}
+
+void GraphViewer::setBasemapOpacity(float opacity)
+{
+	_basemapOpacity = std::max(0.0f, std::min(1.0f, opacity));
+	if(_basemapRoot)
+	{
+		_basemapRoot->setOpacity(_basemapOpacity);
+	}
+}
+
+void GraphViewer::setBasemapAboveGridMap(bool above)
+{
+	_basemapAboveGridMap = above;
+	if(_basemapRoot)
+	{
+		_basemapRoot->setZValue(above?0.5:-1);
+	}
+}
+
+void GraphViewer::clearBasemapItems()
+{
+	for(std::map<BasemapTileKey, QGraphicsPixmapItem*>::iterator iter=_basemapItems.begin(); iter!=_basemapItems.end(); ++iter)
+	{
+		delete iter->second;
+	}
+	_basemapItems.clear();
+}
+
+void GraphViewer::basemapTileReady(const rtabmap::BasemapTileKey &)
+{
+	_basemapDirty = true;
+}
+
+void GraphViewer::pollBasemap()
+{
+	if(!hasBasemap() || !_basemapVisible || !_basemapRoot || !isVisible())
+	{
+		return;
+	}
+	int scroll[2] = {horizontalScrollBar()->value(), verticalScrollBar()->value()};
+	// includes the world rotation (_root) and the view zoom/pan
+	QTransform t = _root->sceneTransform() * this->transform();
+	if(_basemapDirty ||
+	   t != _basemapLastTransform ||
+	   viewport()->rect() != _basemapLastViewport ||
+	   scroll[0] != _basemapLastScroll[0] || scroll[1] != _basemapLastScroll[1])
+	{
+		updateBasemapTiles(true);
+	}
+}
+
+void GraphViewer::updateBasemapTiles(bool force)
+{
+	_basemapDirty = false;
+	if(!_basemapRoot)
+	{
+		return;
+	}
+	if(!hasBasemap() || !_basemapVisible || _viewPlane != XY)
+	{
+		clearBasemapItems();
+		if(_basemap && _basemap->isLoaded())
+		{
+			_basemap->cancelPending();
+		}
+		return;
+	}
+	Q_UNUSED(force);
+	_basemapLastTransform = _root->sceneTransform() * this->transform();
+	_basemapLastViewport = viewport()->rect();
+	_basemapLastScroll[0] = horizontalScrollBar()->value();
+	_basemapLastScroll[1] = verticalScrollBar()->value();
+
+	// Visible area in "root" coordinates (scene units are cm, x=-Y, y=-X)
+	QRectF viewSceneRect = this->mapToScene(viewport()->rect()).boundingRect();
+	QRectF rootRect = _root->mapFromScene(viewSceneRect).boundingRect();
+	if(rootRect.isEmpty())
+	{
+		return;
+	}
+	double visXMin = -rootRect.bottom()/100.0, visXMax = -rootRect.top()/100.0;
+	double visYMin = -rootRect.right()/100.0,  visYMax = -rootRect.left()/100.0;
+	double visCX = (visXMin+visXMax)/2.0, visCY = (visYMin+visYMax)/2.0;
+	double pxPerMetre = std::sqrt(std::fabs(_basemapLastTransform.determinant())) * 100.0;
+	if(pxPerMetre <= 0.0)
+	{
+		return;
+	}
+
+	// Quadtree traversal: refine tiles whose texels would be larger than a
+	// screen pixel, within a tile budget.
+	const int maxTiles = 300;
+	std::vector<BasemapTileKey> targets;
+	std::vector<BasemapTileKey> current;
+	current.push_back(_basemap->rootKey());
+	while(!current.empty())
+	{
+		std::vector<BasemapTileKey> refine;
+		for(size_t i=0; i<current.size(); ++i)
+		{
+			const BasemapTileKey & key = current[i];
+			double xMin, yMin, xMax, yMax;
+			if(!_basemap->tileBoundsMap(key, xMin, yMin, xMax, yMax) ||
+			   xMax < visXMin || xMin > visXMax || yMax < visYMin || yMin > visYMax)
+			{
+				continue;
+			}
+			if(key.level > 0 && pxPerMetre * _basemap->pixelSize(key.level) > 1.0)
+			{
+				refine.push_back(key);
+			}
+			else
+			{
+				targets.push_back(key);
+			}
+		}
+		current.clear();
+		if(refine.empty())
+		{
+			break;
+		}
+		if((int)(targets.size() + refine.size()*4) > maxTiles)
+		{
+			targets.insert(targets.end(), refine.begin(), refine.end());
+			break;
+		}
+		for(size_t i=0; i<refine.size(); ++i)
+		{
+			std::vector<BasemapTileKey> children = _basemap->children(refine[i]);
+			current.insert(current.end(), children.begin(), children.end());
+		}
+	}
+
+	std::set<BasemapTileKey> display;
+	std::vector<std::pair<BasemapTileKey, double> > wanted;
+	int maxLevel = _basemap->maxLevel();
+	for(size_t i=0; i<targets.size(); ++i)
+	{
+		const BasemapTileKey & key = targets[i];
+		double xMin, yMin, xMax, yMax;
+		_basemap->tileBoundsMap(key, xMin, yMin, xMax, yMax);
+		double cx = (xMin+xMax)/2.0, cy = (yMin+yMax)/2.0;
+		double dist = std::sqrt((cx-visCX)*(cx-visCX) + (cy-visCY)*(cy-visCY));
+		BasemapTileKey k = key;
+		for(;;)
+		{
+			if(_basemap->isCached(k))
+			{
+				display.insert(k);
+				break;
+			}
+			wanted.push_back(std::make_pair(k, double(maxLevel - k.level)*1e7 + dist));
+			if(k.level >= maxLevel)
+			{
+				break;
+			}
+			k = k.parent();
+		}
+	}
+	_basemap->request(wanted);
+
+	for(std::map<BasemapTileKey, QGraphicsPixmapItem*>::iterator iter=_basemapItems.begin(); iter!=_basemapItems.end();)
+	{
+		if(display.find(iter->first) == display.end())
+		{
+			delete iter->second;
+			_basemapItems.erase(iter++);
+		}
+		else
+		{
+			++iter;
+		}
+	}
+	for(std::set<BasemapTileKey>::const_iterator iter=display.begin(); iter!=display.end(); ++iter)
+	{
+		if(_basemapItems.find(*iter) != _basemapItems.end())
+		{
+			continue;
+		}
+		cv::Mat image = _basemap->tile(*iter);
+		double c[4][2];
+		if(image.empty() || image.type() != CV_8UC4 || !_basemap->tileCornersMap(*iter, c))
+		{
+			continue;
+		}
+		// BGRA bytes match QImage::Format_ARGB32 on little-endian hosts
+		QImage qimage(image.data, image.cols, image.rows, (int)image.step, QImage::Format_ARGB32);
+		QGraphicsPixmapItem * item = new QGraphicsPixmapItem(QPixmap::fromImage(qimage.copy()));
+		item->setTransformationMode(Qt::SmoothTransformation);
+		item->setAcceptedMouseButtons(Qt::NoButton);
+		item->setAcceptHoverEvents(false);
+		// finer levels over coarser ones (shown while the finer ones load)
+		item->setZValue(-iter->level);
+		// Map pixmap (u,v) to root coordinates through the tile corners:
+		// TL=c[0], TR=c[1], BL=c[3]; root (x,y) = (-100*Y, -100*X)
+		double w = image.cols, h = image.rows;
+		QPointF p0(-100.0*c[0][1], -100.0*c[0][0]);
+		QPointF p1(-100.0*c[1][1], -100.0*c[1][0]);
+		QPointF p3(-100.0*c[3][1], -100.0*c[3][0]);
+		QTransform t(
+				(p1.x()-p0.x())/w, (p1.y()-p0.y())/w,
+				(p3.x()-p0.x())/h, (p3.y()-p0.y())/h,
+				p0.x(), p0.y());
+		item->setTransform(t);
+		item->setParentItem(_basemapRoot);
+		_basemapItems.insert(std::make_pair(*iter, item));
+	}
 }
 void GraphViewer::setOriginVisible(bool visible)
 {
@@ -2523,6 +2793,19 @@ void GraphViewer::contextMenuEvent(QContextMenuEvent * event)
 		aShowHideGridMap = menu.addAction(tr("Show grid map"));
 	}
 	aShowHideGridMap->setEnabled(_viewPlane == XY);
+	QAction * aShowHideBasemap = 0;
+	QAction * aBasemapOpacity = 0;
+	QAction * aBasemapAboveGrid = 0;
+	if(hasBasemap())
+	{
+		QMenu * basemapMenu = menu.addMenu(tr("Basemap"));
+		aShowHideBasemap = basemapMenu->addAction(_basemapVisible?tr("Hide basemap"):tr("Show basemap"));
+		aShowHideBasemap->setEnabled(_viewPlane == XY);
+		aBasemapOpacity = basemapMenu->addAction(tr("Set basemap opacity..."));
+		aBasemapAboveGrid = basemapMenu->addAction(tr("Draw basemap over grid map"));
+		aBasemapAboveGrid->setCheckable(true);
+		aBasemapAboveGrid->setChecked(_basemapAboveGridMap);
+	}
 	if(_originReferential->isVisible())
 	{
 		aShowHideOrigin = menu.addAction(tr("Hide origin referential"));
@@ -3015,6 +3298,23 @@ void GraphViewer::contextMenuEvent(QContextMenuEvent * event)
 	else if(r == aShowHideLocalRadius)
 	{
 		this->setLocalRadiusVisible(!this->isLocalRadiusVisible());
+	}
+	else if(aShowHideBasemap && r == aShowHideBasemap)
+	{
+		this->setBasemapVisible(!this->isBasemapVisible());
+	}
+	else if(aBasemapOpacity && r == aBasemapOpacity)
+	{
+		bool ok;
+		double value = QInputDialog::getDouble(this, tr("Set basemap opacity"), tr("Opacity"), _basemapOpacity, 0.0, 1.0, 2, &ok);
+		if(ok)
+		{
+			this->setBasemapOpacity((float)value);
+		}
+	}
+	else if(aBasemapAboveGrid && r == aBasemapAboveGrid)
+	{
+		this->setBasemapAboveGridMap(aBasemapAboveGrid->isChecked());
 	}
 	else if(r == aRestoreDefaults)
 	{
