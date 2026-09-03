@@ -85,6 +85,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <vtkWarpScalar.h>
 #include <vtkUnsignedCharArray.h>
 #include <opencv/vtkImageMatSource.h>
+#include "CloudViewerBasemap.h"
 
 #if VTK_MAJOR_VERSION >= 7
 #include <vtkEDLShading.h>
@@ -136,6 +137,18 @@ CloudViewer::CloudViewer(QWidget *parent, CloudViewerInteractorStyle * style) :
 		_aSetScalarVisibility(0),
 		_aBackfaceCulling(0),
 		_aAddAnchorPoint(0),
+		_aAddAnchorFromBasemap(0),
+		_aCameraTopDown(0),
+		_basemapMenu(0),
+		_aBasemapShow(0),
+		_aBasemapOpacity(0),
+		_aBasemapZ(0),
+		_aBasemapZBelow(0),
+		_aBasemapZAbove(0),
+		_aBasemapHideClouds(0),
+		_basemap(0),
+		_cloudsHidden(false),
+		_anchorPairPending(false),
 		_menu(0),
 		_trajectory(new pcl::PointCloud<pcl::PointXYZ>),
 		_maxTrajectorySize(100),
@@ -260,6 +273,10 @@ CloudViewer::CloudViewer(QWidget *parent, CloudViewerInteractorStyle * style) :
 	//setup menu/actions
 	createMenu();
 
+	_anchorPairCloudPt[0] = _anchorPairCloudPt[1] = _anchorPairCloudPt[2] = 0.0;
+	_basemap = new CloudViewerBasemap(_visualizer->getInteractorStyle()->GetDefaultRenderer(), this);
+	connect(_basemap, &CloudViewerBasemap::changed, this, [this](){this->refreshView();});
+
 	setMouseTracking(false);
 }
 
@@ -377,6 +394,20 @@ void CloudViewer::createMenu()
 	_aPolygonPicking->setChecked(false);
 	_aAddAnchorPoint = new QAction("Add anchor point here...", this);
 	_aAddAnchorPoint->setVisible(false);
+	_aAddAnchorFromBasemap = new QAction("Add anchor point: here, then on basemap...", this);
+	_aAddAnchorFromBasemap->setToolTip("Pick a point of the data, then right-click the same spot on the basemap: the anchor coordinates are read from the basemap.");
+	_aAddAnchorFromBasemap->setVisible(false);
+	_aCameraTopDown = new QAction("Top-down view (north up)", this);
+	_aBasemapShow = new QAction("Show basemap", this);
+	_aBasemapShow->setCheckable(true);
+	_aBasemapShow->setChecked(true);
+	_aBasemapOpacity = new QAction("Set basemap opacity...", this);
+	_aBasemapZ = new QAction("Set basemap elevation...", this);
+	_aBasemapZBelow = new QAction("Place basemap below data", this);
+	_aBasemapZAbove = new QAction("Place basemap above data", this);
+	_aBasemapHideClouds = new QAction("Hide clouds (basemap only)", this);
+	_aBasemapHideClouds->setCheckable(true);
+	_aBasemapHideClouds->setChecked(false);
 
 	QMenu * cameraMenu = new QMenu("Camera", this);
 	cameraMenu->addAction(_aLockCamera);
@@ -385,7 +416,17 @@ void CloudViewer::createMenu()
 	cameraMenu->addSeparator();
 	cameraMenu->addAction(_aLockViewZ);
 	cameraMenu->addAction(_aCameraOrtho);
+	cameraMenu->addAction(_aCameraTopDown);
 	cameraMenu->addAction(_aResetCamera);
+
+	_basemapMenu = new QMenu("Basemap", this);
+	_basemapMenu->addAction(_aBasemapShow);
+	_basemapMenu->addAction(_aBasemapOpacity);
+	_basemapMenu->addAction(_aBasemapZ);
+	_basemapMenu->addAction(_aBasemapZBelow);
+	_basemapMenu->addAction(_aBasemapZAbove);
+	_basemapMenu->addSeparator();
+	_basemapMenu->addAction(_aBasemapHideClouds);
 	QActionGroup * group = new QActionGroup(this);
 	group->addAction(_aLockCamera);
 	group->addAction(_aFollowCamera);
@@ -425,7 +466,10 @@ void CloudViewer::createMenu()
 	//menus
 	_menu = new QMenu(this);
 	_menu->addAction(_aAddAnchorPoint);
+	_menu->addAction(_aAddAnchorFromBasemap);
 	_menu->addMenu(cameraMenu);
+	_menu->addMenu(_basemapMenu);
+	_basemapMenu->menuAction()->setVisible(false);
 	_menu->addMenu(trajectoryMenu);
 	_menu->addAction(_aShowCameraAxis);
 	_menu->addAction(_aSetFrameScale);
@@ -2498,10 +2542,12 @@ void CloudViewer::resetCamera()
 	}
 }
 
-void CloudViewer::centerCameraOnVisible(bool onlyIfOutOfView)
+bool CloudViewer::computeVisibleBounds(double bounds[6]) const
 {
-	// bounding box of everything currently displayed
-	double bounds[6] = {1, -1, 1, -1, 1, -1};
+	// bounding box of everything currently displayed (basemap tiles are
+	// excluded through vtkProp::UseBoundsOff)
+	bounds[0] = bounds[2] = bounds[4] = 1;
+	bounds[1] = bounds[3] = bounds[5] = -1;
 	vtkRenderer* renderer = NULL;
 	_visualizer->getRendererCollection()->InitTraversal();
 	while ((renderer = _visualizer->getRendererCollection()->GetNextItem()) != NULL)
@@ -2524,7 +2570,13 @@ void CloudViewer::centerCameraOnVisible(bool onlyIfOutOfView)
 			}
 		}
 	}
-	if(bounds[0] > bounds[1])
+	return bounds[0] <= bounds[1];
+}
+
+void CloudViewer::centerCameraOnVisible(bool onlyIfOutOfView)
+{
+	double bounds[6];
+	if(!computeVisibleBounds(bounds))
 	{
 		// nothing displayed
 		return;
@@ -2773,6 +2825,247 @@ void CloudViewer::setPolygonPicking(bool enabled)
 void CloudViewer::setAnchorPointActionEnabled(bool enabled)
 {
 	_aAddAnchorPoint->setVisible(enabled);
+}
+
+bool CloudViewer::pickPointUnderCursor(const QPoint & widgetPos, double pt[3]) const
+{
+	vtkRenderer * renderer = _visualizer->getInteractorStyle()->GetDefaultRenderer(); // layer 1 (clouds)
+#if VTK_MAJOR_VERSION > 8
+	vtkAbstractPicker * picker = this->interactor()->GetPicker();
+	double dpr = this->devicePixelRatioF();
+#else
+	vtkAbstractPicker * picker = this->GetInteractor()->GetPicker();
+	double dpr = 1.0;
+#endif
+	if(picker && renderer)
+	{
+		int * winSize = _visualizer->getRenderWindow()->GetSize();
+		int x = (int)(widgetPos.x()*dpr);
+		int y = winSize[1] - 1 - (int)(widgetPos.y()*dpr);
+		if(picker->Pick(x, y, 0, renderer))
+		{
+			picker->GetPickPosition(pt);
+			return true;
+		}
+	}
+	return false;
+}
+
+void CloudViewer::setBasemap(const std::shared_ptr<BasemapTileSource> & source)
+{
+	_basemap->setSource(source);
+	if(_basemap->isActive())
+	{
+		setBasemapZAuto(false);
+	}
+	else
+	{
+		cancelAnchorPairPick();
+		if(_cloudsHidden)
+		{
+			setCloudsHidden(false);
+			_aBasemapHideClouds->setChecked(false);
+		}
+	}
+	this->refreshView();
+}
+
+std::shared_ptr<BasemapTileSource> CloudViewer::getBasemap() const
+{
+	return _basemap->source();
+}
+
+bool CloudViewer::hasBasemap() const
+{
+	return _basemap->isActive();
+}
+
+void CloudViewer::setBasemapVisible(bool visible)
+{
+	_aBasemapShow->setChecked(visible);
+	_basemap->setVisible(visible);
+}
+
+bool CloudViewer::isBasemapVisible() const
+{
+	return _basemap->isVisible();
+}
+
+void CloudViewer::setBasemapOpacity(double opacity)
+{
+	_basemap->setOpacity(opacity);
+}
+
+double CloudViewer::getBasemapOpacity() const
+{
+	return _basemap->opacity();
+}
+
+void CloudViewer::setBasemapZ(double z)
+{
+	_basemap->setZ(z);
+	_basemap->update(true);
+}
+
+double CloudViewer::getBasemapZ() const
+{
+	return _basemap->z();
+}
+
+void CloudViewer::setBasemapZAuto(bool above)
+{
+	double bounds[6];
+	double z = 0.0;
+	if(computeVisibleBounds(bounds))
+	{
+		z = above?bounds[5]+0.5:bounds[4]-0.5;
+	}
+	setBasemapZ(z);
+}
+
+bool CloudViewer::pickBasemap(const QPoint & widgetPos, double & mapX, double & mapY)
+{
+#if VTK_MAJOR_VERSION > 8
+	double dpr = this->devicePixelRatioF();
+#else
+	double dpr = 1.0;
+#endif
+	int * winSize = _visualizer->getRenderWindow()->GetSize();
+	int x = (int)(widgetPos.x()*dpr);
+	int y = winSize[1] - 1 - (int)(widgetPos.y()*dpr);
+	return _basemap->pick(x, y, mapX, mapY);
+}
+
+void CloudViewer::setCameraTopDown()
+{
+	double bounds[6];
+	bool hasData = computeVisibleBounds(bounds);
+	double cx = 0.0, cy = 0.0, cz = 0.0, width = 10.0, height = 10.0;
+	if(hasData)
+	{
+		cx = (bounds[0]+bounds[1])/2.0;
+		cy = (bounds[2]+bounds[3])/2.0;
+		cz = (bounds[4]+bounds[5])/2.0;
+		width = std::max(bounds[1]-bounds[0], 1.0);
+		height = std::max(bounds[3]-bounds[2], 1.0);
+	}
+	else
+	{
+		float px, py, pz, fx, fy, fz, ux, uy, uz;
+		getCameraPosition(px, py, pz, fx, fy, fz, ux, uy, uz);
+		cx = fx; cy = fy; cz = fz;
+	}
+
+	// The interactor style needs a current renderer to switch to ortho mode
+	// (it is normally only set after the first mouse event).
+	vtkInteractorStyle * style = _visualizer->getInteractorStyle();
+	if(style && style->GetCurrentRenderer() == NULL)
+	{
+		style->SetCurrentRenderer(style->GetDefaultRenderer());
+	}
+	setCameraOrtho(true);
+
+	double distance = std::max(width, height);
+	distance = std::max(distance, 5.0);
+	this->setCameraPosition(
+			(float)cx, (float)cy, (float)(cz + distance),
+			(float)cx, (float)cy, (float)cz,
+			0, 1, 0);
+
+	// fit the data in the viewport
+	int * size = _visualizer->getRenderWindow()->GetSize();
+	double aspect = size[1] > 0 ? double(size[0])/double(size[1]) : 1.0;
+	double parallelScale = std::max(height, width/aspect) * 0.55;
+	vtkRenderer* renderer = NULL;
+	_visualizer->getRendererCollection()->InitTraversal ();
+	while ((renderer = _visualizer->getRendererCollection()->GetNextItem ()) != NULL)
+	{
+		vtkCamera * cam = renderer->GetActiveCamera();
+		cam->SetParallelProjection(true);
+		cam->SetParallelScale(parallelScale);
+	}
+	_lastCameraOrientation= _lastCameraPose = cv::Vec3f(0,0,0);
+	this->refreshView();
+}
+
+void CloudViewer::setCloudsHidden(bool hidden)
+{
+	if(hidden == _cloudsHidden)
+	{
+		return;
+	}
+	_cloudsHidden = hidden;
+	_aBasemapHideClouds->setChecked(hidden);
+	if(hidden)
+	{
+		_hiddenClouds.clear();
+		for(QMap<std::string, Transform>::const_iterator iter=_addedClouds.constBegin(); iter!=_addedClouds.constEnd(); ++iter)
+		{
+			if(getCloudVisibility(iter.key()))
+			{
+				_hiddenClouds.insert(iter.key());
+				setCloudVisibility(iter.key(), false);
+			}
+		}
+	}
+	else
+	{
+		for(std::set<std::string>::const_iterator iter=_hiddenClouds.begin(); iter!=_hiddenClouds.end(); ++iter)
+		{
+			if(_addedClouds.contains(*iter))
+			{
+				setCloudVisibility(*iter, true);
+			}
+		}
+		_hiddenClouds.clear();
+	}
+	this->refreshView();
+}
+
+void CloudViewer::startAnchorPairPick(const double cloudPt[3])
+{
+	if(!hasBasemap())
+	{
+		return;
+	}
+	_anchorPairPending = true;
+	_anchorPairCloudPt[0] = cloudPt[0];
+	_anchorPairCloudPt[1] = cloudPt[1];
+	_anchorPairCloudPt[2] = cloudPt[2];
+	_visualizer->removeShape("anchor_pair_hint");
+	_visualizer->addText(
+			"Anchor: now right-click the same spot on the basemap (Esc to cancel)",
+			10, 10, 16, 1.0, 0.9, 0.2, "anchor_pair_hint", 3);
+	// mark the picked point
+	addOrUpdateSphere("anchor_pair_pick", Transform((float)cloudPt[0], (float)cloudPt[1], (float)cloudPt[2], 0, 0, 0), 0.15f, QColor(255, 230, 50), true);
+	UINFO("Anchor pair: cloud point (%.2f, %.2f, %.2f) picked, waiting for basemap point", cloudPt[0], cloudPt[1], cloudPt[2]);
+	this->refreshView();
+}
+
+void CloudViewer::cancelAnchorPairPick()
+{
+	if(_anchorPairPending)
+	{
+		_anchorPairPending = false;
+		_visualizer->removeShape("anchor_pair_hint");
+		removeSphere("anchor_pair_pick");
+		this->refreshView();
+	}
+}
+
+void CloudViewer::finishAnchorPairPick(const QPoint & widgetPos)
+{
+	double mapX = 0.0, mapY = 0.0;
+	if(!pickBasemap(widgetPos, mapX, mapY))
+	{
+		QMessageBox::information(this, tr("Add anchor point"),
+				tr("No basemap under the cursor. Right-click on the basemap where the picked point should be (Esc to cancel)."));
+		return;
+	}
+	double cloudPt[3] = {_anchorPairCloudPt[0], _anchorPairCloudPt[1], _anchorPairCloudPt[2]};
+	cancelAnchorPairPick();
+	UINFO("Anchor pair: cloud point (%.2f, %.2f, %.2f) <-> basemap point (%.3f, %.3f)", cloudPt[0], cloudPt[1], cloudPt[2], mapX, mapY);
+	Q_EMIT anchorPairPicked((float)cloudPt[0], (float)cloudPt[1], (float)cloudPt[2], mapX, mapY);
 }
 
 bool CloudViewer::isAnchorPointActionEnabled() const
@@ -3691,6 +3984,11 @@ void CloudViewer::keyReleaseEvent(QKeyEvent * event) {
 
 void CloudViewer::keyPressEvent(QKeyEvent * event)
 {
+	if(event->key() == Qt::Key_Escape && _anchorPairPending)
+	{
+		cancelAnchorPairPick();
+		return;
+	}
 	if(event->key() == Qt::Key_Up ||
 		event->key() == Qt::Key_Down ||
 		event->key() == Qt::Key_Left ||
@@ -3873,6 +4171,14 @@ void CloudViewer::wheelEvent(QWheelEvent * event)
 void CloudViewer::contextMenuEvent(QContextMenuEvent * event)
 {
 	_lastContextMenuPos = event->pos();
+	if(_anchorPairPending)
+	{
+		// second click of the "here, then on basemap" workflow
+		finishAnchorPairPick(event->pos());
+		return;
+	}
+	_basemapMenu->menuAction()->setVisible(hasBasemap());
+	_aAddAnchorFromBasemap->setVisible(_aAddAnchorPoint->isVisible() && hasBasemap());
 	QAction * a = _menu->exec(event->globalPos());
 	if(a)
 	{
@@ -3937,28 +4243,8 @@ void CloudViewer::handleAction(QAction * a)
 	else if(a == _aAddAnchorPoint)
 	{
 		// Pick the 3D point under the position where the context menu was opened
-		vtkRenderer * renderer = _visualizer->getInteractorStyle()->GetDefaultRenderer(); // layer 1 (clouds)
-#if VTK_MAJOR_VERSION > 8
-		vtkAbstractPicker * picker = this->interactor()->GetPicker();
-		double dpr = this->devicePixelRatioF();
-#else
-		vtkAbstractPicker * picker = this->GetInteractor()->GetPicker();
-		double dpr = 1.0;
-#endif
-		bool picked = false;
 		double pickedPt[3] = {0.0, 0.0, 0.0};
-		if(picker && renderer)
-		{
-			int * winSize = _visualizer->getRenderWindow()->GetSize();
-			int x = (int)(_lastContextMenuPos.x()*dpr);
-			int y = winSize[1] - 1 - (int)(_lastContextMenuPos.y()*dpr);
-			if(picker->Pick(x, y, 0, renderer))
-			{
-				picker->GetPickPosition(pickedPt);
-				picked = true;
-			}
-		}
-		if(picked)
+		if(pickPointUnderCursor(_lastContextMenuPos, pickedPt))
 		{
 			UDEBUG("Anchor point picked: %f %f %f", pickedPt[0], pickedPt[1], pickedPt[2]);
 			Q_EMIT pointPicked((float)pickedPt[0], (float)pickedPt[1], (float)pickedPt[2]);
@@ -3967,6 +4253,56 @@ void CloudViewer::handleAction(QAction * a)
 		{
 			QMessageBox::information(this, tr("Add anchor point"), tr("No 3D point found under the cursor. Right-click directly on the point cloud."));
 		}
+	}
+	else if(a == _aAddAnchorFromBasemap)
+	{
+		double pickedPt[3] = {0.0, 0.0, 0.0};
+		if(pickPointUnderCursor(_lastContextMenuPos, pickedPt))
+		{
+			startAnchorPairPick(pickedPt);
+		}
+		else
+		{
+			QMessageBox::information(this, tr("Add anchor point"), tr("No 3D point found under the cursor. Right-click directly on the point cloud."));
+		}
+	}
+	else if(a == _aCameraTopDown)
+	{
+		this->setCameraTopDown();
+	}
+	else if(a == _aBasemapShow)
+	{
+		this->setBasemapVisible(_aBasemapShow->isChecked());
+	}
+	else if(a == _aBasemapOpacity)
+	{
+		bool ok;
+		double value = QInputDialog::getDouble(this, tr("Set basemap opacity"), tr("Opacity"), getBasemapOpacity(), 0.0, 1.0, 2, &ok);
+		if(ok)
+		{
+			this->setBasemapOpacity(value);
+		}
+	}
+	else if(a == _aBasemapZ)
+	{
+		bool ok;
+		double value = QInputDialog::getDouble(this, tr("Set basemap elevation"), tr("Z (m)"), getBasemapZ(), -1e6, 1e6, 2, &ok);
+		if(ok)
+		{
+			this->setBasemapZ(value);
+		}
+	}
+	else if(a == _aBasemapZBelow)
+	{
+		this->setBasemapZAuto(false);
+	}
+	else if(a == _aBasemapZAbove)
+	{
+		this->setBasemapZAuto(true);
+	}
+	else if(a == _aBasemapHideClouds)
+	{
+		this->setCloudsHidden(_aBasemapHideClouds->isChecked());
 	}
 	else if(a == _aShowGrid)
 	{

@@ -1674,6 +1674,7 @@ void ExportCloudsDialog::viewClouds(
 		viewer->centerCameraOnVisible();
 		viewer->refreshView();
 		window->activateWindow();
+		Q_EMIT viewerCreated(viewer);
 	}
 	else
 	{

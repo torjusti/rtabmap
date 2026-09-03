@@ -1078,15 +1078,20 @@ ParametersMap DBDriverSqlite3::getLastParametersQuery() const
 			std::string query;
 			if(uStrNumCmp(_version, "0.11.11") >= 0)
 			{
+				// LIMIT 1: DATETIME('NOW') is second-resolution, so two
+				// addInfoAfterRun() calls in the same second can share the
+				// same time_enter. Prefer the latest rowid in that case.
 				query = "SELECT parameters "
 						 "FROM Info "
-						 "WHERE time_enter >= (SELECT MAX(time_enter) FROM Info);";
+						 "WHERE time_enter >= (SELECT MAX(time_enter) FROM Info) "
+						 "ORDER BY rowid DESC LIMIT 1;";
 			}
 			else
 			{
 				query = "SELECT parameters "
 						 "FROM Statistics "
-						 "WHERE time_enter >= (SELECT MAX(time_enter) FROM Statistics);";
+						 "WHERE time_enter >= (SELECT MAX(time_enter) FROM Statistics) "
+						 "ORDER BY rowid DESC LIMIT 1;";
 			}
 
 			int rc = SQLITE_OK;

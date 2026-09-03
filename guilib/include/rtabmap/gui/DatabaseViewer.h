@@ -44,6 +44,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #endif
 #include <set>
 #include <vector>
+#include <memory>
+#include <QPointer>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 
@@ -74,6 +76,7 @@ class Registration;
 class RegistrationIcp;
 class ExportDialog;
 class Optimizer;
+class BasemapTileSource;
 
 class GraphComponent
 {
@@ -179,6 +182,10 @@ private Q_SLOTS:
 	void anchorPointPicked(float x, float y, float z);
 	void anchorPointPickedFromImage(float x, float y, float z);
 	void anchorPointPickedFromMap(float x, float y, float z);
+	void anchorPairPickedFromMap(float x, float y, float z, double mapX, double mapY);
+	void loadBasemap();
+	void clearBasemap();
+	void mapViewerCreated(CloudViewer * viewer);
 	void updateAnchorPointsTable();
 	void editSelectedAnchorPoint();
 	void removeSelectedAnchorPoint();
@@ -253,8 +260,10 @@ private:
 	void refineLinks(const QList<Link> & links);
 	void refineConstraint(int from, int to, Registration * reg, RegistrationIcp * regIcp, bool silent);
 	bool addConstraint(int from, int to, Registration * reg, bool silent, bool silentlyUseOptimizedGraphAsGuess = false, Optimizer * optimizer = 0);
-	void addAnchorPoint(int nodeId, const Transform & tLocal);
-	void addAnchorPointFromWorld(const std::map<int, Transform> & refPoses, float x, float y, float z);
+	// knownCrsXY: optional CRS coordinates of the point (e.g. read from the
+	// basemap) used to prefill the anchor dialog.
+	void addAnchorPoint(int nodeId, const Transform & tLocal, const double * knownCrsXY = 0);
+	void addAnchorPointFromWorld(const std::map<int, Transform> & refPoses, float x, float y, float z, const double * knownCrsXY = 0);
 	bool getAnchorPointInput(
 			const QString & title,
 			const QString & header,
@@ -273,6 +282,15 @@ private:
 	int selectedAnchorLandmarkId() const;
 	void exportPoses(int format);
 	void exportGPS(int format);
+	// Basemap (georeferenced raster shared by the graph view and 3D views)
+	bool openBasemap(const QString & path, bool interactive);
+	void applyBasemapToViewers();
+	void loadBasemapPath(const ParametersMap & parameters);
+	void saveBasemapPath();
+	void updateBasemapFrameOffset();
+	void registerMapViewer(CloudViewer * viewer, bool fromFile);
+	// Returns true if the open "View 3D map" windows now all show the given poses.
+	bool reposeMapViewers(const std::map<int, Transform> & poses);
 
 private:
 	Ui_DatabaseViewer * ui_;
@@ -336,6 +354,18 @@ private:
 	bool anchorFrameOffsetSet_;
 	double anchorFrameOffsetX_;
 	double anchorFrameOffsetY_;
+
+	std::shared_ptr<BasemapTileSource> basemap_;
+	QString basemapPath_;
+	// Open "View 3D map" / "3D map from file" windows, to overlay the basemap
+	// and to follow re-optimizations without regenerating the clouds.
+	struct MapViewerInfo
+	{
+		QPointer<CloudViewer> viewer;
+		bool fromFile;
+	};
+	QList<MapViewerInfo> mapViewers_;
+	bool assembledViewerHintShown_;
 
 	bool savedMaximized_;
 	bool firstCall_;
