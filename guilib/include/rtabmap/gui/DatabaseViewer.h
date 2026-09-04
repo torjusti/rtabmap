@@ -385,6 +385,12 @@ private:
 	bool anchorOptimizeAfterAdd_;
 	bool graphOptimizationRunning_;
 	bool reposeRunning_;
+	// Optimizer currently running in the background (only valid while
+	// graphOptimizationRunning_): lets a new optimize request cancel it.
+	Optimizer * runningOptimizer_;
+	// A new optimize request arrived while one was running: re-run with the
+	// current state (links/anchors/settings) once the canceled one returns.
+	bool optimizeRestartPending_;
 
 	bool savedMaximized_;
 	bool firstCall_;

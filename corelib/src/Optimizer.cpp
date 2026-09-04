@@ -347,7 +347,8 @@ Optimizer::Optimizer(int iterations, bool slam2d, bool covarianceIgnored, double
 		priorsIgnored_(priorsIgnored),
 		landmarksIgnored_(landmarksIgnored),
 		gravitySigma_(gravitySigma),
-		loopRedundancyRadius_(Parameters::defaultOptimizerLoopRedundancyRadius())
+		loopRedundancyRadius_(Parameters::defaultOptimizerLoopRedundancyRadius()),
+		canceled_(false)
 {
 }
 
@@ -360,7 +361,8 @@ Optimizer::Optimizer(const ParametersMap & parameters) :
 		priorsIgnored_(Parameters::defaultOptimizerPriorsIgnored()),
 		landmarksIgnored_(Parameters::defaultOptimizerLandmarksIgnored()),
 		gravitySigma_(Parameters::defaultOptimizerGravitySigma()),
-		loopRedundancyRadius_(Parameters::defaultOptimizerLoopRedundancyRadius())
+		loopRedundancyRadius_(Parameters::defaultOptimizerLoopRedundancyRadius()),
+		canceled_(false)
 {
 	parseParameters(parameters);
 }
