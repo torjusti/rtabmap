@@ -34,6 +34,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <atomic>
 #include <thread>
 #include <QEventLoop>
+#include <QTimer>
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QInputDialog>
@@ -186,6 +187,8 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	anchorOptimizeAfterAdd_(true),
 	graphOptimizationRunning_(false),
 	reposeRunning_(false),
+	runningOptimizer_(0),
+	optimizeRestartPending_(false),
 	savedMaximized_(false),
 	firstCall_(true),
 	iniFilePath_(ini),
@@ -10398,7 +10401,24 @@ void DatabaseViewer::updateGraphView()
 	UDEBUG("");
 	if(graphOptimizationRunning_)
 	{
-		UWARN("A graph optimization is already running, ignoring this request.");
+		// A new request while a solve is running means the inputs (anchors,
+		// links, settings) may have changed: cancel the running solve (it
+		// stops at the next iteration boundary) and re-run with the current
+		// state once it returns, so the displayed result always corresponds
+		// to the latest request.
+		UINFO("Graph optimization already running: canceling it and restarting with the current state.");
+		optimizeRestartPending_ = true;
+		if(runningOptimizer_)
+		{
+			runningOptimizer_->cancel();
+		}
+		return;
+	}
+	if(reposeRunning_)
+	{
+		// A 3D view re-assembly is running (nested event loop): retry once it
+		// is done instead of starting an optimization inside its event loop.
+		QTimer::singleShot(100, this, SLOT(updateGraphView()));
 		return;
 	}
 	ui_->label_loopClosures->clear();
@@ -10934,6 +10954,7 @@ void DatabaseViewer::updateGraphView()
 			// graphes_, so the iterations slider never sees a map that is
 			// being written by the worker.
 			graphOptimizationRunning_ = true;
+			runningOptimizer_ = optimizer;
 			ui_->pushButton_optimize->setEnabled(false);
 			const QString optimizeText = ui_->pushButton_optimize->text();
 			ui_->pushButton_optimize->setText(tr("Optimizing..."));
@@ -10948,6 +10969,7 @@ void DatabaseViewer::updateGraphView()
 			});
 			waitLoop.exec();
 			optimizeThread.join();
+			runningOptimizer_ = 0;
 			if(!intermediateGraphs.empty())
 			{
 				graphes_.insert(graphes_.end(), intermediateGraphs.begin(), intermediateGraphs.end());
@@ -10955,6 +10977,13 @@ void DatabaseViewer::updateGraphView()
 			ui_->pushButton_optimize->setText(optimizeText);
 			ui_->pushButton_optimize->setEnabled(true);
 			graphOptimizationRunning_ = false;
+			if(optimizeRestartPending_)
+			{
+				// Re-run with the current state once this call has finished
+				// updating the views with the (canceled, partial) result.
+				optimizeRestartPending_ = false;
+				QTimer::singleShot(0, this, SLOT(updateGraphView()));
+			}
 			UINFO("Optimization finished: final error=%f, iterations done=%d (max=%s), poses out=%d",
 					optFinalError,
 					optIterationsDone,
