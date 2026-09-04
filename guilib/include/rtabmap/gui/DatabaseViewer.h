@@ -372,9 +372,19 @@ private:
 		std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr> localClouds;
 		bool useIntensity;
 		bool withNormals;
+		// Graph the assembled cloud currently on screen was built with, to
+		// skip redundant re-assemblies (the iterations slider can fire
+		// several times with the same final graph).
+		std::map<int, Transform> lastReposedPoses;
 	};
 	QList<MapViewerInfo> mapViewers_;
 	bool assembledViewerHintShown_;
+	// "Optimize the graph now" checkbox state in the anchor point dialog:
+	// unchecked lets the user add several anchors in a row without waiting
+	// for an optimization each time.
+	bool anchorOptimizeAfterAdd_;
+	bool graphOptimizationRunning_;
+	bool reposeRunning_;
 
 	bool savedMaximized_;
 	bool firstCall_;
