@@ -1274,25 +1274,58 @@ bool DatabaseViewer::closeDatabase()
 			ParametersMap dbParameters = dbDriver_->getLastParameters();
 			bool priorsIgnored = Parameters::defaultOptimizerPriorsIgnored();
 			bool robust = Parameters::defaultOptimizerRobust();
+			int optimizerStrategy = Parameters::defaultOptimizerStrategy();
+			int gtsamOptimizer = Parameters::defaultGTSAMOptimizer();
+			int optIterations = Parameters::defaultOptimizerIterations();
 			Parameters::parse(dbParameters, Parameters::kOptimizerPriorsIgnored(), priorsIgnored);
 			Parameters::parse(dbParameters, Parameters::kOptimizerRobust(), robust);
-			if(priorsIgnored || robust)
+			Parameters::parse(dbParameters, Parameters::kOptimizerStrategy(), optimizerStrategy);
+			Parameters::parse(dbParameters, Parameters::kGTSAMOptimizer(), gtsamOptimizer);
+			Parameters::parse(dbParameters, Parameters::kOptimizerIterations(), optIterations);
+
+			// Same fixes as suggested when adding an anchor point, but for the
+			// parameters stored in the database, which other tools (e.g.,
+			// rtabmap-export, rtabmap-reprocess, rtabmap) read as defaults.
+			ParametersMap fixes;
+			if(priorsIgnored)
 			{
+				fixes.insert(ParametersPair(Parameters::kOptimizerPriorsIgnored(), "false"));
+			}
+			if(robust)
+			{
+				fixes.insert(ParametersPair(Parameters::kOptimizerRobust(), "false"));
+			}
+			if(optimizerStrategy == Optimizer::kTypeGTSAM)
+			{
+				if(gtsamOptimizer != 2)
+				{
+					fixes.insert(ParametersPair(Parameters::kGTSAMOptimizer(), "2"));
+				}
+				if(optIterations < 50)
+				{
+					fixes.insert(ParametersPair(Parameters::kOptimizerIterations(), "50"));
+				}
+			}
+			if(!fixes.empty())
+			{
+				QString changes;
+				for(ParametersMap::const_iterator iter=fixes.begin(); iter!=fixes.end(); ++iter)
+				{
+					changes += QString("  %1 -> %2\n").arg(iter->first.c_str()).arg(iter->second.c_str());
+				}
 				if(QMessageBox::question(this,
 						tr("Anchor points"),
 						tr("The database contains anchor point priors, but with the parameters "
-						   "stored in the database (%1=%2, %3=%4), other tools (e.g., rtabmap-export, "
-						   "rtabmap-reprocess, rtabmap) would ignore the anchors or optimize poorly. "
-						   "Do you want to update the database parameters to %1=false and %3=false?")
-							.arg(Parameters::kOptimizerPriorsIgnored().c_str())
-							.arg(priorsIgnored?"true":"false")
-							.arg(Parameters::kOptimizerRobust().c_str())
-							.arg(robust?"true":"false"),
+						   "stored in the database, other tools (e.g., rtabmap-export, "
+						   "rtabmap-reprocess, rtabmap) would ignore the anchors or optimize "
+						   "poorly (ignored priors, robust optimization, an optimizer that can "
+						   "diverge on strong priors, or too few iterations to converge). "
+						   "Do you want to update the stored parameters as follows?\n\n%1")
+							.arg(changes),
 						QMessageBox::Yes | QMessageBox::No,
 						QMessageBox::Yes) == QMessageBox::Yes)
 				{
-					uInsert(dbParameters, ParametersPair(Parameters::kOptimizerPriorsIgnored(), "false"));
-					uInsert(dbParameters, ParametersPair(Parameters::kOptimizerRobust(), "false"));
+					uInsert(dbParameters, fixes);
 					mergeAnchorFrameOffset(dbParameters);
 					dbDriver_->addInfoAfterRun(0, 0, 0, 0, 0, dbParameters);
 				}
@@ -4612,6 +4645,17 @@ void DatabaseViewer::view3DMapFromFile()
 void DatabaseViewer::mapViewerCreated(CloudViewer * viewer)
 {
 	registerMapViewer(viewer, false);
+	if(!mapViewers_.isEmpty() && mapViewers_.last().viewer == viewer)
+	{
+		// per-node clouds captured while assembling, for re-assembly on F5
+		MapViewerInfo & info = mapViewers_.last();
+		info.localClouds = exportDialog_->takeViewLocalClouds(info.useIntensity, info.withNormals);
+		if(!info.localClouds.empty())
+		{
+			UINFO("3D map view: kept %d per-node clouds for re-assembly after re-optimization.",
+					(int)info.localClouds.size());
+		}
+	}
 }
 
 void DatabaseViewer::registerMapViewer(CloudViewer * viewer, bool fromFile)
@@ -4635,6 +4679,7 @@ void DatabaseViewer::registerMapViewer(CloudViewer * viewer, bool fromFile)
 	MapViewerInfo info;
 	info.viewer = viewer;
 	info.fromFile = fromFile;
+	info.genPoses = fromFile?fileViewRefPoses_:exportViewRefPoses_;
 	mapViewers_.append(info);
 	connect(viewer, SIGNAL(anchorPairPicked(float,float,float,double,double)), this, SLOT(anchorPairPickedFromMap(float,float,float,double,double)), Qt::UniqueConnection);
 	// F5 in the 3D view: re-optimize the graph with the current links/priors
@@ -4652,21 +4697,36 @@ void DatabaseViewer::registerMapViewer(CloudViewer * viewer, bool fromFile)
 
 bool DatabaseViewer::reposeMapViewers(const std::map<int, Transform> & poses)
 {
-	bool assembledFound = false;
-	int perNodeViewers = 0;
+	// prune closed windows (also releases their kept per-node clouds)
+	for(int i=0; i<mapViewers_.size();)
+	{
+		if(!mapViewers_[i].viewer)
+		{
+			mapViewers_.removeAt(i);
+		}
+		else
+		{
+			++i;
+		}
+	}
+	bool reposed = false;
+	bool stuckViewFound = false;
 	for(int i=0; i<mapViewers_.size(); ++i)
 	{
-		CloudViewer * viewer = mapViewers_[i].viewer;
-		if(!viewer || mapViewers_[i].fromFile)
+		MapViewerInfo & info = mapViewers_[i];
+		CloudViewer * viewer = info.viewer;
+		if(!viewer || info.fromFile)
 		{
 			continue;
 		}
-		++perNodeViewers;
 		int updated = 0;
+		std::vector<std::string> assembledClouds;
+		bool assembledMeshFound = false;
 		QMap<std::string, Transform> clouds = viewer->getAddedClouds();
 		for(QMap<std::string, Transform>::const_iterator iter=clouds.constBegin(); iter!=clouds.constEnd(); ++iter)
 		{
 			const std::string & id = iter.key();
+			bool isMesh = false;
 			std::string suffix;
 			if(id.compare(0, 5, "cloud") == 0)
 			{
@@ -4675,17 +4735,25 @@ bool DatabaseViewer::reposeMapViewers(const std::map<int, Transform> & poses)
 			else if(id.compare(0, 4, "mesh") == 0)
 			{
 				suffix = id.substr(4);
+				isMesh = true;
 			}
 			else
 			{
 				continue;
 			}
 			// An assembled map is added as "cloud0"/"cloud-1": a single merged
-			// cloud with the poses baked in, impossible to re-pose.
+			// cloud with the poses baked into the points.
 			int nodeId = uIsInteger(suffix, true)?uStr2Int(suffix):0;
 			if(nodeId <= 0)
 			{
-				assembledFound = true;
+				if(isMesh)
+				{
+					assembledMeshFound = true;
+				}
+				else
+				{
+					assembledClouds.push_back(id);
+				}
 			}
 			else
 			{
@@ -4701,23 +4769,110 @@ bool DatabaseViewer::reposeMapViewers(const std::map<int, Transform> & poses)
 		{
 			UINFO("3D map view: %d clouds moved to the new optimized poses.", updated);
 			viewer->refreshView();
+			reposed = true;
 		}
-		else
+		else if(!assembledClouds.empty() && !info.localClouds.empty())
 		{
-			UINFO("3D map view: no cloud to move (%d clouds displayed, %d optimized poses, assembled=%s).",
-					clouds.size(), (int)poses.size(), assembledFound?"true":"false");
+			// Re-assemble the merged cloud from the kept per-node clouds with
+			// the new poses (exact, unlike moving a single actor).
+			UTimer timer;
+			pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr merged(new pcl::PointCloud<pcl::PointXYZRGBNormal>);
+			int used = 0;
+			for(std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr>::const_iterator jter=info.localClouds.begin();
+				jter!=info.localClouds.end(); ++jter)
+			{
+				std::map<int, Transform>::const_iterator kter = poses.find(jter->first);
+				Transform pose;
+				if(kter != poses.end() && !kter->second.isNull())
+				{
+					pose = kter->second;
+				}
+				else
+				{
+					// node filtered out of this optimization: keep it where it was generated
+					std::map<int, Transform>::const_iterator gter = info.genPoses.find(jter->first);
+					if(gter == info.genPoses.end() || gter->second.isNull())
+					{
+						continue;
+					}
+					pose = gter->second;
+				}
+				*merged += *util3d::transformPointCloud(jter->second, pose);
+				++used;
+			}
+			if(used && !merged->empty())
+			{
+				const std::string & id = assembledClouds.front();
+				if(info.useIntensity)
+				{
+					// Same conversion as when the view was created: scans
+					// without RGB are displayed as intensity clouds.
+					if(info.withNormals)
+					{
+						pcl::PointCloud<pcl::PointXYZINormal>::Ptr cloudI(new pcl::PointCloud<pcl::PointXYZINormal>);
+						cloudI->resize(merged->size());
+						for(unsigned int j=0; j<cloudI->size(); ++j)
+						{
+							cloudI->points[j].x = merged->points[j].x;
+							cloudI->points[j].y = merged->points[j].y;
+							cloudI->points[j].z = merged->points[j].z;
+							cloudI->points[j].normal_x = merged->points[j].normal_x;
+							cloudI->points[j].normal_y = merged->points[j].normal_y;
+							cloudI->points[j].normal_z = merged->points[j].normal_z;
+							cloudI->points[j].curvature = merged->points[j].curvature;
+							int * intensity = (int *)&cloudI->points[j].intensity;
+							*intensity =
+									int(merged->points[j].r) |
+									int(merged->points[j].g) << 8 |
+									int(merged->points[j].b) << 16 |
+									int(merged->points[j].a) << 24;
+						}
+						viewer->addCloud(id, cloudI, Transform::getIdentity());
+					}
+					else
+					{
+						pcl::PointCloud<pcl::PointXYZI>::Ptr cloudI(new pcl::PointCloud<pcl::PointXYZI>);
+						cloudI->resize(merged->size());
+						for(unsigned int j=0; j<cloudI->size(); ++j)
+						{
+							cloudI->points[j].x = merged->points[j].x;
+							cloudI->points[j].y = merged->points[j].y;
+							cloudI->points[j].z = merged->points[j].z;
+							int * intensity = (int *)&cloudI->points[j].intensity;
+							*intensity =
+									int(merged->points[j].r) |
+									int(merged->points[j].g) << 8 |
+									int(merged->points[j].b) << 16 |
+									int(merged->points[j].a) << 24;
+						}
+						viewer->addCloud(id, cloudI, Transform::getIdentity());
+					}
+				}
+				else
+				{
+					viewer->addCloud(id, merged, Transform::getIdentity());
+				}
+				viewer->setCloudPointSize(id, 1);
+				viewer->refreshView();
+				reposed = true;
+				UINFO("3D map view: re-assembled %d node clouds (%d points) in %.1fs.",
+						used, (int)merged->size(), timer.elapsed());
+			}
+		}
+		else if(!assembledClouds.empty() || assembledMeshFound)
+		{
+			stuckViewFound = true;
 		}
 	}
-	if(assembledFound && !assembledViewerHintShown_)
+	if(stuckViewFound && !assembledViewerHintShown_)
 	{
 		assembledViewerHintShown_ = true;
 		QMessageBox::information(this, tr("3D map view"),
-				tr("This 3D map was generated with \"Assemble\" checked: it is a single "
-				   "merged cloud that cannot follow re-optimizations.\n\n"
-				   "Uncheck \"Assemble\" in the export dialog when viewing the 3D map so "
-				   "that the clouds move with the optimized graph (F5)."));
+				tr("This 3D view cannot follow re-optimizations (assembled meshes and "
+				   "views older than this session cannot be re-posed). Regenerate the "
+				   "view to see the new poses."));
 	}
-	return perNodeViewers > 0 && !assembledFound;
+	return reposed;
 }
 
 void DatabaseViewer::generate3DMap()
@@ -7873,6 +8028,54 @@ void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal, const 
 		}
 	}
 
+	// With GTSAM, Gauss-Newton's undamped steps can diverge when strong anchor
+	// priors are combined with a large graph ("error is very huge" aborts or
+	// bent maps), and a big re-anchoring move can need more iterations than the
+	// default to converge. Suggest Levenberg-Marquardt and more iterations.
+	int optimizerStrategy = Parameters::defaultOptimizerStrategy();
+	Parameters::parse(ui_->parameters_toolbox->getParameters(), Parameters::kOptimizerStrategy(), optimizerStrategy);
+	if(optimizerStrategy == Optimizer::kTypeGTSAM)
+	{
+		int gtsamOptimizer = Parameters::defaultGTSAMOptimizer();
+		int optIterations = Parameters::defaultOptimizerIterations();
+		Parameters::parse(ui_->parameters_toolbox->getParameters(), Parameters::kGTSAMOptimizer(), gtsamOptimizer);
+		Parameters::parse(ui_->parameters_toolbox->getParameters(), Parameters::kOptimizerIterations(), optIterations);
+		QStringList changes;
+		if(gtsamOptimizer != 2)
+		{
+			changes.append(tr("%1: %2 -> 2 (Dogleg: trust-region steps; "
+					"Gauss-Newton can diverge on strong priors and "
+					"Levenberg-Marquardt can converge extremely slowly)")
+					.arg(Parameters::kGTSAMOptimizer().c_str()).arg(gtsamOptimizer));
+		}
+		if(optIterations < 50)
+		{
+			changes.append(tr("%1: %2 -> 50 (large re-anchoring moves can need "
+					"more iterations to converge)")
+					.arg(Parameters::kOptimizerIterations().c_str()).arg(optIterations));
+		}
+		if(!changes.isEmpty())
+		{
+			if(QMessageBox::question(this,
+				tr("Adding anchor point"),
+				tr("With anchor points, the current GTSAM settings can make the "
+				   "optimization diverge or stop before convergence. Do you want to "
+				   "apply the following changes?\n\n%1").arg(changes.join("\n")),
+				QMessageBox::Yes | QMessageBox::No,
+				QMessageBox::Yes) == QMessageBox::Yes)
+			{
+				if(gtsamOptimizer != 2)
+				{
+					ui_->parameters_toolbox->updateParameter(Parameters::kGTSAMOptimizer(), "2");
+				}
+				if(optIterations < 50)
+				{
+					ui_->parameters_toolbox->updateParameter(Parameters::kOptimizerIterations(), "50");
+				}
+			}
+		}
+	}
+
 	if(!priorsIgnored)
 	{
 		this->updateGraphView();
@@ -10533,7 +10736,7 @@ void DatabaseViewer::updateGraphView()
 						priorPoints.push_back(cv::Point3d(q.x(), q.y(), q.z()));
 						double zInf = iter->second.infMatrix().at<double>(2,2);
 						zConstrained.push_back(zInf > 0.0 && 1.0/zInf < 9999.0);
-						UINFO("Anchor %d: initial estimate (odometry frame)=(%.2f, %.2f, %.2f), prior=(%.3f, %.3f, %.3f)%s",
+						UINFO("Anchor %d: initial estimate=(%.2f, %.2f, %.2f), prior=(%.3f, %.3f, %.3f)%s",
 								-iter->second.from(), p.x(), p.y(), p.z(), q.x(), q.y(), q.z(),
 								zConstrained.back()?"":" (Z unconstrained)");
 					}
