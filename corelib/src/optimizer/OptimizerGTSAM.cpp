@@ -832,7 +832,12 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 
 		if(!isam2_) // Batch optimization
 		{
-			UDEBUG("Batch optimization...");
+			UINFO("GTSAM batch optimization: %s (%s=%d), iterations=%d, epsilon=%f",
+					internalOptimizerType_==2?"Dogleg":internalOptimizerType_==1?"GaussNewton":"LevenbergMarquardt",
+					Parameters::kGTSAMOptimizer().c_str(),
+					internalOptimizerType_,
+					iterations(),
+					epsilon());
 			if(internalOptimizerType_ == 2)
 			{
 				gtsam::DoglegParams parameters;
@@ -1018,13 +1023,18 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 			}
 
 			// early stop condition
-			UDEBUG("iteration %d error =%f", i+1, error);
+			UINFO("iteration %d error =%f", i+1, error);
 			double errorDelta = lastError - error;
-			if(this->epsilon() > 0.0 && fabs(error) > 1000000000000.0)
+			// Abort only if the error is both huge and worse than where we
+			// started: with strong priors (e.g. anchor points) far from the
+			// initial guess, a healthy solve can legitimately pass through
+			// very large error values while descending.
+			if(this->epsilon() > 0.0 && fabs(error) > 1000000000000.0 && error > initialError)
 			{
-				UWARN("Error computed (%e) is very huge and/or diverging! Aborting! "
+				UWARN("Error computed (%e) is very huge and diverging (initial error=%e)! Aborting! "
 					   "Set %s to 0 to ignore that check and keep iterating up to %s (%d).",
 					   error,
+					   initialError,
 					   Parameters::kOptimizerEpsilon().c_str(),
 					   Parameters::kOptimizerIterations().c_str(),
 					   this->iterations());
