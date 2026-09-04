@@ -194,6 +194,7 @@ private Q_SLOTS:
 	void updateOctomapView();
 	void updateGraphRotation();
 	void updateGraphView();
+	void optimizeGraphNow();
 	void refineConstraint();
 	void addConstraint();
 	void resetConstraint();
@@ -281,6 +282,7 @@ private:
 	void removeAnchorPoint(int landmarkId);
 	int selectedAnchorLandmarkId() const;
 	QList<int> selectedAnchorLandmarkIds() const;
+	void updateGraphViewInternal(bool force);
 	void exportPoses(int format);
 	void exportGPS(int format);
 	// Basemap (georeferenced raster shared by the graph view and 3D views)
