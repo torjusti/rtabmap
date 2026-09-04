@@ -180,6 +180,12 @@ private:
 	void saveMeshes(const QString & workingDirectory, const std::map<int, Transform> & poses, const std::map<int, pcl::PolygonMesh::Ptr> & meshes, bool binaryMode = true);
 	void saveTextureMeshes(const QString & workingDirectory, const std::map<int, Transform> & poses, std::map<int, pcl::TextureMesh::Ptr> & textureMeshes, const QMap<int, Signature> & cachedSignatures, const std::vector<std::map<int, pcl::PointXY> > & textureVertexToPixels);
 
+public:
+	// Per-node clouds (node frame, voxelized) captured while assembling the
+	// last viewed cloud, so the caller can re-assemble it with new poses
+	// after a re-optimization. Empties the internal copy.
+	std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr> takeViewLocalClouds(bool & useIntensity, bool & withNormals);
+
 private:
 	Ui_ExportCloudsDialog * _ui;
 	ProgressDialog * _progressDialog;
@@ -189,6 +195,8 @@ private:
 	const DBDriver * _dbDriver;
 	bool _scansHaveRGB;
 	bool _anchorPointsEnabled;
+	bool _captureViewLocalClouds;
+	std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr> _viewLocalClouds;
 
     bool saveOBJFile(const QString &path, pcl::TextureMesh::Ptr &mesh) const;
     bool saveOBJFile(const QString &path, pcl::PolygonMesh &mesh) const;

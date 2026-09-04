@@ -361,8 +361,17 @@ private:
 	// and to follow re-optimizations without regenerating the clouds.
 	struct MapViewerInfo
 	{
+		MapViewerInfo() : fromFile(false), useIntensity(false), withNormals(false) {}
 		QPointer<CloudViewer> viewer;
 		bool fromFile;
+		// Poses the displayed clouds were generated with (fallback for nodes
+		// missing from a newly optimized graph).
+		std::map<int, Transform> genPoses;
+		// Per-node clouds (node frame, voxelized) of an assembled view, kept
+		// to re-assemble the displayed cloud after a re-optimization.
+		std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr> localClouds;
+		bool useIntensity;
+		bool withNormals;
 	};
 	QList<MapViewerInfo> mapViewers_;
 	bool assembledViewerHintShown_;

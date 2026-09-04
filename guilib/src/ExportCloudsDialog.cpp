@@ -96,7 +96,8 @@ ExportCloudsDialog::ExportCloudsDialog(QWidget *parent) :
 	_compensator(0),
 	_dbDriver(0),
 	_scansHaveRGB(false),
-	_anchorPointsEnabled(false)
+	_anchorPointsEnabled(false),
+	_captureViewLocalClouds(false)
 {
 	_ui = new Ui_ExportCloudsDialog();
 	_ui->setupUi(this);
@@ -1277,6 +1278,11 @@ void ExportCloudsDialog::viewClouds(
 
 	setOkButton();
 
+	// Keep the per-node clouds around while assembling so that the view can
+	// be re-assembled cheaply after a re-optimization (see takeViewLocalClouds()).
+	_viewLocalClouds.clear();
+	_captureViewLocalClouds = true;
+
 	if(getExportedClouds(
 			poses,
 			links,
@@ -1680,7 +1686,24 @@ void ExportCloudsDialog::viewClouds(
 	{
 		_progressDialog->setAutoClose(false);
 	}
+	_captureViewLocalClouds = false;
+	_viewLocalClouds.clear(); // not claimed through takeViewLocalClouds()
 	_progressDialog->setValue(_progressDialog->maximumSteps());
+}
+
+std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr> ExportCloudsDialog::takeViewLocalClouds(bool & useIntensity, bool & withNormals)
+{
+	// Mirrors the point type selection done when the clouds are displayed in
+	// viewClouds(): scans without RGB are shown as intensity clouds, with
+	// normals only when normal estimation is enabled.
+	useIntensity = !_ui->checkBox_fromDepth->isChecked() && !_scansHaveRGB &&
+			!(_ui->checkBox_cameraProjection->isEnabled() &&
+			  _ui->checkBox_cameraProjection->isChecked() &&
+			  _ui->checkBox_camProjRecolorPoints->isChecked());
+	withNormals = _ui->spinBox_normalKSearch->value()>0 || _ui->doubleSpinBox_normalRadiusSearch->value()>0.0;
+	std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr> out;
+	out.swap(_viewLocalClouds);
+	return out;
 }
 
 int ExportCloudsDialog::getTextureSize() const
@@ -2036,15 +2059,27 @@ bool ExportCloudsDialog::getExportedClouds(
 				if(iter->second.first->isOrganized())
 				{
 					pcl::copyPointCloud(*iter->second.first, *iter->second.second, *transformed);
-					transformed = util3d::transformPointCloud(transformed, poses.at(iter->first));
 				}
 				else
 				{
 					// it looks like that using only transformPointCloud with indices
 					// flushes the colors, so we should extract points before... maybe a too old PCL version
 					pcl::copyPointCloud(*iter->second.first, *iter->second.second, *transformed);
-					transformed = rtabmap::util3d::transformPointCloud(transformed, poses.at(iter->first));
 				}
+
+				if(_captureViewLocalClouds)
+				{
+					// Keep a voxelized node-frame copy so the assembled view
+					// can be re-assembled with new poses after re-optimization.
+					pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr local = transformed;
+					if(_ui->doubleSpinBox_voxelSize_assembled->value() > 0.0)
+					{
+						local = util3d::voxelize(transformed, _ui->doubleSpinBox_voxelSize_assembled->value());
+					}
+					_viewLocalClouds.insert(std::make_pair(iter->first, local));
+				}
+
+				transformed = rtabmap::util3d::transformPointCloud(transformed, poses.at(iter->first));
 
 				*assembledCloud += *transformed;
 				rawCameraIndices.resize(assembledCloud->size(), iter->first);
