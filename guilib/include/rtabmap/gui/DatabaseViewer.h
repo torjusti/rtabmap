@@ -280,6 +280,7 @@ private:
 	bool applyAnchorFrameOffset(double & x, double & y, bool allowSetOrigin);
 	void removeAnchorPoint(int landmarkId);
 	int selectedAnchorLandmarkId() const;
+	QList<int> selectedAnchorLandmarkIds() const;
 	void exportPoses(int format);
 	void exportGPS(int format);
 	// Basemap (georeferenced raster shared by the graph view and 3D views)
@@ -379,10 +380,6 @@ private:
 	};
 	QList<MapViewerInfo> mapViewers_;
 	bool assembledViewerHintShown_;
-	// "Optimize the graph now" checkbox state in the anchor point dialog:
-	// unchecked lets the user add several anchors in a row without waiting
-	// for an optimization each time.
-	bool anchorOptimizeAfterAdd_;
 	bool graphOptimizationRunning_;
 	bool reposeRunning_;
 	// Optimizer currently running in the background (only valid while

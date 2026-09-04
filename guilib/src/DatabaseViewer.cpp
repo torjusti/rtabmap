@@ -184,7 +184,6 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	anchorFrameOffsetX_(0.0),
 	anchorFrameOffsetY_(0.0),
 	assembledViewerHintShown_(false),
-	anchorOptimizeAfterAdd_(true),
 	graphOptimizationRunning_(false),
 	reposeRunning_(false),
 	runningOptimizer_(0),
@@ -984,6 +983,7 @@ void DatabaseViewer::restoreDefaultSettings()
 	ui_->checkBox_ignoreLocalLoopTime->setChecked(false);
 	ui_->checkBox_ignoreUserLoop->setChecked(false);
 	ui_->checkBox_ignoreLandmarks->setChecked(false);
+	ui_->checkBox_liveOptimization->setChecked(true);
 	ui_->doubleSpinBox_optimizationScale->setValue(1.0);
 	ui_->doubleSpinBox_gainCompensationRadius->setValue(0.0);
 	ui_->doubleSpinBox_voxelSize->setValue(0.0);
@@ -8132,7 +8132,7 @@ void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal, const 
 		}
 	}
 
-	if(!priorsIgnored && anchorOptimizeAfterAdd_)
+	if(!priorsIgnored && ui_->checkBox_liveOptimization->isChecked())
 	{
 		this->updateGraphView();
 	}
@@ -8222,14 +8222,6 @@ bool DatabaseViewer::getAnchorPointInput(
 	form->addRow(tr("X/Y uncertainty (std dev):"), spinSigmaXY);
 	form->addRow(tr("Z uncertainty (std dev):"), spinSigmaZ);
 
-	QCheckBox * checkOptimize = new QCheckBox(tr("Optimize the graph now"), &dialog);
-	checkOptimize->setChecked(anchorOptimizeAfterAdd_);
-	checkOptimize->setToolTip(tr("Uncheck to add or edit several anchor points in a row without "
-			"waiting for a graph optimization each time; click Optimize in the "
-			"Graph View (or press F5 in a 3D view) when done. The choice is "
-			"remembered for the next anchor points."));
-	form->addRow(checkOptimize);
-
 	spinZ->setEnabled(!zUnconstrained);
 	spinSigmaZ->setEnabled(!zUnconstrained);
 	connect(checkZFree, SIGNAL(toggled(bool)), spinZ, SLOT(setDisabled(bool)));
@@ -8255,7 +8247,6 @@ bool DatabaseViewer::getAnchorPointInput(
 		break;
 	}
 
-	anchorOptimizeAfterAdd_ = checkOptimize->isChecked();
 	worldX = spinX->value();
 	worldY = spinY->value();
 	worldZ = spinZ->value();
@@ -8797,6 +8788,25 @@ int DatabaseViewer::selectedAnchorLandmarkId() const
 	return 0;
 }
 
+QList<int> DatabaseViewer::selectedAnchorLandmarkIds() const
+{
+	QList<int> ids;
+	QModelIndexList rows = ui_->tableWidget_anchors->selectionModel()->selectedRows();
+	for(int i=0; i<rows.size(); ++i)
+	{
+		QTableWidgetItem * item = ui_->tableWidget_anchors->item(rows[i].row(), 0);
+		if(item)
+		{
+			int landmarkId = item->data(Qt::UserRole).toInt();
+			if(landmarkId < 0)
+			{
+				ids.append(landmarkId);
+			}
+		}
+	}
+	return ids;
+}
+
 void DatabaseViewer::editSelectedAnchorPoint()
 {
 	int landmarkId = selectedAnchorLandmarkId();
@@ -8832,7 +8842,7 @@ void DatabaseViewer::editSelectedAnchorPoint()
 		}
 		linksRefined_.insert(std::make_pair(landmarkId, newPrior));
 
-		if(anchorOptimizeAfterAdd_)
+		if(ui_->checkBox_liveOptimization->isChecked())
 		{
 			this->updateGraphView();
 		}
@@ -8844,18 +8854,32 @@ void DatabaseViewer::editSelectedAnchorPoint()
 
 void DatabaseViewer::removeSelectedAnchorPoint()
 {
-	int landmarkId = selectedAnchorLandmarkId();
-	if(landmarkId >= 0)
+	QList<int> landmarkIds = selectedAnchorLandmarkIds();
+	if(landmarkIds.isEmpty())
 	{
 		return;
 	}
-	if(QMessageBox::question(this, tr("Remove anchor point"),
-			tr("Remove anchor point %1 and its observation link(s)?").arg(-landmarkId),
+	QStringList names;
+	for(int i=0; i<landmarkIds.size(); ++i)
+	{
+		names.append(QString::number(-landmarkIds[i]));
+	}
+	if(QMessageBox::question(this, tr("Remove anchor points"),
+			landmarkIds.size() == 1?
+				tr("Remove anchor point %1 and its observation link(s)?").arg(names.front()):
+				tr("Remove %1 anchor points (%2) and their observation links?")
+					.arg(landmarkIds.size()).arg(names.join(", ")),
 			QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes) == QMessageBox::Yes)
 	{
-		removeAnchorPoint(landmarkId);
+		for(int i=0; i<landmarkIds.size(); ++i)
+		{
+			removeAnchorPoint(landmarkIds[i]);
+		}
 
-		this->updateGraphView();
+		if(ui_->checkBox_liveOptimization->isChecked())
+		{
+			this->updateGraphView();
+		}
 		updateLoopClosuresSlider();
 		update3dView();
 		updateAnchorPointsTable();
