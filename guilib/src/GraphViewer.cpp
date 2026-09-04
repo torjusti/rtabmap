@@ -241,6 +241,35 @@ public:
 		this->setPen(p);
 	}
 
+	// The link-type color: setColor() may be overridden temporarily (e.g.
+	// residual coloring), defaultColor() lets it be restored.
+	void setDefaultColor(const QColor & color)
+	{
+		_defaultColor = color;
+		this->setColor(color);
+	}
+	const QColor & defaultColor() const
+	{
+		return _defaultColor;
+	}
+
+	// How much the current (optimized) poses of the endpoints violate this
+	// link's measured transform: translation norm of the SE3 gap between the
+	// measurement and the optimized relative pose. -1 if not computable.
+	float residual() const
+	{
+		if(_link.transform().isNull() || _from == _to)
+		{
+			return -1.0f;
+		}
+		Transform t = _poseA.inverse()*_poseB;
+		if(_link.to() != _to)
+		{
+			t = t.inverse();
+		}
+		return (_link.transform().inverse()*t).getNorm();
+	}
+
 	void setPoses(const Transform & poseA, const Transform & poseB, GraphViewer::ViewPlane plane)
 	{
 		switch(plane)
@@ -281,6 +310,11 @@ protected:
 		{
 			str.append(QString("\n%1\nvar= %2 %3").arg(_link.transform().prettyPrint().c_str()).arg(_link.transVariance()).arg(_link.rotVariance()));
 		}
+		float r = residual();
+		if(r >= 0.0f)
+		{
+			str.append(QString("\nresidual= %1 m").arg(r));
+		}
 		this->setToolTip(str);
 		QPen pen = this->pen();
 		pen.setWidthF(pen.widthF()+2);
@@ -303,6 +337,7 @@ private:
 	Transform _poseB;
 	Link _link;
 	bool _interSession;
+	QColor _defaultColor;
 };
 
 GraphViewer::GraphViewer(QWidget * parent) :
@@ -325,6 +360,7 @@ GraphViewer::GraphViewer(QWidget * parent) :
 		_loopIntraSessionColor(Qt::red),
 		_loopInterSessionColor(Qt::green),
 		_intraInterSessionColors(false),
+		_linkColorByResidual(false),
 		_worldMapRotation(0.0f),
 		_world(0),
 		_root(0),
@@ -806,41 +842,41 @@ void GraphViewer::updateGraph(const std::map<int, Transform> & poses,
 				//update color
 				if(iter->second.type() == Link::kNeighbor)
 				{
-					linkItem->setColor(_neighborColor);
+					linkItem->setDefaultColor(_neighborColor);
 				}
 				else if(iter->second.type() == Link::kVirtualClosure)
 				{
-					linkItem->setColor(_loopClosureVirtualColor);
+					linkItem->setDefaultColor(_loopClosureVirtualColor);
 				}
 				else if(iter->second.type() == Link::kNeighborMerged)
 				{
-					linkItem->setColor(_neighborMergedColor);
+					linkItem->setDefaultColor(_neighborMergedColor);
 				}
 				else if(iter->second.type() == Link::kUserClosure)
 				{
 					if(_intraInterSessionColors)
 					{
-						linkItem->setColor(interSessionClosure?_loopInterSessionColor:_loopIntraSessionColor);
+						linkItem->setDefaultColor(interSessionClosure?_loopInterSessionColor:_loopIntraSessionColor);
 					}
 					else
 					{
-						linkItem->setColor(_loopClosureUserColor);
+						linkItem->setDefaultColor(_loopClosureUserColor);
 					}
 				}
 				else if(iter->second.type() == Link::kLandmark)
 				{
-					linkItem->setColor(_landmarkColor);
+					linkItem->setDefaultColor(_landmarkColor);
 				}
 				else if(iter->second.type() == Link::kLocalSpaceClosure || iter->second.type() == Link::kLocalTimeClosure)
 				{
 					if(_intraInterSessionColors)
 					{
-						linkItem->setColor(interSessionClosure?_loopInterSessionColor:_loopIntraSessionColor);
+						linkItem->setDefaultColor(interSessionClosure?_loopInterSessionColor:_loopIntraSessionColor);
 						linkItem->setZValue(isLinkedToOdomCachePoses?22:interSessionClosure?6:7);
 					}
 					else
 					{
-						linkItem->setColor(_loopClosureLocalColor);
+						linkItem->setDefaultColor(_loopClosureLocalColor);
 						linkItem->setZValue(isLinkedToOdomCachePoses?22:7);
 					}
 				}
@@ -848,12 +884,12 @@ void GraphViewer::updateGraph(const std::map<int, Transform> & poses,
 				{
 					if(_intraInterSessionColors)
 					{
-						linkItem->setColor(interSessionClosure?_loopInterSessionColor:_loopIntraSessionColor);
+						linkItem->setDefaultColor(interSessionClosure?_loopInterSessionColor:_loopIntraSessionColor);
 						linkItem->setZValue(isLinkedToOdomCachePoses?22:interSessionClosure?8:9);
 					}
 					else
 					{
-						linkItem->setColor(_loopClosureColor);
+						linkItem->setDefaultColor(_loopClosureColor);
 						linkItem->setZValue(isLinkedToOdomCachePoses?22:9);
 					}
 				}
@@ -872,7 +908,7 @@ void GraphViewer::updateGraph(const std::map<int, Transform> & poses,
 						float linearError = fabs(iter->second.transform().getNorm() - t.getNorm());
 						if(linearError > _loopClosureOutlierThr)
 						{
-							linkItem->setColor(_loopClosureRejectedColor);
+							linkItem->setDefaultColor(_loopClosureRejectedColor);
 						}
 					}
 				}
@@ -898,6 +934,10 @@ void GraphViewer::updateGraph(const std::map<int, Transform> & poses,
 		}
 	}
 	UDEBUG("Links removed=%d, visible=%d", removed, visible);
+	if(_linkColorByResidual)
+	{
+		updateLinkResidualColors();
+	}
 	if(_nodeItems.size())
 	{
 		(--_nodeItems.end()).value()->setColor(_nodeOdomCacheColor);
@@ -1617,6 +1657,7 @@ void GraphViewer::saveSettings(QSettings & settings, const QString & group) cons
 	settings.setValue("intra_session_color", this->getIntraSessionLoopColor());
 	settings.setValue("inter_session_color", this->getInterSessionLoopColor());
 	settings.setValue("intra_inter_session_colors_enabled", this->isIntraInterSessionColorsEnabled());
+	settings.setValue("link_color_by_residual", this->isLinkColorByResidual());
 	settings.setValue("grid_visible", this->isGridMapVisible());
 	settings.setValue("basemap_visible", this->isBasemapVisible());
 	settings.setValue("basemap_opacity", (double)this->getBasemapOpacity());
@@ -1680,6 +1721,7 @@ void GraphViewer::loadSettings(QSettings & settings, const QString & group)
 	this->setReferentialVisible(settings.value("referential_visible", this->isReferentialVisible()).toBool());
 	this->setLocalRadiusVisible(settings.value("local_radius_visible", this->isLocalRadiusVisible()).toBool());
 	this->setIntraInterSessionColorsEnabled(settings.value("intra_inter_session_colors_enabled", this->isIntraInterSessionColorsEnabled()).toBool());
+	this->setLinkColorByResidual(settings.value("link_color_by_residual", this->isLinkColorByResidual()).toBool());
 	this->setLoopClosureOutlierThr(settings.value("loop_closure_outlier_thr", this->getLoopClosureOutlierThr()).toDouble());
 	this->setMinLinkLength(settings.value("min_link_length", this->getMinLinkLength()).toDouble());
 	this->setGraphVisible(settings.value("graph_visible", this->isGraphVisible()).toBool());
@@ -2007,6 +2049,68 @@ void GraphViewer::setInterSessionLoopColor(const QColor & color)
 				iter.value()->setZValue(8);
 			}
 		}
+	}
+}
+
+void GraphViewer::setLinkColorByResidual(bool enabled)
+{
+	_linkColorByResidual = enabled;
+	if(enabled)
+	{
+		updateLinkResidualColors();
+	}
+	else
+	{
+		for(QMultiMap<int, LinkItem*>::iterator iter=_linkItems.begin(); iter!=_linkItems.end(); ++iter)
+		{
+			iter.value()->setColor(iter.value()->defaultColor());
+		}
+	}
+}
+
+void GraphViewer::updateLinkResidualColors()
+{
+	// Color each link by how much the current (optimized) poses violate its
+	// measured transform: green = satisfied, red = violated by at least the
+	// color scale. The scale adapts to the graph (95th percentile of the
+	// non-odometry residuals, at least 5 cm) so the heatmap stays readable
+	// whether the graph is barely or heavily deformed; hover a link to see
+	// its exact residual in metres.
+	std::vector<float> loopResiduals;
+	for(QMultiMap<int, LinkItem*>::iterator iter=_linkItems.begin(); iter!=_linkItems.end(); ++iter)
+	{
+		float r = iter.value()->residual();
+		if(r >= 0.0f &&
+		   iter.value()->linkType() != Link::kNeighbor &&
+		   iter.value()->linkType() != Link::kNeighborMerged)
+		{
+			loopResiduals.push_back(r);
+		}
+	}
+	float scale = 0.05f;
+	if(!loopResiduals.empty())
+	{
+		std::sort(loopResiduals.begin(), loopResiduals.end());
+		size_t index = (size_t)(loopResiduals.size()*0.95f);
+		if(index >= loopResiduals.size())
+		{
+			index = loopResiduals.size()-1;
+		}
+		scale = std::max(scale, loopResiduals[index]);
+	}
+	for(QMultiMap<int, LinkItem*>::iterator iter=_linkItems.begin(); iter!=_linkItems.end(); ++iter)
+	{
+		float r = iter.value()->residual();
+		if(r < 0.0f)
+		{
+			continue; // no measured transform, keep the link-type color
+		}
+		float v = r/scale;
+		if(v > 1.0f)
+		{
+			v = 1.0f;
+		}
+		iter.value()->setColor(QColor::fromHsvF((1.0f-v)*120.0f/360.0f, 1.0f, 1.0f)); // 120=green, 0=red
 	}
 }
 
@@ -2726,6 +2830,7 @@ void GraphViewer::contextMenuEvent(QContextMenuEvent * event)
 	QAction * aChangeGPSColor = menuLink->addAction(tr("GPS"));
 	menuLink->addSeparator();
 	QAction * aSetIntraInterSessionColors = menuLink->addAction(tr("Enable intra/inter-session colors"));
+	QAction * aSetLinkColorByResidual = menuLink->addAction(tr("Color links by optimization residual"));
 	QAction * aChangeIntraSessionLoopColor = menuLink->addAction(tr("Intra-session loop closure"));
 	QAction * aChangeInterSessionLoopColor = menuLink->addAction(tr("Inter-session loop closure"));
 	aChangeNeighborColor->setIcon(createIcon(_neighborColor));
@@ -2757,6 +2862,11 @@ void GraphViewer::contextMenuEvent(QContextMenuEvent * event)
 	aChangeInterSessionLoopColor->setIconVisibleInMenu(true);
 	aSetIntraInterSessionColors->setCheckable(true);
 	aSetIntraInterSessionColors->setChecked(_intraInterSessionColors);
+	aSetLinkColorByResidual->setCheckable(true);
+	aSetLinkColorByResidual->setChecked(_linkColorByResidual);
+	aSetLinkColorByResidual->setToolTip(tr("Color each link by how much the optimized graph violates it "
+			"(green = satisfied, red = bent by the optimizer). Shows where drift is concentrated. "
+			"Hover a link to see its residual in metres."));
 
 	menu.addSeparator();
 	QAction * aSetNodeSize = menu.addAction(tr("Set node radius..."));
@@ -3061,6 +3171,10 @@ void GraphViewer::contextMenuEvent(QContextMenuEvent * event)
 
 			QMessageBox::information(this, tr("Export 2D map"), tr("Exported %1 and %2!").arg(path).arg(yaml));
 		}
+	}
+	else if(r == aSetLinkColorByResidual)
+	{
+		setLinkColorByResidual(aSetLinkColorByResidual->isChecked());
 	}
 	else if(r == aSetIntraInterSessionColors)
 	{
