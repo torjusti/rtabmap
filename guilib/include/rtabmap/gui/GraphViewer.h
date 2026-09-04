@@ -119,6 +119,7 @@ public:
 	const QColor & getIntraSessionLoopColor() const {return _loopIntraSessionColor;}
 	const QColor & getInterSessionLoopColor() const {return _loopInterSessionColor;}
 	bool isIntraInterSessionColorsEnabled() const {return _intraInterSessionColors;}
+	bool isLinkColorByResidual() const {return _linkColorByResidual;}
 	bool isGridMapVisible() const;
 	bool isOriginVisible() const;
 	bool isReferentialVisible() const;
@@ -161,6 +162,7 @@ public:
 	void setIntraSessionLoopColor(const QColor & color);
 	void setInterSessionLoopColor(const QColor & color);
 	void setIntraInterSessionColorsEnabled(bool enabled);
+	void setLinkColorByResidual(bool enabled);
 	void setGridMapVisible(bool visible);
 	void setOriginVisible(bool visible);
 	void setReferentialVisible(bool visible);
@@ -235,6 +237,7 @@ private:
 	void stopZoomOverlay();
 	void updateBasemapTiles(bool force = false);
 	void clearBasemapItems();
+	void updateLinkResidualColors();
 private:
 	QString _workingDirectory;
 	QColor _nodeColor;
@@ -255,6 +258,7 @@ private:
 	QColor _loopIntraSessionColor;
 	QColor _loopInterSessionColor;
 	bool _intraInterSessionColors;
+	bool _linkColorByResidual;
 	float _worldMapRotation;
 	QGraphicsItem * _world;
 	QGraphicsItem * _root;
