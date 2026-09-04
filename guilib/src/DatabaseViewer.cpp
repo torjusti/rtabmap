@@ -33,6 +33,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #endif
 #include <atomic>
 #include <thread>
+#include <QEventLoop>
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QInputDialog>
@@ -182,6 +183,9 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	anchorFrameOffsetX_(0.0),
 	anchorFrameOffsetY_(0.0),
 	assembledViewerHintShown_(false),
+	anchorOptimizeAfterAdd_(true),
+	graphOptimizationRunning_(false),
+	reposeRunning_(false),
 	savedMaximized_(false),
 	firstCall_(true),
 	iniFilePath_(ini),
@@ -1163,6 +1167,13 @@ bool DatabaseViewer::openDatabase(const QString & path, const ParametersMap & ov
 
 bool DatabaseViewer::closeDatabase()
 {
+	if(graphOptimizationRunning_ || reposeRunning_)
+	{
+		QMessageBox::warning(this, tr("Operation running"),
+				tr("A graph optimization or 3D view update is running, wait for it "
+				   "to finish before closing the database."));
+		return false;
+	}
 	this->setWindowTitle("RTAB-Map Database Viewer[*]");
 	if(dbDriver_)
 	{
@@ -4697,6 +4708,11 @@ void DatabaseViewer::registerMapViewer(CloudViewer * viewer, bool fromFile)
 
 bool DatabaseViewer::reposeMapViewers(const std::map<int, Transform> & poses)
 {
+	if(reposeRunning_)
+	{
+		return false;
+	}
+	reposeRunning_ = true;
 	// prune closed windows (also releases their kept per-node clouds)
 	for(int i=0; i<mapViewers_.size();)
 	{
@@ -4773,88 +4789,124 @@ bool DatabaseViewer::reposeMapViewers(const std::map<int, Transform> & poses)
 		}
 		else if(!assembledClouds.empty() && !info.localClouds.empty())
 		{
-			// Re-assemble the merged cloud from the kept per-node clouds with
-			// the new poses (exact, unlike moving a single actor).
-			UTimer timer;
-			pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr merged(new pcl::PointCloud<pcl::PointXYZRGBNormal>);
-			int used = 0;
-			for(std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr>::const_iterator jter=info.localClouds.begin();
-				jter!=info.localClouds.end(); ++jter)
+			if(info.lastReposedPoses == poses)
 			{
-				std::map<int, Transform>::const_iterator kter = poses.find(jter->first);
-				Transform pose;
-				if(kter != poses.end() && !kter->second.isNull())
-				{
-					pose = kter->second;
-				}
-				else
-				{
-					// node filtered out of this optimization: keep it where it was generated
-					std::map<int, Transform>::const_iterator gter = info.genPoses.find(jter->first);
-					if(gter == info.genPoses.end() || gter->second.isNull())
-					{
-						continue;
-					}
-					pose = gter->second;
-				}
-				*merged += *util3d::transformPointCloud(jter->second, pose);
-				++used;
+				// This exact graph is already on screen (the iterations slider
+				// can fire several times with the same final value).
+				continue;
 			}
-			if(used && !merged->empty())
+			// Re-assemble the merged cloud from the kept per-node clouds with
+			// the new poses (exact, unlike moving a single actor). The merge
+			// and point conversions run in a background thread with a local
+			// event loop so the GUI (including the 3D view itself) stays
+			// responsive; copies of the inputs are taken because the viewer
+			// list can change while the loop runs.
+			UTimer timer;
+			QPointer<CloudViewer> viewerPtr = info.viewer;
+			const std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr> localClouds = info.localClouds;
+			const std::map<int, Transform> genPoses = info.genPoses;
+			const bool useIntensity = info.useIntensity;
+			const bool withNormals = info.withNormals;
+
+			pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr merged(new pcl::PointCloud<pcl::PointXYZRGBNormal>);
+			pcl::PointCloud<pcl::PointXYZINormal>::Ptr mergedINormal;
+			pcl::PointCloud<pcl::PointXYZI>::Ptr mergedI;
+			int used = 0;
+			QEventLoop waitLoop;
+			std::thread assembleThread([&]()
 			{
-				const std::string & id = assembledClouds.front();
-				if(info.useIntensity)
+				for(std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr>::const_iterator jter=localClouds.begin();
+					jter!=localClouds.end(); ++jter)
 				{
-					// Same conversion as when the view was created: scans
-					// without RGB are displayed as intensity clouds.
-					if(info.withNormals)
+					std::map<int, Transform>::const_iterator kter = poses.find(jter->first);
+					Transform pose;
+					if(kter != poses.end() && !kter->second.isNull())
 					{
-						pcl::PointCloud<pcl::PointXYZINormal>::Ptr cloudI(new pcl::PointCloud<pcl::PointXYZINormal>);
-						cloudI->resize(merged->size());
-						for(unsigned int j=0; j<cloudI->size(); ++j)
-						{
-							cloudI->points[j].x = merged->points[j].x;
-							cloudI->points[j].y = merged->points[j].y;
-							cloudI->points[j].z = merged->points[j].z;
-							cloudI->points[j].normal_x = merged->points[j].normal_x;
-							cloudI->points[j].normal_y = merged->points[j].normal_y;
-							cloudI->points[j].normal_z = merged->points[j].normal_z;
-							cloudI->points[j].curvature = merged->points[j].curvature;
-							int * intensity = (int *)&cloudI->points[j].intensity;
-							*intensity =
-									int(merged->points[j].r) |
-									int(merged->points[j].g) << 8 |
-									int(merged->points[j].b) << 16 |
-									int(merged->points[j].a) << 24;
-						}
-						viewer->addCloud(id, cloudI, Transform::getIdentity());
+						pose = kter->second;
 					}
 					else
 					{
-						pcl::PointCloud<pcl::PointXYZI>::Ptr cloudI(new pcl::PointCloud<pcl::PointXYZI>);
-						cloudI->resize(merged->size());
-						for(unsigned int j=0; j<cloudI->size(); ++j)
+						// node filtered out of this optimization: keep it where it was generated
+						std::map<int, Transform>::const_iterator gter = genPoses.find(jter->first);
+						if(gter == genPoses.end() || gter->second.isNull())
 						{
-							cloudI->points[j].x = merged->points[j].x;
-							cloudI->points[j].y = merged->points[j].y;
-							cloudI->points[j].z = merged->points[j].z;
-							int * intensity = (int *)&cloudI->points[j].intensity;
+							continue;
+						}
+						pose = gter->second;
+					}
+					*merged += *util3d::transformPointCloud(jter->second, pose);
+					++used;
+				}
+				if(used && !merged->empty() && useIntensity)
+				{
+					// Same conversion as when the view was created: scans
+					// without RGB are displayed as intensity clouds.
+					if(withNormals)
+					{
+						mergedINormal.reset(new pcl::PointCloud<pcl::PointXYZINormal>);
+						mergedINormal->resize(merged->size());
+						for(unsigned int j=0; j<mergedINormal->size(); ++j)
+						{
+							mergedINormal->points[j].x = merged->points[j].x;
+							mergedINormal->points[j].y = merged->points[j].y;
+							mergedINormal->points[j].z = merged->points[j].z;
+							mergedINormal->points[j].normal_x = merged->points[j].normal_x;
+							mergedINormal->points[j].normal_y = merged->points[j].normal_y;
+							mergedINormal->points[j].normal_z = merged->points[j].normal_z;
+							mergedINormal->points[j].curvature = merged->points[j].curvature;
+							int * intensity = (int *)&mergedINormal->points[j].intensity;
 							*intensity =
 									int(merged->points[j].r) |
 									int(merged->points[j].g) << 8 |
 									int(merged->points[j].b) << 16 |
 									int(merged->points[j].a) << 24;
 						}
-						viewer->addCloud(id, cloudI, Transform::getIdentity());
 					}
+					else
+					{
+						mergedI.reset(new pcl::PointCloud<pcl::PointXYZI>);
+						mergedI->resize(merged->size());
+						for(unsigned int j=0; j<mergedI->size(); ++j)
+						{
+							mergedI->points[j].x = merged->points[j].x;
+							mergedI->points[j].y = merged->points[j].y;
+							mergedI->points[j].z = merged->points[j].z;
+							int * intensity = (int *)&mergedI->points[j].intensity;
+							*intensity =
+									int(merged->points[j].r) |
+									int(merged->points[j].g) << 8 |
+									int(merged->points[j].b) << 16 |
+									int(merged->points[j].a) << 24;
+						}
+					}
+				}
+				QMetaObject::invokeMethod(&waitLoop, "quit", Qt::QueuedConnection);
+			});
+			waitLoop.exec();
+			assembleThread.join();
+
+			if(used && !merged->empty() && viewerPtr)
+			{
+				const std::string & id = assembledClouds.front();
+				if(mergedINormal)
+				{
+					viewerPtr->addCloud(id, mergedINormal, Transform::getIdentity());
+				}
+				else if(mergedI)
+				{
+					viewerPtr->addCloud(id, mergedI, Transform::getIdentity());
 				}
 				else
 				{
-					viewer->addCloud(id, merged, Transform::getIdentity());
+					viewerPtr->addCloud(id, merged, Transform::getIdentity());
 				}
-				viewer->setCloudPointSize(id, 1);
-				viewer->refreshView();
+				viewerPtr->setCloudPointSize(id, 1);
+				viewerPtr->refreshView();
 				reposed = true;
+				// info may be dangling if the viewer list changed during the
+				// event loop; indices stay valid (windows are only pruned at
+				// the top of this function and the guard prevents re-entry).
+				mapViewers_[i].lastReposedPoses = poses;
 				UINFO("3D map view: re-assembled %d node clouds (%d points) in %.1fs.",
 						used, (int)merged->size(), timer.elapsed());
 			}
@@ -4864,6 +4916,7 @@ bool DatabaseViewer::reposeMapViewers(const std::map<int, Transform> & poses)
 			stuckViewFound = true;
 		}
 	}
+	reposeRunning_ = false;
 	if(stuckViewFound && !assembledViewerHintShown_)
 	{
 		assembledViewerHintShown_ = true;
@@ -8076,7 +8129,7 @@ void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal, const 
 		}
 	}
 
-	if(!priorsIgnored)
+	if(!priorsIgnored && anchorOptimizeAfterAdd_)
 	{
 		this->updateGraphView();
 	}
@@ -8166,6 +8219,14 @@ bool DatabaseViewer::getAnchorPointInput(
 	form->addRow(tr("X/Y uncertainty (std dev):"), spinSigmaXY);
 	form->addRow(tr("Z uncertainty (std dev):"), spinSigmaZ);
 
+	QCheckBox * checkOptimize = new QCheckBox(tr("Optimize the graph now"), &dialog);
+	checkOptimize->setChecked(anchorOptimizeAfterAdd_);
+	checkOptimize->setToolTip(tr("Uncheck to add or edit several anchor points in a row without "
+			"waiting for a graph optimization each time; click Optimize in the "
+			"Graph View (or press F5 in a 3D view) when done. The choice is "
+			"remembered for the next anchor points."));
+	form->addRow(checkOptimize);
+
 	spinZ->setEnabled(!zUnconstrained);
 	spinSigmaZ->setEnabled(!zUnconstrained);
 	connect(checkZFree, SIGNAL(toggled(bool)), spinZ, SLOT(setDisabled(bool)));
@@ -8191,6 +8252,7 @@ bool DatabaseViewer::getAnchorPointInput(
 		break;
 	}
 
+	anchorOptimizeAfterAdd_ = checkOptimize->isChecked();
 	worldX = spinX->value();
 	worldY = spinY->value();
 	worldZ = spinZ->value();
@@ -8767,7 +8829,10 @@ void DatabaseViewer::editSelectedAnchorPoint()
 		}
 		linksRefined_.insert(std::make_pair(landmarkId, newPrior));
 
-		this->updateGraphView();
+		if(anchorOptimizeAfterAdd_)
+		{
+			this->updateGraphView();
+		}
 		updateLoopClosuresSlider();
 		update3dView();
 		updateAnchorPointsTable();
@@ -10331,6 +10396,11 @@ void DatabaseViewer::clearAllSelectedNodes()
 void DatabaseViewer::updateGraphView()
 {
 	UDEBUG("");
+	if(graphOptimizationRunning_)
+	{
+		UWARN("A graph optimization is already running, ignoring this request.");
+		return;
+	}
 	ui_->label_loopClosures->clear();
 	ui_->label_poses->clear();
 	ui_->label_rmse->clear();
@@ -10856,7 +10926,35 @@ void DatabaseViewer::updateGraphView()
 			time.start();
 			double optFinalError = 0.0;
 			int optIterationsDone = 0;
-			std::map<int, rtabmap::Transform> finalPoses = optimizer->optimize(fromId, posesOut, linksOut, ui_->comboBox_optimizationFlavor->currentIndex()==0?&graphes_:0, &optFinalError, &optIterationsDone);
+			// Optimize in a background thread with a local event loop so the
+			// GUI (including any open 3D views) stays responsive; the
+			// graphOptimizationRunning_ guard makes re-entrant requests
+			// (Optimize button, F5, checkboxes) no-ops meanwhile.
+			// Intermediate graphs go to a local list, not directly to
+			// graphes_, so the iterations slider never sees a map that is
+			// being written by the worker.
+			graphOptimizationRunning_ = true;
+			ui_->pushButton_optimize->setEnabled(false);
+			const QString optimizeText = ui_->pushButton_optimize->text();
+			ui_->pushButton_optimize->setText(tr("Optimizing..."));
+			const bool keepIntermediate = ui_->comboBox_optimizationFlavor->currentIndex()==0;
+			std::list<std::map<int, rtabmap::Transform> > intermediateGraphs;
+			std::map<int, rtabmap::Transform> finalPoses;
+			QEventLoop waitLoop;
+			std::thread optimizeThread([&]()
+			{
+				finalPoses = optimizer->optimize(fromId, posesOut, linksOut, keepIntermediate?&intermediateGraphs:0, &optFinalError, &optIterationsDone);
+				QMetaObject::invokeMethod(&waitLoop, "quit", Qt::QueuedConnection);
+			});
+			waitLoop.exec();
+			optimizeThread.join();
+			if(!intermediateGraphs.empty())
+			{
+				graphes_.insert(graphes_.end(), intermediateGraphs.begin(), intermediateGraphs.end());
+			}
+			ui_->pushButton_optimize->setText(optimizeText);
+			ui_->pushButton_optimize->setEnabled(true);
+			graphOptimizationRunning_ = false;
 			UINFO("Optimization finished: final error=%f, iterations done=%d (max=%s), poses out=%d",
 					optFinalError,
 					optIterationsDone,
