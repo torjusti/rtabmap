@@ -1946,7 +1946,7 @@
          <item row="7" column="0">
           <widget class="QCheckBox" name="checkBox_liveOptimization">
            <property name="toolTip">
-            <string>Re-optimize the graph automatically when anchor points are added, edited or removed. Turn it off to change several anchor points in a row without waiting for an optimization each time, then click Optimize.</string>
+            <string>Re-optimize the graph automatically when it changes (anchor points added/edited/removed, links changed, optimization settings toggled). Turn it off to batch several changes without waiting for an optimization each time, then click Optimize.</string>
            </property>
            <property name="text">
             <string/>
@@ -1959,10 +1959,10 @@
          <item row="7" column="2">
           <widget class="QLabel" name="label_liveOptimization">
            <property name="toolTip">
-            <string>Re-optimize the graph automatically when anchor points are added, edited or removed. Turn it off to change several anchor points in a row without waiting for an optimization each time, then click Optimize.</string>
+            <string>Re-optimize the graph automatically when it changes (anchor points added/edited/removed, links changed, optimization settings toggled). Turn it off to batch several changes without waiting for an optimization each time, then click Optimize.</string>
            </property>
            <property name="text">
-            <string>Live optimization (anchor points)</string>
+            <string>Live optimization</string>
            </property>
           </widget>
          </item>

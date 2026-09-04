@@ -514,7 +514,7 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	ui_->horizontalSlider_iterations->setEnabled(false);
 	ui_->spinBox_optimizationsFrom->setEnabled(false);
 	connect(ui_->horizontalSlider_iterations, SIGNAL(valueChanged(int)), this, SLOT(sliderIterationsValueChanged(int)));
-	connect(ui_->pushButton_optimize, SIGNAL(clicked()), this, SLOT(updateGraphView()));
+	connect(ui_->pushButton_optimize, SIGNAL(clicked()), this, SLOT(optimizeGraphNow()));
 	connect(ui_->spinBox_optimizationsFrom, SIGNAL(editingFinished()), this, SLOT(updateGraphViewRootId()));
 	connect(ui_->comboBox_optimizationFlavor, SIGNAL(activated(int)), this, SLOT(updateGraphView()));
 	connect(ui_->tabBar_components, SIGNAL(currentChanged(int)), this, SLOT(tabBarComponentsValueChanged(int)));
@@ -586,7 +586,7 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	connect(ui_->doubleSpinBox_posefilteringRadius, SIGNAL(valueChanged(double)), this, SLOT(configModified()));
 	connect(ui_->doubleSpinBox_posefilteringAngle, SIGNAL(valueChanged(double)), this, SLOT(configModified()));
 	connect(ui_->horizontalSlider_rotation, SIGNAL(valueChanged(int)), this, SLOT(updateGraphRotation()));
-	connect(ui_->pushButton_applyRotation, SIGNAL(clicked()), this, SLOT(updateGraphView()));
+	connect(ui_->pushButton_applyRotation, SIGNAL(clicked()), this, SLOT(optimizeGraphNow()));
 	connect(ui_->checkBox_fit_in_view, SIGNAL(stateChanged(int)), this, SLOT(configModified()));
 	connect(ui_->checkBox_fit_in_view, SIGNAL(stateChanged(int)), this, SLOT(fitInViewClicked()));
 
@@ -4701,7 +4701,7 @@ void DatabaseViewer::registerMapViewer(CloudViewer * viewer, bool fromFile)
 	// called at the end of the graph update).
 	QShortcut * refresh = new QShortcut(QKeySequence(Qt::Key_F5), viewer);
 	refresh->setContext(Qt::WindowShortcut);
-	connect(refresh, SIGNAL(activated()), this, SLOT(updateGraphView()));
+	connect(refresh, SIGNAL(activated()), this, SLOT(optimizeGraphNow()));
 	if(basemap_ && basemap_->isLoaded())
 	{
 		viewer->setBasemap(basemap_);
@@ -8132,9 +8132,9 @@ void DatabaseViewer::addAnchorPoint(int nodeId, const Transform & tLocal, const 
 		}
 	}
 
-	if(!priorsIgnored && ui_->checkBox_liveOptimization->isChecked())
+	if(!priorsIgnored)
 	{
-		this->updateGraphView();
+		this->updateGraphView(); // no-op if Live optimization is off
 	}
 	updateLoopClosuresSlider();
 	update3dView();
@@ -8842,10 +8842,7 @@ void DatabaseViewer::editSelectedAnchorPoint()
 		}
 		linksRefined_.insert(std::make_pair(landmarkId, newPrior));
 
-		if(ui_->checkBox_liveOptimization->isChecked())
-		{
-			this->updateGraphView();
-		}
+		this->updateGraphView(); // no-op if Live optimization is off
 		updateLoopClosuresSlider();
 		update3dView();
 		updateAnchorPointsTable();
@@ -8876,10 +8873,7 @@ void DatabaseViewer::removeSelectedAnchorPoint()
 			removeAnchorPoint(landmarkIds[i]);
 		}
 
-		if(ui_->checkBox_liveOptimization->isChecked())
-		{
-			this->updateGraphView();
-		}
+		this->updateGraphView(); // no-op if Live optimization is off
 		updateLoopClosuresSlider();
 		update3dView();
 		updateAnchorPointsTable();
@@ -10422,7 +10416,27 @@ void DatabaseViewer::clearAllSelectedNodes()
 
 void DatabaseViewer::updateGraphView()
 {
+	updateGraphViewInternal(false);
+}
+
+void DatabaseViewer::optimizeGraphNow()
+{
+	updateGraphViewInternal(true);
+}
+
+void DatabaseViewer::updateGraphViewInternal(bool force)
+{
 	UDEBUG("");
+	// "Live optimization" off: automatic re-optimization requests (settings
+	// toggles, link/anchor changes) are skipped so several changes can be
+	// batched; explicit requests (Optimize button, F5, Apply rotation) always
+	// run. The first optimization (nothing computed yet) always runs so the
+	// graph can be displayed at all.
+	if(!force && !ui_->checkBox_liveOptimization->isChecked() && !graphes_.empty())
+	{
+		UINFO("Live optimization is off: graph not re-optimized (click Optimize when ready).");
+		return;
+	}
 	if(graphOptimizationRunning_)
 	{
 		// A new request while a solve is running means the inputs (anchors,
@@ -10442,7 +10456,7 @@ void DatabaseViewer::updateGraphView()
 	{
 		// A 3D view re-assembly is running (nested event loop): retry once it
 		// is done instead of starting an optimization inside its event loop.
-		QTimer::singleShot(100, this, SLOT(updateGraphView()));
+		QTimer::singleShot(100, this, [this, force]() { updateGraphViewInternal(force); });
 		return;
 	}
 	ui_->label_loopClosures->clear();
@@ -11006,7 +11020,7 @@ void DatabaseViewer::updateGraphView()
 				// Re-run with the current state once this call has finished
 				// updating the views with the (canceled, partial) result.
 				optimizeRestartPending_ = false;
-				QTimer::singleShot(0, this, SLOT(updateGraphView()));
+				QTimer::singleShot(0, this, SLOT(optimizeGraphNow()));
 			}
 			UINFO("Optimization finished: final error=%f, iterations done=%d (max=%s), poses out=%d",
 					optFinalError,
