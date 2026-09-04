@@ -170,6 +170,7 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 {
 	outputCovariance = cv::Mat::eye(6,6,CV_64FC1);
 	std::map<int, Transform> optimizedPoses;
+	resetCancel();
 #ifdef RTABMAP_GTSAM
 	std::multimap<int, Link> edgeConstraints = downweightRedundantLoopClosures(poses, edgeConstraintsIn);
 
@@ -1068,6 +1069,12 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 				}
 			}
 			lastError = error;
+
+			if(isCanceled())
+			{
+				UWARN("Optimization canceled after %d iteration(s), returning the current estimate.", i+1);
+				break;
+			}
 		}
 		if(finalError)
 		{

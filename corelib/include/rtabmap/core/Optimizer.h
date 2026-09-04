@@ -33,6 +33,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <map>
 #include <list>
 #include <set>
+#include <atomic>
 #include <rtabmap/core/Link.h>
 #include <rtabmap/core/Parameters.h>
 #include <rtabmap/core/Signature.h>
@@ -248,6 +249,16 @@ public:
 				int * iterationsDone = 0);
 
 	/**
+	 * @brief Cooperative cancellation of a running optimize().
+	 *
+	 * Thread-safe: can be called from another thread while optimize() runs.
+	 * Back-ends that support it (currently GTSAM batch) stop at the next
+	 * iteration boundary and return their current estimate. The flag is
+	 * reset at the start of the next optimize() call.
+	 */
+	void cancel() { canceled_ = true; }
+
+	/**
 	 * @brief Bundle adjustment: jointly refine poses and 3D points (back-end-level entry point).
 	 *
 	 * Concrete subclasses (g2o, Ceres, cvsba) override this; the base implementation errors out.
@@ -356,6 +367,9 @@ protected:
 			float gravitySigma     = Parameters::defaultOptimizerGravitySigma());
 	Optimizer(const ParametersMap & parameters);
 
+	bool isCanceled() const { return canceled_; }
+	void resetCancel() { canceled_ = false; }
+
 private:
 	int iterations_;
 	bool slam2d_;
@@ -366,6 +380,7 @@ private:
 	bool landmarksIgnored_;
 	float gravitySigma_;
 	double loopRedundancyRadius_;
+	std::atomic<bool> canceled_;
 };
 
 } /* namespace rtabmap */
