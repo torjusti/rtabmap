@@ -5089,9 +5089,10 @@ std::map<int, Transform> DatabaseViewer::optimizeGeoreferencedComponentPoses(
 	{
 		return poses;
 	}
-	// Rigid pre-alignment to the anchor priors (translation + yaw): the
-	// iterative optimizers can diverge when the initial guess is arbitrarily
-	// far from the priors (e.g. site CRS coordinates).
+	// Rigid pre-alignment to the anchor priors (translation + yaw, or
+	// translation only with a single anchor): the iterative optimizers can
+	// diverge when the initial guess is arbitrarily far from the priors
+	// (e.g. site CRS coordinates).
 	Transform align = graph::alignPosesToLandmarkPriors(poses, links);
 	if(!align.isNull() && (align.getNorm() > 0.5 || fabs(align.theta()) > 0.05))
 	{
@@ -5100,7 +5101,17 @@ std::map<int, Transform> DatabaseViewer::optimizeGeoreferencedComponentPoses(
 			iter->second = align * iter->second;
 		}
 	}
-	return optimizer->optimize(rootId, poses, links);
+	std::map<int, Transform> optimized = optimizer->optimize(rootId, poses, links);
+	if(optimized.empty())
+	{
+		// e.g. a single anchor leaves the heading gauge-free and some
+		// optimizers fail on it: the rigidly aligned odometry poses are
+		// still a usable placement for candidate search
+		UWARN("Full optimization of component rooted at %d failed, using the rigid "
+			  "alignment to the anchor prior(s) instead.", rootId);
+		return poses;
+	}
+	return optimized;
 }
 
 void DatabaseViewer::detectMoreLoopClosures()
@@ -5161,12 +5172,16 @@ void DatabaseViewer::detectMoreLoopClosures()
 	std::shared_ptr<Optimizer> optimizer(Optimizer::create(ui_->parameters_toolbox->getParameters()));
 
 	// Cross-component detection (automatic): when the active component and
-	// other components are all georeferenced with anchor points (>=2 anchors
-	// each: a single anchor leaves the heading unconstrained), their
-	// optimized poses share the same world frame. The other components'
-	// optimized poses are added to the search space, so nodes close in the
-	// world frame become loop closure candidates even if the components are
-	// not connected yet; an accepted link merges the components.
+	// other components are georeferenced with anchor points, their optimized
+	// poses share the same world frame. The other components' optimized
+	// poses are added to the search space, so nodes close in the world frame
+	// become loop closure candidates even if the components are not
+	// connected yet; an accepted link merges the components. A single anchor
+	// leaves the heading unconstrained, but the component is still pinned at
+	// the anchor: nodes near it are placed correctly regardless of the
+	// heading error (which rotates the component around the anchor), so
+	// candidates are found there, and the first accepted closure fixes the
+	// heading for the following iterations.
 	std::map<int, int> nodeToComponent;         // gate: candidate pair spans two components
 	std::map<int, Transform> extraComponentPoses; // to re-merge after re-optimizations
 	if(components_.size() > 1)
@@ -5204,21 +5219,30 @@ void DatabaseViewer::detectMoreLoopClosures()
 		bool anyOtherGeoreferenced = false;
 		for(size_t i=0; i<components_.size(); ++i)
 		{
-			if((int)i != activeComponentIndex_ && anchorsPerComponent[(int)i] >= 2)
+			if((int)i != activeComponentIndex_ && anchorsPerComponent[(int)i] >= 1)
 			{
 				anyOtherGeoreferenced = true;
 			}
 		}
 
-		if(anyOtherGeoreferenced && anchorsPerComponent[activeComponentIndex_] < 2)
+		if(anyOtherGeoreferenced && anchorsPerComponent[activeComponentIndex_] < 1)
 		{
+			progressDialog->setAutoClose(false);
 			progressDialog->appendText(tr("Cross-component detection skipped: the active component has "
-					"less than 2 anchor points, so its placement in the world frame is not reliable. "
-					"Add anchor points to search for loop closures with the other georeferenced component(s)."),
+					"no anchor point, so its placement in the world frame is unknown. "
+					"Add at least one anchor point to search for loop closures with the other georeferenced component(s)."),
 					Qt::darkYellow);
 		}
 		else if(anyOtherGeoreferenced)
 		{
+			if(anchorsPerComponent[activeComponentIndex_] == 1)
+			{
+				progressDialog->setAutoClose(false);
+				progressDialog->appendText(tr("Cross-component: the active component has a single anchor point, "
+						"its heading in the world frame is unconstrained. Cross-component candidates will only "
+						"be reliable near that anchor; the first accepted loop closure fixes the heading for "
+						"the following iterations."), Qt::darkYellow);
+			}
 			for(std::set<int>::const_iterator nter=components_[activeComponentIndex_].nodeIds.begin();
 				nter!=components_[activeComponentIndex_].nodeIds.end(); ++nter)
 			{
@@ -5226,11 +5250,19 @@ void DatabaseViewer::detectMoreLoopClosures()
 			}
 			for(size_t i=0; i<components_.size(); ++i)
 			{
-				if((int)i == activeComponentIndex_ || anchorsPerComponent[(int)i] < 2)
+				if((int)i == activeComponentIndex_ || anchorsPerComponent[(int)i] < 1)
 				{
 					continue;
 				}
-				progressDialog->appendText(tr("Cross-component: optimizing component %1 (%2 nodes, %3 anchors) "
+				if(anchorsPerComponent[(int)i] == 1)
+				{
+					progressDialog->setAutoClose(false);
+					progressDialog->appendText(tr("Cross-component: component %1 has a single anchor point, its "
+							"heading in the world frame is unconstrained. Candidates will only be reliable near "
+							"that anchor; the first accepted loop closure fixes the heading for the following "
+							"iterations.").arg(i==0?tr("Main"):QString(QChar('A'+char(i-1)))), Qt::darkYellow);
+				}
+				progressDialog->appendText(tr("Cross-component: optimizing component %1 (%2 nodes, %3 anchor(s)) "
 						"to place it in the shared world frame...")
 						.arg(i==0?tr("Main"):QString(QChar('A'+char(i-1)))).arg(components_[i].nodeIds.size()).arg(anchorsPerComponent[(int)i]));
 				QApplication::processEvents();
