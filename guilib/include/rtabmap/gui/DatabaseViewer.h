@@ -294,6 +294,7 @@ private:
 	void registerMapViewer(CloudViewer * viewer, bool fromFile);
 	// Returns true if the open "View 3D map" windows now all show the given poses.
 	bool reposeMapViewers(const std::map<int, Transform> & poses);
+	void updateAnchorMarkersInViewers();
 
 private:
 	Ui_DatabaseViewer * ui_;
