@@ -238,6 +238,7 @@ private:
 	void updateBasemapTiles(bool force = false);
 	void clearBasemapItems();
 	void updateLinkResidualColors();
+	void updateGridMapTransparency();
 private:
 	QString _workingDirectory;
 	QColor _nodeColor;
@@ -280,6 +281,7 @@ private:
 	float _nodeRadius;
 	float _linkWidth;
 	QGraphicsPixmapItem * _gridMap;
+	QImage _gridMapImage; // original (opaque) grid map image
 	QGraphicsItemGroup * _referential;
 	QGraphicsItemGroup * _referentialXY;
 	QGraphicsItemGroup * _referentialXZ;
