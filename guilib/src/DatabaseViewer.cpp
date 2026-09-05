@@ -4696,6 +4696,8 @@ void DatabaseViewer::registerMapViewer(CloudViewer * viewer, bool fromFile)
 	info.genPoses = fromFile?fileViewRefPoses_:exportViewRefPoses_;
 	mapViewers_.append(info);
 	connect(viewer, SIGNAL(anchorPairPicked(float,float,float,double,double)), this, SLOT(anchorPairPickedFromMap(float,float,float,double,double)), Qt::UniqueConnection);
+	// clicking an anchor marker selects the anchor in the Anchor Points panel
+	connect(viewer, &CloudViewer::sphereClicked, this, &DatabaseViewer::sphereClickedInMapViewer, Qt::UniqueConnection);
 	// F5 in the 3D view: re-optimize the graph with the current links/priors
 	// and move the displayed clouds to the new poses (reposeMapViewers() is
 	// called at the end of the graph update).
@@ -8780,6 +8782,31 @@ void DatabaseViewer::updateAnchorMarkersInViewers()
 			}
 		}
 		viewer->refreshView();
+	}
+}
+
+// An anchor marker sphere was clicked in a 3D map viewer: select the
+// corresponding anchor in the Anchor Points panel.
+void DatabaseViewer::sphereClickedInMapViewer(const std::string & id)
+{
+	const std::string prefix = "anchor_marker_";
+	if(id.compare(0, prefix.size(), prefix) != 0)
+	{
+		return;
+	}
+	int landmarkId = -uStr2Int(id.substr(prefix.size()));
+	ui_->dockWidget_anchorPoints->show();
+	ui_->dockWidget_anchorPoints->raise();
+	updateAnchorPointsTable(); // populate if the panel was hidden
+	QTableWidget * table = ui_->tableWidget_anchors;
+	for(int row=0; row<table->rowCount(); ++row)
+	{
+		if(table->item(row, 0)->data(Qt::UserRole).toInt() == landmarkId)
+		{
+			table->selectRow(row);
+			table->scrollToItem(table->item(row, 0));
+			break;
+		}
 	}
 }
 

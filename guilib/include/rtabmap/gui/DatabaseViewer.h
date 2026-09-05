@@ -183,6 +183,7 @@ private Q_SLOTS:
 	void anchorPointPickedFromImage(float x, float y, float z);
 	void anchorPointPickedFromMap(float x, float y, float z);
 	void anchorPairPickedFromMap(float x, float y, float z, double mapX, double mapY);
+	void sphereClickedInMapViewer(const std::string & id);
 	void loadBasemap();
 	void clearBasemap();
 	void mapViewerCreated(CloudViewer * viewer);

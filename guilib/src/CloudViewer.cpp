@@ -54,6 +54,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <set>
 
 #include <vtkCamera.h>
+#include <vtkPropPicker.h>
 #include <vtkRenderWindow.h>
 #include <vtkCubeSource.h>
 #include <vtkDataSetMapper.h>
@@ -4093,8 +4094,76 @@ void CloudViewer::mousePressEvent(QMouseEvent * event)
 	}
 	else
 	{
+		if(event->button() == Qt::LeftButton)
+		{
+			_leftButtonPressPos = event->pos();
+		}
 		PCLQVTKWidget::mousePressEvent(event);
 	}
+}
+
+void CloudViewer::mouseReleaseEvent(QMouseEvent * event)
+{
+	// a left click without drag: report a clicked marker sphere, if any
+	if(event->button() == Qt::LeftButton &&
+	   (event->pos() - _leftButtonPressPos).manhattanLength() <= 3)
+	{
+		std::string id = pickSphereUnderCursor(event->pos());
+		if(!id.empty())
+		{
+			Q_EMIT sphereClicked(id);
+		}
+	}
+	PCLQVTKWidget::mouseReleaseEvent(event);
+}
+
+std::string CloudViewer::pickSphereUnderCursor(const QPoint & widgetPos) const
+{
+	if(_spheres.empty())
+	{
+		return std::string();
+	}
+	// pick only among the sphere actors
+	pcl::visualization::ShapeActorMapPtr shapes = _visualizer->getShapeActorMap();
+	vtkSmartPointer<vtkPropPicker> picker = vtkSmartPointer<vtkPropPicker>::New();
+	picker->PickFromListOn();
+	std::map<vtkProp*, std::string> actorToId;
+	for(std::set<std::string>::const_iterator iter=_spheres.begin(); iter!=_spheres.end(); ++iter)
+	{
+		pcl::visualization::ShapeActorMap::iterator jter = shapes->find(*iter);
+		if(jter != shapes->end() && jter->second)
+		{
+			picker->AddPickList(jter->second);
+			actorToId.insert(std::make_pair(jter->second.GetPointer(), *iter));
+		}
+	}
+	if(actorToId.empty())
+	{
+		return std::string();
+	}
+#if VTK_MAJOR_VERSION > 8
+	double dpr = this->devicePixelRatioF();
+#else
+	double dpr = 1.0;
+#endif
+	int * winSize = _visualizer->getRenderWindow()->GetSize();
+	double x = widgetPos.x()*dpr;
+	double y = winSize[1] - 1 - widgetPos.y()*dpr;
+	// spheres can be in any layer (foreground or not), try all renderers
+	vtkRenderer * renderer = 0;
+	_visualizer->getRendererCollection()->InitTraversal();
+	while((renderer = _visualizer->getRendererCollection()->GetNextItem()) != 0)
+	{
+		if(picker->PickProp(x, y, renderer) && picker->GetViewProp())
+		{
+			std::map<vtkProp*, std::string>::iterator jter = actorToId.find(picker->GetViewProp());
+			if(jter != actorToId.end())
+			{
+				return jter->second;
+			}
+		}
+	}
+	return std::string();
 }
 
 void CloudViewer::mouseMoveEvent(QMouseEvent * event)
