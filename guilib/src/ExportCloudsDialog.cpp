@@ -1305,7 +1305,18 @@ void ExportCloudsDialog::viewClouds(
 		}
 		else
 		{
-			window->setWindowTitle(tr("Clouds (%1 nodes)").arg(clouds.size()));
+			// Assemble folds every node into one cloud (id 0), so count
+			// poses rather than clouds or a 28k-node map plus a second
+			// component still reads as "Clouds (1 nodes)".
+			int nodeCount = 0;
+			for(std::map<int, Transform>::const_iterator pter=poses.begin(); pter!=poses.end(); ++pter)
+			{
+				if(pter->first > 0)
+				{
+					++nodeCount;
+				}
+			}
+			window->setWindowTitle(tr("Clouds (%1 nodes)").arg(nodeCount));
 		}
 		window->setMinimumWidth(120);
 		window->setMinimumHeight(90);

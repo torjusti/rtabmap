@@ -118,6 +118,10 @@ void showUsage()
 			"                              2=Use optimized poses already computed in the database instead\n"
 			"                                of re-computing them (fallback to default if optimized poses don't exist).\n"
 			"                              3=No optimization, use odometry poses directly.\n"
+			"    --all_components      Also export the disconnected graph components that are georeferenced\n"
+			"                              with landmark position priors (e.g., anchor points set in the database\n"
+			"                              viewer): the priors place them in the same world frame as the main\n"
+			"                              component. Only with --opt 0 or 1. Components without priors are skipped.\n"
 			"    --poses               Export optimized poses of the robot frame (e.g., base_link), including landmarks.\n"
 			"    --poses_camera        Export optimized poses of the camera frame (e.g., optical frame).\n"
 			"    --poses_scan          Export optimized poses of the scan frame.\n"
@@ -316,6 +320,7 @@ int main(int argc, char * argv[])
 	bool export2DMap = false;
 	bool exportOctomap = false;
 	int optimizationApproach = 0;
+	bool allComponents = false;
 	std::string outputName;
 	std::string outputDir;
 	cv::Vec3f min, max;
@@ -612,6 +617,10 @@ int main(int argc, char * argv[])
 			{
 				showUsage();
 			}
+		}
+		else if(std::strcmp(argv[i], "--all_components") == 0)
+		{
+			allComponents = true;
 		}
 		else if(std::strcmp(argv[i], "--images") == 0)
 		{
@@ -1416,6 +1425,83 @@ int main(int argc, char * argv[])
 				optimizedPoses = optimizer->optimize(odomPoses.lower_bound(1)->first, posesOut, linksOut);
 			}
 			printf("Optimizing the map (%s)... done (%fs, poses=%d, links=%d).\n", optimizationApproachStr.c_str(), timer.ticks(), (int)optimizedPoses.size(), (int)linksOut.size());
+
+			if(allComponents)
+			{
+				// Also export the disconnected graph components that are
+				// georeferenced with landmark position priors: the priors
+				// place them in the same world frame as the main component.
+				if(priorsIgnored)
+				{
+					printf("--all_components: %s is true, the other components cannot be placed "
+						   "in the world frame, they are not exported.\n", Parameters::kOptimizerPriorsIgnored().c_str());
+				}
+				std::map<int, Transform> remaining;
+				for(std::map<int, Transform>::iterator iter=odomPoses.lower_bound(1); iter!=odomPoses.end(); ++iter)
+				{
+					if(optimizedPoses.find(iter->first) == optimizedPoses.end())
+					{
+						remaining.insert(*iter);
+					}
+				}
+				while(!priorsIgnored && !remaining.empty())
+				{
+					int compRoot = remaining.begin()->first;
+					std::map<int, Transform> compPoses;
+					std::multimap<int, Link> compLinks;
+					optimizer->getConnectedGraph(compRoot, odomPoses, links, compPoses, compLinks);
+					if(compPoses.empty())
+					{
+						remaining.erase(compRoot);
+						continue;
+					}
+					for(std::map<int, Transform>::iterator iter=compPoses.begin(); iter!=compPoses.end(); ++iter)
+					{
+						remaining.erase(iter->first);
+					}
+					bool hasPrior = false;
+					for(std::multimap<int, Link>::iterator iter=compLinks.begin(); iter!=compLinks.end(); ++iter)
+					{
+						if(iter->second.from() == iter->second.to() && iter->second.from() < 0 &&
+						   iter->second.type() == Link::kPosePrior)
+						{
+							hasPrior = true;
+							break;
+						}
+					}
+					if(!hasPrior)
+					{
+						printf("--all_components: skipping component of %d poses (root %d): no landmark "
+							   "position prior, its placement in the world frame is unknown.\n",
+							   (int)compPoses.size(), compRoot);
+						continue;
+					}
+					Transform align = graph::alignPosesToLandmarkPriors(compPoses, compLinks);
+					if(!align.isNull() && (align.getNorm() > 0.5 || fabs(align.theta()) > 0.05))
+					{
+						for(std::map<int, Transform>::iterator iter=compPoses.begin(); iter!=compPoses.end(); ++iter)
+						{
+							iter->second = align * iter->second;
+						}
+					}
+					std::map<int, Transform> compOptimized = optimizer->optimize(compRoot, compPoses, compLinks);
+					if(compOptimized.empty())
+					{
+						printf("--all_components: optimization of component (root %d) failed, using the "
+							   "rigid alignment to its prior(s) instead.\n", compRoot);
+						compOptimized = compPoses;
+					}
+					int compAdded = 0;
+					for(std::map<int, Transform>::iterator iter=compOptimized.begin(); iter!=compOptimized.end(); ++iter)
+					{
+						if(iter->first > 0 && optimizedPoses.insert(*iter).second)
+						{
+							++compAdded;
+						}
+					}
+					printf("--all_components: added georeferenced component (root %d): %d poses.\n", compRoot, compAdded);
+				}
+			}
 		}
 
 		if(optimizedPoses.empty())
