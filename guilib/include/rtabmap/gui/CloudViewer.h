@@ -471,11 +471,14 @@ Q_SIGNALS:
 	// A 3D point of the data and its matching position on the basemap (both
 	// in the viewer frame), see "Add anchor point: here, then on basemap..."
 	void anchorPairPicked(float cloudX, float cloudY, float cloudZ, double mapX, double mapY);
+	// A sphere added with addOrUpdateSphere() was left-clicked (no drag).
+	void sphereClicked(const std::string & id);
 
 protected:
 	virtual void keyReleaseEvent(QKeyEvent * event);
 	virtual void keyPressEvent(QKeyEvent * event);
 	virtual void mousePressEvent(QMouseEvent * event);
+	virtual void mouseReleaseEvent(QMouseEvent * event);
 	virtual void mouseMoveEvent(QMouseEvent * event);
 	virtual void wheelEvent(QWheelEvent * event);
 	virtual void contextMenuEvent(QContextMenuEvent * event);
@@ -488,6 +491,7 @@ private:
 	void addGrid();
 	void removeGrid();
 	bool pickPointUnderCursor(const QPoint & widgetPos, double pt[3]) const;
+	std::string pickSphereUnderCursor(const QPoint & widgetPos) const;
 	void finishAnchorPairPick(const QPoint & widgetPos);
 	bool computeVisibleBounds(double bounds[6]) const;
 
@@ -542,6 +546,7 @@ private:
     bool _cloudsHidden;
     std::set<std::string> _hiddenClouds;
     bool _anchorPairPending;
+    QPoint _leftButtonPressPos; // to tell a click from a camera drag
     double _anchorPairCloudPt[3];
     QPoint _lastContextMenuPos;
     QMenu * _menu;
