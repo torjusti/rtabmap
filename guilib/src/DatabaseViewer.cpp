@@ -4528,9 +4528,15 @@ void DatabaseViewer::view3DMap()
 	if(optimizedPoses.size() > 0)
 	{
 		std::set<int> selectedIds = ui_->graphViewer->getSelectedNodeIds();
+		int extraPoses = includeGeoreferencedComponents(optimizedPoses, selectedIds, tr("View 3D map"));
+		if(extraPoses > 0)
+		{
+			UINFO("View 3D map: included %d poses from other georeferenced component(s), now %ld poses.",
+					extraPoses, optimizedPoses.size());
+		}
 		if(!selectedIds.empty())
 		{
-			UINFO("Viewing %ld/%ld selected nodes of the current component.", selectedIds.size(), optimizedPoses.size());
+			UINFO("Viewing %ld/%ld selected nodes.", selectedIds.size(), optimizedPoses.size());
 			for(std::map<int, Transform>::iterator iter = optimizedPoses.begin(); iter != optimizedPoses.end();) 
 			{
 				if(selectedIds.find(iter->first) == selectedIds.end()) {
@@ -5038,9 +5044,15 @@ void DatabaseViewer::generate3DMap()
 	if(optimizedPoses.size() > 0)
 	{
 		std::set<int> selectedIds = ui_->graphViewer->getSelectedNodeIds();
+		int extraPoses = includeGeoreferencedComponents(optimizedPoses, selectedIds, tr("Export 3D clouds"));
+		if(extraPoses > 0)
+		{
+			UINFO("Export 3D clouds: included %d poses from other georeferenced component(s), now %ld poses.",
+					extraPoses, optimizedPoses.size());
+		}
 		if(!selectedIds.empty())
 		{
-			UINFO("Exporting %ld/%ld selected nodes of the current component.", selectedIds.size(), optimizedPoses.size());
+			UINFO("Exporting %ld/%ld selected nodes.", selectedIds.size(), optimizedPoses.size());
 			for(std::map<int, Transform>::iterator iter = optimizedPoses.begin(); iter != optimizedPoses.end();) 
 			{
 				if(selectedIds.find(iter->first) == selectedIds.end()) {
@@ -5068,11 +5080,136 @@ void DatabaseViewer::generate3DMap()
 	}
 }
 
+// When the database has other graph components georeferenced with anchor
+// points, offer to include them in a view/export: the priors put them in the
+// same world frame as the active component, so disconnected areas of the
+// same database can be viewed and exported together. Returns the number of
+// poses added.
+int DatabaseViewer::includeGeoreferencedComponents(
+		std::map<int, Transform> & poses,
+		std::set<int> & selectedIds,
+		const QString & action)
+{
+	if(components_.size() < 2)
+	{
+		return 0;
+	}
+	std::multimap<int, Link> allLinks = updateLinksWithModifications(links_);
+	// anchors per component: prior landmark -> observer node -> component
+	std::map<int, int> anchorsPerComponent;
+	for(std::multimap<int, Link>::iterator iter=allLinks.begin(); iter!=allLinks.end(); ++iter)
+	{
+		if(iter->second.from() == iter->second.to() && iter->second.from() < 0 &&
+		   iter->second.type() == Link::kPosePrior)
+		{
+			int landmarkId = iter->second.from();
+			for(std::multimap<int, Link>::iterator jter=allLinks.begin(); jter!=allLinks.end(); ++jter)
+			{
+				if(jter->second.type() == Link::kLandmark &&
+				   (jter->second.to() == landmarkId || jter->second.from() == landmarkId))
+				{
+					int observer = jter->second.to() == landmarkId?jter->second.from():jter->second.to();
+					for(size_t i=0; i<components_.size(); ++i)
+					{
+						if(components_[i].nodeIds.find(observer) != components_[i].nodeIds.end())
+						{
+							anchorsPerComponent[(int)i] += 1;
+							break;
+						}
+					}
+					break;
+				}
+			}
+		}
+	}
+	if(anchorsPerComponent[activeComponentIndex_] < 1)
+	{
+		// the active component's placement in the world frame is unknown,
+		// mixing it with georeferenced components would be misleading
+		return 0;
+	}
+	std::vector<int> eligible;
+	for(size_t i=0; i<components_.size(); ++i)
+	{
+		if((int)i != activeComponentIndex_ && anchorsPerComponent[(int)i] >= 1)
+		{
+			eligible.push_back((int)i);
+		}
+	}
+	if(eligible.empty())
+	{
+		return 0;
+	}
+	QString componentList;
+	for(size_t e=0; e<eligible.size(); ++e)
+	{
+		int i = eligible[e];
+		componentList += tr("\n - %1: %2 nodes, %3 anchor(s)%4")
+				.arg(i==0?tr("Main"):QString(QChar('A'+char(i-1))))
+				.arg(components_[i].nodeIds.size())
+				.arg(anchorsPerComponent[i])
+				.arg(anchorsPerComponent[i]==1?tr(" (single anchor: heading kept from odometry)"):QString());
+	}
+	if(QMessageBox::question(this, action,
+			tr("This database has %1 other graph component(s) georeferenced with anchor "
+			   "points, sharing the same world frame as the current one:\n%2\n\n"
+			   "Include them? Each will be placed at its anchor point(s); small "
+			   "components can be easy to miss in a large cloud, look near their "
+			   "anchor markers.")
+			.arg(eligible.size())
+			.arg(componentList),
+			QMessageBox::Yes | QMessageBox::No,
+			QMessageBox::Yes) != QMessageBox::Yes)
+	{
+		return 0;
+	}
+	int added = 0;
+	for(size_t e=0; e<eligible.size(); ++e)
+	{
+		const GraphComponent & comp = components_[eligible[e]];
+		std::map<int, Transform> compPoses = optimizeGeoreferencedComponentPoses(comp.rootId, allLinks);
+		if(compPoses.empty())
+		{
+			UWARN("Failed to optimize georeferenced component rooted at %d, not included.", comp.rootId);
+			QMessageBox::warning(this, action,
+					tr("Failed to optimize the component %1 (root %2), it is not included.")
+					.arg(eligible[e]==0?tr("Main"):QString(QChar('A'+char(eligible[e]-1))))
+					.arg(comp.rootId));
+			continue;
+		}
+		int addedComp = 0;
+		for(std::map<int, Transform>::iterator jter=compPoses.begin(); jter!=compPoses.end(); ++jter)
+		{
+			if(jter->first > 0 && poses.insert(*jter).second)
+			{
+				++addedComp;
+			}
+		}
+		// when a selection is active, keep the included component visible:
+		// use its saved selection if it has one, otherwise all its nodes
+		if(!selectedIds.empty())
+		{
+			if(!comp.selectedNodeIds.empty())
+			{
+				selectedIds.insert(comp.selectedNodeIds.begin(), comp.selectedNodeIds.end());
+			}
+			else
+			{
+				selectedIds.insert(comp.nodeIds.begin(), comp.nodeIds.end());
+			}
+		}
+		added += addedComp;
+		UINFO("Included georeferenced component rooted at %d: %d poses.", comp.rootId, addedComp);
+	}
+	return added;
+}
+
 // Optimize the graph component rooted at rootId with its anchor priors, the
 // same way updateGraphView() does for the active component (landmark poses
-// initialized by getConnectedGraph(), rigid pre-alignment to the priors,
-// full optimization): the resulting poses are in the world frame shared by
-// all georeferenced components. Returns an empty map on failure.
+// initialized from the observer*offset, then getConnectedGraph so the
+// priors are in the subgraph, rigid pre-alignment, full optimization):
+// the resulting poses are in the world frame shared by all georeferenced
+// components. Returns an empty map on failure.
 std::map<int, Transform> DatabaseViewer::optimizeGeoreferencedComponentPoses(
 		int rootId,
 		const std::multimap<int, Link> & allLinks)
@@ -5082,11 +5219,46 @@ std::map<int, Transform> DatabaseViewer::optimizeGeoreferencedComponentPoses(
 	{
 		return poses;
 	}
+	// getConnectedGraph() only follows landmarks that already have a pose
+	// in the input map. odomPoses_ has nodes only, so seed each landmark
+	// from its first observer (same recipe as updateGraphView()) or the
+	// priors never make it into the subgraph and the component stays in
+	// its raw odometry frame.
+	std::map<int, Transform> posesIn = odomPoses_;
+	for(std::multimap<int, Link>::const_iterator iter=allLinks.begin(); iter!=allLinks.end(); ++iter)
+	{
+		if(iter->second.type() == Link::kLandmark &&
+		   iter->second.from() > 0 && iter->second.to() < 0 &&
+		   posesIn.find(iter->second.from()) != posesIn.end() &&
+		   posesIn.find(iter->second.to()) == posesIn.end())
+		{
+			posesIn.insert(std::make_pair(iter->second.to(),
+					posesIn.at(iter->second.from())*iter->second.transform()));
+		}
+	}
 	std::shared_ptr<Optimizer> optimizer(Optimizer::create(ui_->parameters_toolbox->getParameters()));
 	std::multimap<int, Link> links;
-	optimizer->getConnectedGraph(rootId, odomPoses_, allLinks, poses, links);
+	optimizer->getConnectedGraph(rootId, posesIn, allLinks, poses, links);
 	if(poses.empty())
 	{
+		return poses;
+	}
+	bool hasPrior = false;
+	for(std::multimap<int, Link>::const_iterator iter=links.begin(); iter!=links.end(); ++iter)
+	{
+		if(iter->second.from() == iter->second.to() &&
+		   iter->second.from() < 0 &&
+		   iter->second.type() == Link::kPosePrior)
+		{
+			hasPrior = true;
+			break;
+		}
+	}
+	if(!hasPrior)
+	{
+		UWARN("Component rooted at %d has no landmark position prior in its "
+			  "connected graph, cannot place it in the world frame.", rootId);
+		poses.clear();
 		return poses;
 	}
 	// Rigid pre-alignment to the anchor priors (translation + yaw, or
@@ -10855,9 +11027,8 @@ void DatabaseViewer::regenerateGraphComponents()
 
 	int total = 0;
     for(size_t i = 0; i < components_.size(); ++i) {
-        QString tabLabel = QString("%1%2 (%3)%4")
-			.arg(i==0 ? "Main" : "")
-			.arg(i>0?char('A'+char(i-1)):'\0')
+        QString tabLabel = QString("%1 (%2)%3")
+			.arg(i==0 ? tr("Main") : QString(QChar('A'+char(i-1))))
 			.arg(components_[i].nodeIds.size())
 			.arg(components_[i].selectedNodeIds.empty()?"":QString(" [%1]").arg(components_[i].selectedNodeIds.size()));
         ui_->tabBar_components->addTab(tabLabel);
@@ -10884,9 +11055,8 @@ void DatabaseViewer::updateComponentSelectedNodes()
 			components_[activeComponentIndex_].selectedNodeIds.size(),
 			ui_->graphViewer->getSelectedNodeIds().size());
 		components_[activeComponentIndex_].selectedNodeIds = ui_->graphViewer->getSelectedNodeIds();
-		QString tabLabel = QString("%1%2 (%3)%4")
-			.arg(activeComponentIndex_==0 ? "Main" : "")
-			.arg(activeComponentIndex_>0?char('A'+char(activeComponentIndex_-1)):'\0')
+		QString tabLabel = QString("%1 (%2)%3")
+			.arg(activeComponentIndex_==0 ? tr("Main") : QString(QChar('A'+char(activeComponentIndex_-1))))
 			.arg(components_[activeComponentIndex_].nodeIds.size())
 			.arg(components_[activeComponentIndex_].selectedNodeIds.empty()?"":QString(" [%1]").arg(components_[activeComponentIndex_].selectedNodeIds.size()));
 		ui_->tabBar_components->setTabText(activeComponentIndex_, tabLabel);
@@ -10904,9 +11074,8 @@ void DatabaseViewer::clearAllSelectedNodes()
 {
 	UASSERT(ui_->tabBar_components->count() == (int)components_.size());
     for(size_t i = 0; i < components_.size(); ++i) {
-        QString tabLabel = QString("%1%2 (%3)")
-			.arg(i==0 ? "Main" : "")
-			.arg(i>0?char('A'+char(i-1)):'\0')
+        QString tabLabel = QString("%1 (%2)")
+			.arg(i==0 ? tr("Main") : QString(QChar('A'+char(i-1))))
 			.arg(components_[i].nodeIds.size());
 		components_[i].selectedNodeIds.clear();
         ui_->tabBar_components->setTabText(i, tabLabel);

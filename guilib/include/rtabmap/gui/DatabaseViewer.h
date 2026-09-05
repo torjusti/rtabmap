@@ -299,6 +299,10 @@ private:
 	std::map<int, Transform> optimizeGeoreferencedComponentPoses(
 			int rootId,
 			const std::multimap<int, Link> & allLinks);
+	int includeGeoreferencedComponents(
+			std::map<int, Transform> & poses,
+			std::set<int> & selectedIds,
+			const QString & action);
 
 private:
 	Ui_DatabaseViewer * ui_;
