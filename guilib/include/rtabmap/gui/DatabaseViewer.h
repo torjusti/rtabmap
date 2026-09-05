@@ -296,6 +296,9 @@ private:
 	// Returns true if the open "View 3D map" windows now all show the given poses.
 	bool reposeMapViewers(const std::map<int, Transform> & poses);
 	void updateAnchorMarkersInViewers();
+	std::map<int, Transform> optimizeGeoreferencedComponentPoses(
+			int rootId,
+			const std::multimap<int, Link> & allLinks);
 
 private:
 	Ui_DatabaseViewer * ui_;

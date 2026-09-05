@@ -5068,6 +5068,41 @@ void DatabaseViewer::generate3DMap()
 	}
 }
 
+// Optimize the graph component rooted at rootId with its anchor priors, the
+// same way updateGraphView() does for the active component (landmark poses
+// initialized by getConnectedGraph(), rigid pre-alignment to the priors,
+// full optimization): the resulting poses are in the world frame shared by
+// all georeferenced components. Returns an empty map on failure.
+std::map<int, Transform> DatabaseViewer::optimizeGeoreferencedComponentPoses(
+		int rootId,
+		const std::multimap<int, Link> & allLinks)
+{
+	std::map<int, Transform> poses;
+	if(odomPoses_.find(rootId) == odomPoses_.end())
+	{
+		return poses;
+	}
+	std::shared_ptr<Optimizer> optimizer(Optimizer::create(ui_->parameters_toolbox->getParameters()));
+	std::multimap<int, Link> links;
+	optimizer->getConnectedGraph(rootId, odomPoses_, allLinks, poses, links);
+	if(poses.empty())
+	{
+		return poses;
+	}
+	// Rigid pre-alignment to the anchor priors (translation + yaw): the
+	// iterative optimizers can diverge when the initial guess is arbitrarily
+	// far from the priors (e.g. site CRS coordinates).
+	Transform align = graph::alignPosesToLandmarkPriors(poses, links);
+	if(!align.isNull() && (align.getNorm() > 0.5 || fabs(align.theta()) > 0.05))
+	{
+		for(std::map<int, Transform>::iterator iter=poses.begin(); iter!=poses.end(); ++iter)
+		{
+			iter->second = align * iter->second;
+		}
+	}
+	return optimizer->optimize(rootId, poses, links);
+}
+
 void DatabaseViewer::detectMoreLoopClosures()
 {
 	if(graphes_.empty())
@@ -5124,6 +5159,120 @@ void DatabaseViewer::detectMoreLoopClosures()
 	// the validations, making them a lot faster than a full optimization per
 	// candidate.
 	std::shared_ptr<Optimizer> optimizer(Optimizer::create(ui_->parameters_toolbox->getParameters()));
+
+	// Cross-component detection (automatic): when the active component and
+	// other components are all georeferenced with anchor points (>=2 anchors
+	// each: a single anchor leaves the heading unconstrained), their
+	// optimized poses share the same world frame. The other components'
+	// optimized poses are added to the search space, so nodes close in the
+	// world frame become loop closure candidates even if the components are
+	// not connected yet; an accepted link merges the components.
+	std::map<int, int> nodeToComponent;         // gate: candidate pair spans two components
+	std::map<int, Transform> extraComponentPoses; // to re-merge after re-optimizations
+	if(components_.size() > 1)
+	{
+		backupCurrentComponent(); // sync the active component's selection
+
+		// anchors per component: prior landmark -> observer node -> component
+		std::map<int, int> anchorsPerComponent;
+		for(std::multimap<int, Link>::iterator iter=links.begin(); iter!=links.end(); ++iter)
+		{
+			if(iter->second.from() == iter->second.to() && iter->second.from() < 0 &&
+			   iter->second.type() == Link::kPosePrior)
+			{
+				int landmarkId = iter->second.from();
+				for(std::multimap<int, Link>::iterator jter=links.begin(); jter!=links.end(); ++jter)
+				{
+					if(jter->second.type() == Link::kLandmark &&
+					   (jter->second.to() == landmarkId || jter->second.from() == landmarkId))
+					{
+						int observer = jter->second.to() == landmarkId?jter->second.from():jter->second.to();
+						for(size_t i=0; i<components_.size(); ++i)
+						{
+							if(components_[i].nodeIds.find(observer) != components_[i].nodeIds.end())
+							{
+								anchorsPerComponent[(int)i] += 1;
+								break;
+							}
+						}
+						break;
+					}
+				}
+			}
+		}
+
+		bool anyOtherGeoreferenced = false;
+		for(size_t i=0; i<components_.size(); ++i)
+		{
+			if((int)i != activeComponentIndex_ && anchorsPerComponent[(int)i] >= 2)
+			{
+				anyOtherGeoreferenced = true;
+			}
+		}
+
+		if(anyOtherGeoreferenced && anchorsPerComponent[activeComponentIndex_] < 2)
+		{
+			progressDialog->appendText(tr("Cross-component detection skipped: the active component has "
+					"less than 2 anchor points, so its placement in the world frame is not reliable. "
+					"Add anchor points to search for loop closures with the other georeferenced component(s)."),
+					Qt::darkYellow);
+		}
+		else if(anyOtherGeoreferenced)
+		{
+			for(std::set<int>::const_iterator nter=components_[activeComponentIndex_].nodeIds.begin();
+				nter!=components_[activeComponentIndex_].nodeIds.end(); ++nter)
+			{
+				nodeToComponent.insert(std::make_pair(*nter, activeComponentIndex_));
+			}
+			for(size_t i=0; i<components_.size(); ++i)
+			{
+				if((int)i == activeComponentIndex_ || anchorsPerComponent[(int)i] < 2)
+				{
+					continue;
+				}
+				progressDialog->appendText(tr("Cross-component: optimizing component %1 (%2 nodes, %3 anchors) "
+						"to place it in the shared world frame...")
+						.arg(i==0?tr("Main"):QString(QChar('A'+char(i-1)))).arg(components_[i].nodeIds.size()).arg(anchorsPerComponent[(int)i]));
+				QApplication::processEvents();
+				std::map<int, Transform> compPoses = optimizeGeoreferencedComponentPoses(components_[i].rootId, links);
+				if(compPoses.empty())
+				{
+					progressDialog->appendText(tr("Cross-component: optimization of component %1 failed, skipping it.")
+							.arg(i==0?tr("Main"):QString(QChar('A'+char(i-1)))), Qt::darkYellow);
+					continue;
+				}
+				int addedPoses = 0;
+				for(std::map<int, Transform>::iterator jter=compPoses.begin(); jter!=compPoses.end(); ++jter)
+				{
+					if(jter->first > 0 && optimizedPoses.insert(*jter).second)
+					{
+						extraComponentPoses.insert(*jter);
+						++addedPoses;
+					}
+				}
+				for(std::set<int>::const_iterator nter=components_[i].nodeIds.begin();
+					nter!=components_[i].nodeIds.end(); ++nter)
+				{
+					nodeToComponent.insert(std::make_pair(*nter, (int)i));
+				}
+				// selection semantics stay "both ends selected": include this
+				// component's saved selection (select nodes in its tab)
+				if(!selectedIds.empty() || !components_[i].selectedNodeIds.empty())
+				{
+					selectedIds.insert(components_[i].selectedNodeIds.begin(), components_[i].selectedNodeIds.end());
+				}
+				progressDialog->appendText(tr("Cross-component: component %1 is georeferenced, %2 poses added to "
+						"the search space. Loop closures found between components will merge them.")
+						.arg(i==0?tr("Main"):QString(QChar('A'+char(i-1)))).arg(addedPoses));
+				QApplication::processEvents();
+			}
+			if(!selectedIds.empty())
+			{
+				progressDialog->appendText(tr("Cross-component: %1 selected nodes (selections of all "
+						"georeferenced components combined).").arg(selectedIds.size()));
+			}
+		}
+	}
 
 	// Undirected adjacency used to check how far candidate pairs are in the
 	// graph. When loop closures count toward the graph distance, it covers all current links (odometry,
@@ -5347,20 +5496,35 @@ void DatabaseViewer::detectMoreLoopClosures()
 				int mapIdFrom = uValue(mapIds_, from, 0);
 				int mapIdTo = uValue(mapIds_, to, 0);
 
+				// pairs spanning two georeferenced components are always
+				// eligible: bridging the components is the point
+				bool crossComponent = !nodeToComponent.empty() &&
+						uContains(nodeToComponent, from) &&
+						uContains(nodeToComponent, to) &&
+						nodeToComponent.at(from) != nodeToComponent.at(to);
+
 				if(((interSession && mapIdFrom != mapIdTo) ||
-					(intraSession && mapIdFrom == mapIdTo)) &&
+					(intraSession && mapIdFrom == mapIdTo) ||
+					crossComponent) &&
 				   rtabmap::graph::findLink(checkedLoopClosures, from, to) == checkedLoopClosures.end() &&
 				   !findActiveLink(from, to).isValid() &&
 				   !containsLink(linksRemoved_, from, to) &&
 				   !(minimumGraphDistance > 1 && linkedWithinGraphDistance(from, to)))
 				{
-					// Reverify if in the bounds with the current optimized graph
-					Transform delta = optimizedPoses.at(from).inverse() * optimizedPoses.at(to);
-					if(delta.getNorm() < ui_->doubleSpinBox_detectMore_radius->value() &&
-					   delta.getNorm() >= ui_->doubleSpinBox_detectMore_radiusMin->value())
+					// Reverify if in the bounds with the current optimized
+					// graph (find(): nodes can have been erased by the
+					// selection filter above)
+					std::map<int, Transform>::iterator fromIter = optimizedPoses.find(from);
+					std::map<int, Transform>::iterator toIter = optimizedPoses.find(to);
+					if(fromIter != optimizedPoses.end() && toIter != optimizedPoses.end())
 					{
-						checkedLoopClosures.insert(std::make_pair(from, to));
-						candidates.push_back(std::make_pair(from, to));
+						Transform delta = fromIter->second.inverse() * toIter->second;
+						if(delta.getNorm() < ui_->doubleSpinBox_detectMore_radius->value() &&
+						   delta.getNorm() >= ui_->doubleSpinBox_detectMore_radiusMin->value())
+						{
+							checkedLoopClosures.insert(std::make_pair(from, to));
+							candidates.push_back(std::make_pair(from, to));
+						}
 					}
 				}
 			}
@@ -5518,7 +5682,12 @@ void DatabaseViewer::detectMoreLoopClosures()
 			int mapIdFrom = uValue(mapIds_, from, 0);
 			int mapIdTo = uValue(mapIds_, to, 0);
 
-			if((((interSession && mapIdFrom != mapIdTo) || (intraSession && mapIdFrom == mapIdTo)) && selectedIds.empty()) || !selectedIds.empty())
+			bool crossComponent = !nodeToComponent.empty() &&
+					uContains(nodeToComponent, from) &&
+					uContains(nodeToComponent, to) &&
+					nodeToComponent.at(from) != nodeToComponent.at(to);
+
+			if((((interSession && mapIdFrom != mapIdTo) || (intraSession && mapIdFrom == mapIdTo) || crossComponent) && selectedIds.empty()) || !selectedIds.empty())
 			{
 				// Only add new links. When loop closures count toward the graph distance and drive the
 				// link density, nodes may participate in several loop
@@ -5532,9 +5701,18 @@ void DatabaseViewer::detectMoreLoopClosures()
 					    (addedLinks.find(from) == addedLinks.end() &&
 					     addedLinks.find(to) == addedLinks.end())))
 					{
-						// Reverify if in the bounds with the current optimized graph
-						Transform delta = optimizedPoses.at(from).inverse() * optimizedPoses.at(to);
-						if(delta.getNorm() < ui_->doubleSpinBox_detectMore_radius->value() &&
+						// Reverify if in the bounds with the current optimized
+						// graph (find(): nodes can have been erased by the
+						// selection filter above)
+						std::map<int, Transform>::iterator fromIter = optimizedPoses.find(from);
+						std::map<int, Transform>::iterator toIter = optimizedPoses.find(to);
+						Transform delta;
+						if(fromIter != optimizedPoses.end() && toIter != optimizedPoses.end())
+						{
+							delta = fromIter->second.inverse() * toIter->second;
+						}
+						if(!delta.isNull() &&
+						   delta.getNorm() < ui_->doubleSpinBox_detectMore_radius->value() &&
 						   delta.getNorm() >= ui_->doubleSpinBox_detectMore_radiusMin->value())
 						{
 							checkedLoopClosures.insert(std::make_pair(from, to));
@@ -5551,7 +5729,12 @@ void DatabaseViewer::detectMoreLoopClosures()
 								progressDialog->appendText(tr("Detected loop closure %1->%2! (%3/%4)").arg(from).arg(to).arg(i+1).arg(clusters.size()));
 								QApplication::processEvents();
 
+								// the re-optimized graph only covers the active
+								// component until it absorbs the others; keep
+								// the georeferenced poses of the not yet
+								// connected components in the search space
 								optimizedPoses = graphes_.back();
+								optimizedPoses.insert(extraComponentPoses.begin(), extraComponentPoses.end());
 							}
 						}
 					}
@@ -5582,6 +5765,9 @@ void DatabaseViewer::detectMoreLoopClosures()
 			// Re-optimize the map before doing next iterations
 			this->updateGraphView();
 			optimizedPoses = graphes_.back();
+			// keep the georeferenced poses of components not yet connected
+			// to the active one (insert() does not overwrite existing ids)
+			optimizedPoses.insert(extraComponentPoses.begin(), extraComponentPoses.end());
 		}
 	}
 
@@ -11450,7 +11636,10 @@ void DatabaseViewer::tabBarComponentsValueChanged(int value)
 	ui_->actionUpdate_optimized_mesh->setEnabled(value==0 && uStrNumCmp(dbDriver_->getDatabaseVersion(), "0.13.0") >= 0);
 	
 	disconnect(ui_->graphViewer, SIGNAL(nodesSelected()), this , SLOT(updateComponentSelectedNodes()));
-	updateGraphView();
+	// Forced: switching tabs must rebuild the graph for the new component
+	// even when "Live optimization" is off, otherwise the view keeps showing
+	// the previous component and the view restore below mis-pans.
+	updateGraphViewInternal(true);
 	connect(ui_->graphViewer, SIGNAL(nodesSelected()), this , SLOT(updateComponentSelectedNodes()));
 
 	if(!ui_->radioButton_graphSelection->isChecked())
@@ -11458,27 +11647,25 @@ void DatabaseViewer::tabBarComponentsValueChanged(int value)
 		comp.selectedNodeIds.clear();
 	}
 
-	// restore component's view
+	// restore component's view (apply the component's rotation first, the
+	// node scene positions depend on it)
+	updateGraphRotation();
 	if(comp.viewScale > 0.0f &&
 		comp.rootId > 0 &&
 		comp.rootCoordinates != QPointF() &&
-		comp.nodeIds.find(comp.rootId) != comp.nodeIds.end())
+		comp.nodeIds.find(comp.rootId) != comp.nodeIds.end() &&
+		!ui_->graphViewer->getNodeScenePosition(comp.rootId).isNull())
 	{
-		QPointF rootScenePos = ui_->graphViewer->getNodeScenePosition(comp.rootId);
-		
-		ui_->graphViewer->resetTransform();
-		ui_->graphViewer->scale(comp.viewScale, comp.viewScale);
-	
-		QPointF viewportCenter = ui_->graphViewer->viewport()->rect().center();
-		QPointF viewportDelta = viewportCenter - comp.rootCoordinates;
-		QPointF sceneDelta = viewportDelta / comp.viewScale;
-
-		updateGraphRotation();
-
-		ui_->graphViewer->centerOn(rootScenePos + sceneDelta);
-		ui_->graphViewer->selectNodesFromIds(comp.selectedNodeIds);
-		ui_->graphViewer->update();
+		ui_->graphViewer->restoreView(comp.rootId, comp.rootCoordinates, comp.viewScale);
 	}
+	else
+	{
+		// no valid saved view for this component: fit it in the view instead
+		// of keeping the previous component's viewport
+		ui_->graphViewer->fitGraphInView();
+	}
+	ui_->graphViewer->selectNodesFromIds(comp.selectedNodeIds);
+	ui_->graphViewer->update();
 
 	updateComponentSelectedNodes(); // To update selection count in labels
 
