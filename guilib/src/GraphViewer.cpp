@@ -1239,11 +1239,11 @@ void GraphViewer::updateMap(const cv::Mat & map8U, float resolution, float xMin,
 	{
 		bool wasEmpty = _nodeItems.size() <= 1 && _linkItems.size() == 0 && _gridMap->pixmap().isNull();
 		_gridCellSize = resolution;
-		QImage image = uCvMat2QImage(map8U, false);
+		_gridMapImage = uCvMat2QImage(map8U, false);
 		_gridMap->resetTransform();
 		_gridMap->setTransform(QTransform::fromScale(resolution*100.0f, -resolution*100.0f), true);
 		_gridMap->setRotation(90);
-		_gridMap->setPixmap(QPixmap::fromImage(image));
+		updateGridMapTransparency();
 		_gridMap->setPos(-yMin*100.0f, -xMin*100.0f);
 
 		if(wasEmpty)
@@ -1592,12 +1592,45 @@ void GraphViewer::clearGraph()
 void GraphViewer::clearMap()
 {
 	_gridCellSize = 0.0f;
+	_gridMapImage = QImage();
 	if(_gridMap->pixmap().isNull())
 	{
 		// there is no grid map, just return
 		return;
 	}
 	_gridMap->setPixmap(QPixmap());
+}
+
+// Refresh the grid map pixmap: when a basemap is displayed, the unknown
+// cells (opaque grey) are made transparent so the basemap shows through
+// instead of being hidden behind a big grey rectangle.
+void GraphViewer::updateGridMapTransparency()
+{
+	if(_gridMapImage.isNull())
+	{
+		return;
+	}
+	if(hasBasemap() && _basemapVisible)
+	{
+		QImage image = _gridMapImage.convertToFormat(QImage::Format_ARGB32);
+		const QRgb unknown = qRgb(89, 89, 89); // see util3d::convertMap2Image8U()
+		for(int y=0; y<image.height(); ++y)
+		{
+			QRgb * line = (QRgb*)image.scanLine(y);
+			for(int x=0; x<image.width(); ++x)
+			{
+				if(line[x] == unknown)
+				{
+					line[x] = qRgba(0, 0, 0, 0);
+				}
+			}
+		}
+		_gridMap->setPixmap(QPixmap::fromImage(image));
+	}
+	else
+	{
+		_gridMap->setPixmap(QPixmap::fromImage(_gridMapImage));
+	}
 }
 
 void GraphViewer::clearPosterior()
@@ -2154,14 +2187,15 @@ void GraphViewer::setBasemap(const std::shared_ptr<BasemapTileSource> & basemap)
 	if(_basemap)
 	{
 		connect(_basemap.get(), SIGNAL(tileReady(const rtabmap::BasemapTileKey &)), this, SLOT(basemapTileReady(const rtabmap::BasemapTileKey &)));
-		connect(_basemap.get(), &BasemapTileSource::cleared, this, [this](){clearBasemapItems(); _basemapDirty = true;});
-		connect(_basemap.get(), &BasemapTileSource::loaded, this, [this](){_basemapDirty = true;});
+		connect(_basemap.get(), &BasemapTileSource::cleared, this, [this](){clearBasemapItems(); _basemapDirty = true; updateGridMapTransparency();});
+		connect(_basemap.get(), &BasemapTileSource::loaded, this, [this](){_basemapDirty = true; updateGridMapTransparency();});
 		_basemapTimer.start();
 	}
 	else
 	{
 		_basemapTimer.stop();
 	}
+	updateGridMapTransparency();
 	updateBasemapTiles(true);
 }
 
@@ -2174,6 +2208,7 @@ void GraphViewer::setBasemapVisible(bool visible)
 {
 	_basemapVisible = visible;
 	_basemapDirty = true;
+	updateGridMapTransparency();
 	updateBasemapTiles(true);
 }
 
