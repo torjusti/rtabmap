@@ -5890,18 +5890,158 @@ void DatabaseViewer::mergeComponents()
 	bool loopFound = false;
 	int foundFrom = 0;
 	int foundTo = 0;
-	int step = 0;
 
-	for(size_t i = 0; i < N1.size() && !loopFound && !progressDialog->isCanceled(); ++i)
+	// The pairs reuse the same few nodes over and over: load each signature
+	// once instead of twice per pair (loading from the database dominated the
+	// cost of this dialog).
+	std::map<int, Signature> signatureCache;
+	auto getCachedSignature = [&](int id) -> Signature
 	{
-		for(size_t j = 0; j < N2.size() && !loopFound && !progressDialog->isCanceled(); ++j)
+		std::map<int, Signature>::iterator iter = signatureCache.find(id);
+		if(iter != signatureCache.end())
 		{
-			int from = N1[i];
-			int to = N2[j];
+			return iter->second;
+		}
+		std::list<int> ids;
+		ids.push_back(id);
+		std::list<Signature*> loaded;
+		dbDriver_->loadSignatures(ids, loaded);
+		UASSERT_MSG(loaded.size() == 1, uFormat("Failed to load signature %d from database!", id).c_str());
+		Signature s = *loaded.front();
+		delete loaded.front();
+		signatureCache.insert(std::make_pair(id, s));
+		return s;
+	};
+
+	// candidate pairs in the original (deterministic) order
+	std::vector<std::pair<int, int> > candidates;
+	candidates.reserve(N1.size()*N2.size());
+	for(size_t i = 0; i < N1.size(); ++i)
+	{
+		for(size_t j = 0; j < N2.size(); ++j)
+		{
+			candidates.push_back(std::make_pair(N1[i], N2[j]));
+		}
+	}
+
+	// Same parallel registration eligibility as detectMoreLoopClosures():
+	// visual registration from the features saved in the database.
+	bool reextractVisualFeatures = uStr2Bool(ui_->parameters_toolbox->getParameters().at(Parameters::kRGBDLoopClosureReextractFeatures()));
+	int regThreads = 1;
+	int corNNType = Parameters::defaultVisCorNNType();
+	Parameters::parse(ui_->parameters_toolbox->getParameters(), Parameters::kVisCorNNType(), corNNType);
+#ifdef _OPENMP
+	if(corNNType != 4) // 4=BruteForceGPU is not thread-safe
+	{
+		regThreads = omp_get_max_threads();
+	}
+#endif
+	bool parallelScreening = regThreads > 1 &&
+			!reextractVisualFeatures &&
+			!reg->isScanRequired() &&
+			!reg->isUserDataRequired();
+
+	if(parallelScreening)
+	{
+		// Screen the pairs with parallel guess-free registrations; the first
+		// pair (in the original order) with a valid transform is then added
+		// through addConstraint() to keep the usual validation/bookkeeping.
+		progressDialog->appendText(tr("Registering the pairs on %1 threads...").arg(regThreads));
+		QApplication::processEvents();
+		struct RegistrationTask
+		{
+			int from;
+			int to;
+			Signature fromS;
+			Signature toS;
+			Transform t;
+			RegistrationInfo info;
+		};
+		const size_t chunkSize = 64;
+		for(size_t c = 0; c < candidates.size() && !loopFound && !progressDialog->isCanceled(); c += chunkSize)
+		{
+			size_t chunkEnd = c+chunkSize<candidates.size()?c+chunkSize:candidates.size();
+			std::vector<RegistrationTask> chunk;
+			chunk.reserve(chunkEnd-c);
+			for(size_t k = c; k < chunkEnd; ++k)
+			{
+				chunk.push_back(RegistrationTask());
+				RegistrationTask & task = chunk.back();
+				task.from = candidates[k].first;
+				task.to = candidates[k].second;
+				task.fromS = getCachedSignature(task.from);
+				task.toS = getCachedSignature(task.to);
+			}
+			QApplication::processEvents();
+
+			std::atomic<bool> chunkDone(false);
+			std::atomic<bool> chunkCanceled(false);
+			std::atomic<int> chunkProcessed(0);
+			std::thread worker([&]()
+			{
+#ifdef _OPENMP
+				#pragma omp parallel for schedule(dynamic) num_threads(regThreads)
+#endif
+				for(int b = 0; b < (int)chunk.size(); ++b)
+				{
+					if(!chunkCanceled)
+					{
+						chunk[b].t = reg->computeTransformationMod(chunk[b].fromS, chunk[b].toS, Transform(), &chunk[b].info);
+					}
+					++chunkProcessed;
+				}
+				chunkDone = true;
+			});
+			int progressShown = 0;
+			while(!chunkDone)
+			{
+				if(progressDialog->isCanceled())
+				{
+					chunkCanceled = true;
+				}
+				for(int d = chunkProcessed; progressShown < d; ++progressShown)
+				{
+					progressDialog->incrementStep();
+				}
+				QApplication::processEvents();
+				QThread::msleep(20);
+			}
+			worker.join();
+			for(; progressShown < (int)chunk.size(); ++progressShown)
+			{
+				progressDialog->incrementStep();
+			}
+
+			for(size_t b = 0; b < chunk.size() && !loopFound; ++b)
+			{
+				if(!chunk[b].t.isNull())
+				{
+					// official add with the usual validation (redoes this one
+					// registration, negligible)
+					if(addConstraint(chunk[b].from, chunk[b].to, reg.get(), true, false))
+					{
+						loopFound = true;
+						foundFrom = chunk[b].from;
+						foundTo = chunk[b].to;
+						progressDialog->appendText(tr("Loop closure found between %1 and %2!").arg(foundFrom).arg(foundTo));
+					}
+				}
+			}
+			progressDialog->appendText(tr("Registered %1/%2 pairs...").arg(chunkEnd).arg(candidates.size()));
+			QApplication::processEvents();
+		}
+	}
+	else
+	{
+		int step = 0;
+		for(size_t k = 0; k < candidates.size() && !loopFound && !progressDialog->isCanceled(); ++k)
+		{
+			int from = candidates[k].first;
+			int to = candidates[k].second;
 			progressDialog->appendText(tr("Testing pair %1 and %2... (%3/%4)").arg(from).arg(to).arg(step+1).arg(totalPairs));
-			
-			QApplication::processEvents(); 
-			
+
+			QApplication::processEvents();
+
 			if(addConstraint(from, to, reg.get(), true, false))
 			{
 				loopFound = true;
