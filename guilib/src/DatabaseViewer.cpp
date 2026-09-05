@@ -4707,6 +4707,7 @@ void DatabaseViewer::registerMapViewer(CloudViewer * viewer, bool fromFile)
 		viewer->setBasemap(basemap_);
 		viewer->setCameraTopDown();
 	}
+	updateAnchorMarkersInViewers();
 }
 
 bool DatabaseViewer::reposeMapViewers(const std::map<int, Transform> & poses)
@@ -8669,8 +8670,123 @@ void DatabaseViewer::removeAnchorPoint(int landmarkId)
 	}
 }
 
+// Show the anchor priors in the open 3D map viewers: a sphere at each
+// prior's position with the anchor ID floating above it, and a red line to
+// the optimized landmark position when they disagree (the residual, made
+// visible in 3D). Refreshed whenever anchors change or the graph is
+// re-optimized.
+void DatabaseViewer::updateAnchorMarkersInViewers()
+{
+	// prune closed windows
+	for(int i=0; i<mapViewers_.size();)
+	{
+		if(!mapViewers_[i].viewer)
+		{
+			mapViewers_.removeAt(i);
+		}
+		else
+		{
+			++i;
+		}
+	}
+	if(mapViewers_.isEmpty())
+	{
+		return;
+	}
+
+	// anchors = landmarks with a pose prior (same criterion as the table)
+	std::map<int, Link> priors;
+	if(dbDriver_)
+	{
+		std::multimap<int, Link> allLinks = updateLinksWithModifications(links_);
+		for(std::multimap<int, Link>::iterator iter=allLinks.begin(); iter!=allLinks.end(); ++iter)
+		{
+			if(iter->second.from() == iter->second.to() && iter->second.from() < 0 &&
+			   iter->second.type() == Link::kPosePrior)
+			{
+				priors.insert(std::make_pair(iter->second.from(), iter->second));
+			}
+		}
+	}
+
+	const std::map<int, Transform> * optimizedPoses = graphes_.empty()?0:&graphes_.back();
+	const QColor markerColor(255, 0, 255); // magenta, stands out on clouds and basemaps
+
+	for(int i=0; i<mapViewers_.size(); ++i)
+	{
+		CloudViewer * viewer = mapViewers_[i].viewer;
+		std::set<std::string> wanted;
+		for(std::map<int, Link>::iterator iter=priors.begin(); iter!=priors.end(); ++iter)
+		{
+			const int landmarkId = iter->first;
+			const Link & prior = iter->second;
+			Transform priorPose = prior.transform();
+			const Transform * landmarkPose = 0;
+			if(optimizedPoses && optimizedPoses->find(landmarkId) != optimizedPoses->end())
+			{
+				landmarkPose = &optimizedPoses->at(landmarkId);
+			}
+			// Z-free anchors have a meaningless prior Z (0): place the marker
+			// at the optimized landmark's height so it sits on the cloud.
+			double zInf = prior.infMatrix().at<double>(2,2);
+			bool zFree = !(zInf > 0.0) || std::sqrt(1.0/zInf) >= kAnchorSigmaZFree;
+			if(zFree && landmarkPose)
+			{
+				priorPose.z() = landmarkPose->z();
+			}
+
+			std::string sphereId = uFormat("anchor_marker_%d", -landmarkId);
+			std::string textId = uFormat("anchor_text_%d", -landmarkId);
+			viewer->addOrUpdateSphere(sphereId, priorPose, 0.2f, markerColor, true);
+			viewer->addOrUpdateText(textId,
+					uNumber2Str(-landmarkId),
+					priorPose * Transform(0, 0, 0.5f, 0, 0, 0),
+					0.5,
+					markerColor);
+			wanted.insert(sphereId);
+			wanted.insert(textId);
+
+			// residual line: prior position vs optimized landmark position
+			if(landmarkPose && landmarkPose->getDistance(priorPose) > 0.01f)
+			{
+				std::string lineId = uFormat("anchor_line_%d", -landmarkId);
+				viewer->addOrUpdateLine(lineId, *landmarkPose, priorPose, Qt::red, false, true, 2.0);
+				wanted.insert(lineId);
+			}
+		}
+		// remove markers of deleted anchors (and lines of satisfied ones)
+		std::set<std::string> spheres = viewer->getAddedSpheres();
+		for(std::set<std::string>::iterator iter=spheres.begin(); iter!=spheres.end(); ++iter)
+		{
+			if(uStrContains(*iter, "anchor_marker_") && wanted.find(*iter) == wanted.end())
+			{
+				viewer->removeSphere(*iter);
+			}
+		}
+		std::set<std::string> texts = viewer->getAddedTexts();
+		for(std::set<std::string>::iterator iter=texts.begin(); iter!=texts.end(); ++iter)
+		{
+			if(uStrContains(*iter, "anchor_text_") && wanted.find(*iter) == wanted.end())
+			{
+				viewer->removeText(*iter);
+			}
+		}
+		std::set<std::string> lines = viewer->getAddedLines();
+		for(std::set<std::string>::iterator iter=lines.begin(); iter!=lines.end(); ++iter)
+		{
+			if(uStrContains(*iter, "anchor_line_") && wanted.find(*iter) == wanted.end())
+			{
+				viewer->removeLine(*iter);
+			}
+		}
+		viewer->refreshView();
+	}
+}
+
 void DatabaseViewer::updateAnchorPointsTable()
 {
+	updateAnchorMarkersInViewers();
+
 	QTableWidget * table = ui_->tableWidget_anchors;
 	if(!dbDriver_)
 	{
