@@ -3955,12 +3955,75 @@ bool Rtabmap::process(
 				statistics_.reducedIds().empty() &&
 				++_optimizationsDeferred < _optimizeEveryNSteps)
 		{
-			// Deferred optimization (RGBD/OptimizeEveryNSteps): keep chaining poses with
-			// odometry and the current map correction. Accumulated closures will be
-			// checked against RGBD/OptimizeMaxError at the next real optimization.
+			// Skip the full solve, but still place the live node from any
+			// closure accepted this iteration. Proximity's 1 m path filter
+			// uses _optimizedPoses; without this it keeps the pre-loop pose
+			// and later frames in the same revisit never get a try.
 			_deferredClosureLinks.insert(_deferredClosureLinks.end(), loopClosureLinksAdded.begin(), loopClosureLinksAdded.end());
-			UINFO("Map optimization deferred (%d/%d, %d closure links pending)",
-					_optimizationsDeferred, _optimizeEveryNSteps, (int)_deferredClosureLinks.size());
+			if(!loopClosureLinksAdded.empty())
+			{
+				int bestTo = 0;
+				Transform bestPose;
+				float bestResidual = -1.0f;
+				for(std::list<std::pair<int, int> >::const_iterator iter=loopClosureLinksAdded.begin();
+					iter!=loopClosureLinksAdded.end();
+					++iter)
+				{
+					if(!uContains(_optimizedPoses, iter->second) || !signature->hasLink(iter->second))
+					{
+						continue;
+					}
+					std::multimap<int, Link>::const_iterator lter = graph::findLink(signature->getLinks(), iter->first, iter->second);
+					if(lter == signature->getLinks().end())
+					{
+						continue;
+					}
+					// pose_to ≈ pose_from * t  →  pose_current from the old node
+					Transform snapped;
+					if(lter->second.from() == signature->id())
+					{
+						snapped = _optimizedPoses.at(iter->second) * lter->second.transform().inverse();
+					}
+					else
+					{
+						snapped = _optimizedPoses.at(iter->second) * lter->second.transform();
+					}
+					if(snapped.isNull())
+					{
+						continue;
+					}
+					float residual = snapped.getDistance(_optimizedPoses.at(signature->id()));
+					if(residual > bestResidual)
+					{
+						bestResidual = residual;
+						bestPose = snapped;
+						bestTo = iter->second;
+					}
+					if(graph::findLink(_constraints, iter->first, iter->second, false) == _constraints.end())
+					{
+						_constraints.insert(std::make_pair(iter->first, lter->second));
+					}
+				}
+				if(bestTo != 0)
+				{
+					_optimizedPoses.at(signature->id()) = bestPose;
+					UINFO("Map optimization deferred (%d/%d, %d closure links pending), "
+							"snapped pose %d to link %d (residual=%.2f m)",
+							_optimizationsDeferred, _optimizeEveryNSteps,
+							(int)_deferredClosureLinks.size(),
+							signature->id(), bestTo, bestResidual);
+				}
+				else
+				{
+					UINFO("Map optimization deferred (%d/%d, %d closure links pending)",
+							_optimizationsDeferred, _optimizeEveryNSteps, (int)_deferredClosureLinks.size());
+				}
+			}
+			else
+			{
+				UINFO("Map optimization deferred (%d/%d, %d closure links pending)",
+						_optimizationsDeferred, _optimizeEveryNSteps, (int)_deferredClosureLinks.size());
+			}
 		}
 		else
 		{
