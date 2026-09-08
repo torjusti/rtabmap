@@ -1078,9 +1078,8 @@ ParametersMap DBDriverSqlite3::getLastParametersQuery() const
 			std::string query;
 			if(uStrNumCmp(_version, "0.11.11") >= 0)
 			{
-				// LIMIT 1: DATETIME('NOW') is second-resolution, so two
-				// addInfoAfterRun() calls in the same second can share the
-				// same time_enter. Prefer the latest rowid in that case.
+				// DATETIME('NOW') is 1 s, so two writes in the same second
+				// share time_enter. MAX() can match several rows; take the newest.
 				query = "SELECT parameters "
 						 "FROM Info "
 						 "WHERE time_enter >= (SELECT MAX(time_enter) FROM Info) "
