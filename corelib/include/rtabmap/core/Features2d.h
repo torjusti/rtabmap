@@ -261,6 +261,7 @@ public:
 	bool getSSC() const {return SSC_;}
 	float getMinDepth() const {return _minDepth;}
 	float getMaxDepth() const {return _maxDepth;}
+	unsigned char getDepthConfidenceThr() const {return _depthConfidenceThr;}
 	int getGridRows() const {return gridRows_;}
 	int getGridCols() const {return gridCols_;}
 
@@ -306,6 +307,7 @@ private:
 	bool SSC_;
 	float _maxDepth; // 0=inf
 	float _minDepth;
+	unsigned char _depthConfidenceThr; // 0=disabled; ignore 3D if conf < thr
 	std::vector<float> _roiRatios; // size 4
 	int _subPixWinSize;
 	int _subPixIterations;

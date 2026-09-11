@@ -77,7 +77,9 @@ std::vector<cv::Point3f> RTABMAP_CORE_EXPORT generateKeypoints3DDepth(
 		const cv::Mat & depth,
 		const std::vector<CameraModel> & cameraModels,
 		float minDepth = 0,
-		float maxDepth = 0);
+		float maxDepth = 0,
+		const cv::Mat & depthConfidence = cv::Mat(),
+		unsigned char depthConfidenceThr = 0);
 /**
  * @brief Projects 2D keypoints to 3D space using the provided depth image and camera model.
  * 
@@ -88,7 +90,9 @@ std::vector<cv::Point3f> RTABMAP_CORE_EXPORT generateKeypoints3DDepth(
 		const cv::Mat & depth,
 		const CameraModel & cameraModel,
 		float minDepth = 0,
-		float maxDepth = 0);
+		float maxDepth = 0,
+		const cv::Mat & depthConfidence = cv::Mat(),
+		unsigned char depthConfidenceThr = 0);
 
 /**
  * @brief Projects 2D keypoints into 3D space using a disparity image and a stereo camera model.
