@@ -64,6 +64,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QInputDialog>
 #include <QWindow>
 #include <QScreen>
+#include <QCheckBox>
+#include <QLabel>
 #include <algorithm>
 
 #ifdef _OPENMP
@@ -97,7 +99,9 @@ ExportCloudsDialog::ExportCloudsDialog(QWidget *parent) :
 	_dbDriver(0),
 	_scansHaveRGB(false),
 	_anchorPointsEnabled(false),
-	_captureViewLocalClouds(false)
+	_captureViewLocalClouds(false),
+	_checkBoxKeepLocalClouds(0),
+	_labelKeepLocalClouds(0)
 {
 	_ui = new Ui_ExportCloudsDialog();
 	_ui->setupUi(this);
@@ -114,6 +118,13 @@ ExportCloudsDialog::ExportCloudsDialog(QWidget *parent) :
 	_ui->spinBox_numThreads->setEnabled(false);
 	_ui->label_numThreads->setEnabled(false);
 #endif
+
+	_checkBoxKeepLocalClouds = new QCheckBox();
+	_checkBoxKeepLocalClouds->setChecked(true);
+	_labelKeepLocalClouds = new QLabel(tr("Keep per-node clouds in RAM so this view can follow graph updates (live optimization / F5). Uncheck on large maps to use less memory; the assembled view will then stay frozen after re-optimization."));
+	_labelKeepLocalClouds->setWordWrap(true);
+	_ui->gridLayout_8->addWidget(_checkBoxKeepLocalClouds, 20, 0);
+	_ui->gridLayout_8->addWidget(_labelKeepLocalClouds, 20, 1);
 
 	connect(_ui->buttonBox->button(QDialogButtonBox::RestoreDefaults), SIGNAL(clicked()), this, SLOT(restoreDefaults()));
 	QPushButton * loadSettingsButton = _ui->buttonBox->addButton("Load Settings", QDialogButtonBox::ActionRole);
@@ -147,6 +158,7 @@ ExportCloudsDialog::ExportCloudsDialog(QWidget *parent) :
 	connect(_ui->checkBox_regenerate, SIGNAL(stateChanged(int)), this, SIGNAL(configChanged()));
 	connect(_ui->checkBox_regenerate, SIGNAL(stateChanged(int)), this, SLOT(updateReconstructionFlavor()));
 	connect(_ui->spinBox_numThreads, SIGNAL(valueChanged(int)), this, SIGNAL(configChanged()));
+	connect(_checkBoxKeepLocalClouds, SIGNAL(stateChanged(int)), this, SIGNAL(configChanged()));
 	connect(_ui->spinBox_decimation, SIGNAL(valueChanged(int)), this, SIGNAL(configChanged()));
 	connect(_ui->doubleSpinBox_maxDepth, SIGNAL(valueChanged(double)), this, SIGNAL(configChanged()));
 	connect(_ui->doubleSpinBox_minDepth, SIGNAL(valueChanged(double)), this, SIGNAL(configChanged()));
@@ -403,6 +415,7 @@ void ExportCloudsDialog::saveSettings(QSettings & settings, const QString & grou
 
 	settings.setValue("regenerate", _ui->checkBox_regenerate->isChecked());
 	settings.setValue("num_threads", _ui->spinBox_numThreads->value());
+	settings.setValue("keep_local_clouds", _checkBoxKeepLocalClouds->isChecked());
 	settings.setValue("regenerate_decimation", _ui->spinBox_decimation->value());
 	settings.setValue("regenerate_max_depth", _ui->doubleSpinBox_maxDepth->value());
 	settings.setValue("regenerate_min_depth", _ui->doubleSpinBox_minDepth->value());
@@ -589,6 +602,7 @@ void ExportCloudsDialog::loadSettings(QSettings & settings, const QString & grou
 
 	_ui->checkBox_regenerate->setChecked(settings.value("regenerate", _ui->checkBox_regenerate->isChecked()).toBool());
 	_ui->spinBox_numThreads->setValue(settings.value("num_threads", _ui->spinBox_numThreads->value()).toInt());
+	_checkBoxKeepLocalClouds->setChecked(settings.value("keep_local_clouds", _checkBoxKeepLocalClouds->isChecked()).toBool());
 	_ui->spinBox_decimation->setValue(settings.value("regenerate_decimation", _ui->spinBox_decimation->value()).toInt());
 	_ui->doubleSpinBox_maxDepth->setValue(settings.value("regenerate_max_depth", _ui->doubleSpinBox_maxDepth->value()).toDouble());
 	_ui->doubleSpinBox_minDepth->setValue(settings.value("regenerate_min_depth", _ui->doubleSpinBox_minDepth->value()).toDouble());
@@ -778,6 +792,7 @@ void ExportCloudsDialog::restoreDefaults()
 
 	_ui->checkBox_regenerate->setChecked(_dbDriver!=0?true:false);
 	_ui->spinBox_numThreads->setValue(0);
+	_checkBoxKeepLocalClouds->setChecked(true);
 	_ui->spinBox_decimation->setValue(1);
 	_ui->doubleSpinBox_maxDepth->setValue(4);
 	_ui->doubleSpinBox_minDepth->setValue(0);
@@ -1132,6 +1147,8 @@ void ExportCloudsDialog::setSaveButton()
 	_ui->checkBox_mesh_quad->setVisible(false);
 	_ui->checkBox_mesh_quad->setEnabled(false);
 	_ui->label_quad->setVisible(false);
+	_checkBoxKeepLocalClouds->setVisible(false);
+	_labelKeepLocalClouds->setVisible(false);
 	updateReconstructionFlavor();
 }
 
@@ -1145,6 +1162,8 @@ void ExportCloudsDialog::setOkButton()
 	_ui->checkBox_mesh_quad->setVisible(true);
 	_ui->checkBox_mesh_quad->setEnabled(true);
 	_ui->label_quad->setVisible(true);
+	_checkBoxKeepLocalClouds->setVisible(true);
+	_labelKeepLocalClouds->setVisible(true);
 	updateReconstructionFlavor();
 }
 
@@ -1278,10 +1297,10 @@ void ExportCloudsDialog::viewClouds(
 
 	setOkButton();
 
-	// Keep the per-node clouds around while assembling so that the view can
+	// Keep the per-node clouds around while assembling so the view can
 	// be re-assembled cheaply after a re-optimization (see takeViewLocalClouds()).
 	_viewLocalClouds.clear();
-	_captureViewLocalClouds = true;
+	_captureViewLocalClouds = _checkBoxKeepLocalClouds->isChecked();
 
 	if(getExportedClouds(
 			poses,

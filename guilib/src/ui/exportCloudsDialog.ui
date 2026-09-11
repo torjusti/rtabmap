@@ -422,7 +422,7 @@
          <item row="14" column="1">
           <widget class="QLabel" name="label_numThreads">
            <property name="text">
-            <string>Number of threads used to generate the clouds and to texture the mesh (Auto=one per core, 1=process them one by one).</string>
+            <string>Number of threads used to generate the clouds and to texture the mesh. Auto = one per core. Set 1 to generate sequentially if parallel generation is slow or unstable.</string>
            </property>
            <property name="wordWrap">
             <bool>true</bool>
