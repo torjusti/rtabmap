@@ -46,6 +46,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 class Ui_ExportCloudsDialog;
 class QAbstractButton;
+class QCheckBox;
+class QLabel;
 
 namespace clams {
 class DiscreteDepthDistortionModel;
@@ -197,6 +199,8 @@ private:
 	bool _anchorPointsEnabled;
 	bool _captureViewLocalClouds;
 	std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr> _viewLocalClouds;
+	QCheckBox * _checkBoxKeepLocalClouds;
+	QLabel * _labelKeepLocalClouds;
 
     bool saveOBJFile(const QString &path, pcl::TextureMesh::Ptr &mesh) const;
     bool saveOBJFile(const QString &path, pcl::PolygonMesh &mesh) const;

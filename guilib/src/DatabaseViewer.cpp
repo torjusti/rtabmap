@@ -46,6 +46,11 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QCheckBox>
 #include <QLineEdit>
 #include <QRegularExpression>
+#include <QClipboard>
+#include <QKeyEvent>
+#include <QMenu>
+#include <QContextMenuEvent>
+#include <QAction>
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QPushButton>
@@ -4933,9 +4938,10 @@ bool DatabaseViewer::reposeMapViewers(const std::map<int, Transform> & poses)
 	{
 		assembledViewerHintShown_ = true;
 		QMessageBox::information(this, tr("3D map view"),
-				tr("This 3D view cannot follow re-optimizations (assembled meshes and "
-				   "views older than this session cannot be re-posed). Regenerate the "
-				   "view to see the new poses."));
+				tr("This 3D view cannot follow re-optimizations (assembled meshes, "
+				   "views older than this session, or views generated with "
+				   "\"Keep per-node clouds\" unchecked). Regenerate the view "
+				   "with that option enabled to see the new poses."));
 	}
 	return reposed;
 }
@@ -8695,48 +8701,104 @@ bool DatabaseViewer::getAnchorPointInput(
 	spinY->setRange(-1e9, 1e9); spinY->setDecimals(3); spinY->setSuffix(" m"); spinY->setValue(worldY);
 	QDoubleSpinBox * spinZ = new QDoubleSpinBox(&dialog);
 	spinZ->setRange(-1e9, 1e9); spinZ->setDecimals(3); spinZ->setSuffix(" m"); spinZ->setValue(worldZ);
-
-	// Paste "X,Y" (or "X,Y,Z") directly, e.g. coordinates copied from QGIS,
-	// to fill the spin boxes below in one go.
-	QLineEdit * pasteEdit = new QLineEdit(&dialog);
-	pasteEdit->setPlaceholderText(tr("e.g. 291910.3,6250216.8 (copied from QGIS)"));
-	pasteEdit->setToolTip(tr("Paste coordinates as \"X,Y\" or \"X,Y,Z\" (decimal point, separated "
-			"by comma, semicolon or spaces) to fill the fields below automatically. "
-			"The first point is stored as (0, 0); later points are metres from that origin."));
 	QCheckBox * checkZFree = new QCheckBox(tr("Elevation (Z) unknown, leave unconstrained"), &dialog);
-	connect(pasteEdit, &QLineEdit::textChanged, &dialog, [spinX, spinY, spinZ, checkZFree](const QString & text)
+
+	// Paste "X,Y" or "X,Y,Z" (QGIS, etc.) into any coordinate field to fill them.
+	class CoordinatePasteFilter : public QObject
 	{
-		QRegularExpression re(
-				"^\\s*(-?\\d+(?:\\.\\d+)?)\\s*[,;\\s]\\s*(-?\\d+(?:\\.\\d+)?)"
-				"(?:\\s*[,;\\s]\\s*(-?\\d+(?:\\.\\d+)?))?\\s*$");
-		QRegularExpressionMatch match = re.match(text);
-		if(match.hasMatch())
+	public:
+		CoordinatePasteFilter(
+				QDoubleSpinBox * x, QDoubleSpinBox * y, QDoubleSpinBox * z,
+				QCheckBox * zFree, QObject * parent) :
+			QObject(parent),
+			spinX_(x),
+			spinY_(y),
+			spinZ_(z),
+			checkZFree_(zFree)
+		{}
+		bool eventFilter(QObject * watched, QEvent * event) override
 		{
-			spinX->setValue(match.captured(1).toDouble());
-			spinY->setValue(match.captured(2).toDouble());
+			if(event->type() == QEvent::KeyPress || event->type() == QEvent::ShortcutOverride)
+			{
+				QKeyEvent * ke = static_cast<QKeyEvent*>(event);
+				if(ke->matches(QKeySequence::Paste) && applyClipboard())
+				{
+					event->accept();
+					return true;
+				}
+			}
+			else if(event->type() == QEvent::ContextMenu)
+			{
+				QLineEdit * le = qobject_cast<QLineEdit*>(watched);
+				if(le)
+				{
+					QMenu * menu = le->createStandardContextMenu();
+					const QKeySequence pasteSeq(QKeySequence::Paste);
+					const QList<QAction*> actions = menu->actions();
+					for(int i=0; i<actions.size(); ++i)
+					{
+						QAction * a = actions[i];
+						if(a->shortcut() == pasteSeq || a->objectName() == QLatin1String("edit-paste"))
+						{
+							a->disconnect();
+							QObject::connect(a, &QAction::triggered, this, [this, le]() {
+								if(!applyClipboard())
+								{
+									le->paste();
+								}
+							});
+							break;
+						}
+					}
+					menu->exec(static_cast<QContextMenuEvent*>(event)->globalPos());
+					delete menu;
+					return true;
+				}
+			}
+			return QObject::eventFilter(watched, event);
+		}
+	private:
+		bool applyClipboard()
+		{
+			const QRegularExpression re(
+					"^\\s*(-?\\d+(?:\\.\\d+)?)\\s*[,;\\s]\\s*(-?\\d+(?:\\.\\d+)?)"
+					"(?:\\s*[,;\\s]\\s*(-?\\d+(?:\\.\\d+)?))?\\s*$");
+			const QRegularExpressionMatch match = re.match(QApplication::clipboard()->text());
+			if(!match.hasMatch())
+			{
+				return false;
+			}
+			spinX_->setValue(match.captured(1).toDouble());
+			spinY_->setValue(match.captured(2).toDouble());
 			if(!match.captured(3).isEmpty())
 			{
-				spinZ->setValue(match.captured(3).toDouble());
-				// an explicit elevation was provided, use it
-				checkZFree->setChecked(false);
+				spinZ_->setValue(match.captured(3).toDouble());
+				checkZFree_->setChecked(false);
 			}
+			return true;
 		}
-	});
-	form->addRow(tr("Paste coordinates:"), pasteEdit);
+		QDoubleSpinBox * spinX_;
+		QDoubleSpinBox * spinY_;
+		QDoubleSpinBox * spinZ_;
+		QCheckBox * checkZFree_;
+	};
+	CoordinatePasteFilter * pasteFilter = new CoordinatePasteFilter(spinX, spinY, spinZ, checkZFree, &dialog);
+	QList<QDoubleSpinBox*> coordSpins;
+	coordSpins << spinX << spinY << spinZ;
+	const QString pasteTip = tr("Paste a number, or \"X,Y\" / \"X,Y,Z\" (comma, semicolon or space, decimal point) to fill these fields.");
+	for(int i=0; i<coordSpins.size(); ++i)
+	{
+		coordSpins[i]->setToolTip(pasteTip);
+		coordSpins[i]->installEventFilter(pasteFilter);
+		if(QLineEdit * le = coordSpins[i]->findChild<QLineEdit*>())
+		{
+			le->installEventFilter(pasteFilter);
+		}
+	}
 
 	form->addRow(tr("World X (easting):"), spinX);
 	form->addRow(tr("World Y (northing):"), spinY);
 	form->addRow(tr("World Z (elevation):"), spinZ);
-
-	if(anchorFrameOffsetSet_)
-	{
-		QLabel * originLabel = new QLabel(
-				tr("Stored relative to first anchor at X=%1, Y=%2 (map frame origin).")
-				.arg(anchorFrameOffsetX_, 0, 'f', 3)
-				.arg(anchorFrameOffsetY_, 0, 'f', 3), &dialog);
-		originLabel->setWordWrap(true);
-		form->addRow(originLabel);
-	}
 
 	checkZFree->setChecked(zUnconstrained);
 	checkZFree->setToolTip(tr("When checked, the prior does not constrain Z at all; the optimizer keeps "
