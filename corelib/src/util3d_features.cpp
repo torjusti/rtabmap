@@ -56,10 +56,14 @@ std::vector<cv::Point3f> generateKeypoints3DDepth(
 		const cv::Mat & depth,
 		const std::vector<CameraModel> & cameraModels,
 		float minDepth,
-		float maxDepth)
+		float maxDepth,
+		const cv::Mat & depthConfidence,
+		unsigned char depthConfidenceThr)
 {
 	UASSERT(!depth.empty() && (depth.type() == CV_32FC1 || depth.type() == CV_16UC1));
 	UASSERT(cameraModels.size());
+	UASSERT(depthConfidence.empty() || depthConfidenceThr == 0 ||
+			(depthConfidence.type() == CV_8UC1 && depthConfidence.size() == depth.size()));
 	std::vector<cv::Point3f> keypoints3d;
 	if(!depth.empty())
 	{
@@ -69,6 +73,7 @@ std::vector<cv::Point3f> generateKeypoints3DDepth(
 		float rgbToDepthFactorX = 1.0f/(cameraModels[0].imageWidth()>0?float(cameraModels[0].imageWidth())/subImageWidth:1.0f);
 		float rgbToDepthFactorY = 1.0f/(cameraModels[0].imageHeight()>0?float(cameraModels[0].imageHeight())/float(depth.rows):1.0f);
 		float bad_point = std::numeric_limits<float>::quiet_NaN ();
+		const bool filterConf = !depthConfidence.empty() && depthConfidenceThr > 0;
 		for(unsigned int i=0; i<keypoints.size(); ++i)
 		{
 			float x = keypoints[i].pt.x*rgbToDepthFactorX;
@@ -78,26 +83,43 @@ std::vector<cv::Point3f> generateKeypoints3DDepth(
 					uFormat("cameraIndex=%d, models=%d, kpt.x=%f, subImageWidth=%f (Camera model image width=%d)",
 							cameraIndex, (int)cameraModels.size(), keypoints[i].pt.x, subImageWidth, cameraModels[0].imageWidth()).c_str());
 
-			pcl::PointXYZ ptXYZ = util3d::projectDepthTo3D(
-					cameraModels.size()==1?depth:cv::Mat(depth, cv::Range::all(), cv::Range(subImageWidth*cameraIndex,subImageWidth*(cameraIndex+1))),
-					x-subImageWidth*cameraIndex,
-					y,
-					cameraModels.at(cameraIndex).cx()*rgbToDepthFactorX,
-					cameraModels.at(cameraIndex).cy()*rgbToDepthFactorY,
-					cameraModels.at(cameraIndex).fx()*rgbToDepthFactorX,
-					cameraModels.at(cameraIndex).fy()*rgbToDepthFactorY,
-					true);
-
 			cv::Point3f pt(bad_point, bad_point, bad_point);
-			if(pcl::isFinite(ptXYZ) &&
-				(minDepth < 0.0f || ptXYZ.z > minDepth) &&
-				(maxDepth <= 0.0f || ptXYZ.z <= maxDepth))
+			bool confOk = true;
+			if(filterConf)
 			{
-				pt = cv::Point3f(ptXYZ.x, ptXYZ.y, ptXYZ.z);
-				if(!cameraModels.at(cameraIndex).localTransform().isNull() &&
-				   !cameraModels.at(cameraIndex).localTransform().isIdentity())
+				int ix = (int)x;
+				int iy = (int)y;
+				if(ix >= 0 && iy >= 0 && ix < depthConfidence.cols && iy < depthConfidence.rows)
 				{
-					pt = util3d::transformPoint(pt, cameraModels.at(cameraIndex).localTransform());
+					confOk = depthConfidence.at<unsigned char>(iy, ix) >= depthConfidenceThr;
+				}
+				else
+				{
+					confOk = false;
+				}
+			}
+			if(confOk)
+			{
+				pcl::PointXYZ ptXYZ = util3d::projectDepthTo3D(
+						cameraModels.size()==1?depth:cv::Mat(depth, cv::Range::all(), cv::Range(subImageWidth*cameraIndex,subImageWidth*(cameraIndex+1))),
+						x-subImageWidth*cameraIndex,
+						y,
+						cameraModels.at(cameraIndex).cx()*rgbToDepthFactorX,
+						cameraModels.at(cameraIndex).cy()*rgbToDepthFactorY,
+						cameraModels.at(cameraIndex).fx()*rgbToDepthFactorX,
+						cameraModels.at(cameraIndex).fy()*rgbToDepthFactorY,
+						true);
+
+				if(pcl::isFinite(ptXYZ) &&
+					(minDepth < 0.0f || ptXYZ.z > minDepth) &&
+					(maxDepth <= 0.0f || ptXYZ.z <= maxDepth))
+				{
+					pt = cv::Point3f(ptXYZ.x, ptXYZ.y, ptXYZ.z);
+					if(!cameraModels.at(cameraIndex).localTransform().isNull() &&
+					   !cameraModels.at(cameraIndex).localTransform().isIdentity())
+					{
+						pt = util3d::transformPoint(pt, cameraModels.at(cameraIndex).localTransform());
+					}
 				}
 			}
 			keypoints3d.at(i) = pt;
@@ -111,12 +133,14 @@ std::vector<cv::Point3f> generateKeypoints3DDepth(
 		const cv::Mat & depth,
 		const CameraModel & cameraModel,
 		float minDepth,
-		float maxDepth)
+		float maxDepth,
+		const cv::Mat & depthConfidence,
+		unsigned char depthConfidenceThr)
 {
 	UASSERT(cameraModel.isValidForProjection());
 	std::vector<CameraModel> models;
 	models.push_back(cameraModel);
-	return generateKeypoints3DDepth(keypoints, depth, models, minDepth, maxDepth);
+	return generateKeypoints3DDepth(keypoints, depth, models, minDepth, maxDepth, depthConfidence, depthConfidenceThr);
 }
 
 std::vector<cv::Point3f> generateKeypoints3DDisparity(

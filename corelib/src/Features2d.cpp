@@ -532,6 +532,7 @@ Feature2D::Feature2D(const ParametersMap & parameters) :
 		SSC_(Parameters::defaultKpSSC()),
 		_maxDepth(Parameters::defaultKpMaxDepth()),
 		_minDepth(Parameters::defaultKpMinDepth()),
+		_depthConfidenceThr((unsigned char)Parameters::defaultKpDepthConfidenceThr()),
 		_roiRatios(std::vector<float>(4, 0.0f)),
 		_subPixWinSize(Parameters::defaultKpSubPixWinSize()),
 		_subPixIterations(Parameters::defaultKpSubPixIterations()),
@@ -554,6 +555,15 @@ void Feature2D::parseParameters(const ParametersMap & parameters)
 	Parameters::parse(parameters, Parameters::kKpSSC(), SSC_);
 	Parameters::parse(parameters, Parameters::kKpMaxDepth(), _maxDepth);
 	Parameters::parse(parameters, Parameters::kKpMinDepth(), _minDepth);
+	unsigned int depthConfThr = (unsigned int)_depthConfidenceThr;
+	Parameters::parse(parameters, Parameters::kKpDepthConfidenceThr(), depthConfThr);
+	if(depthConfThr > 100)
+	{
+		UWARN("%s=%u is out of range [0,100], clamping to 100.",
+				Parameters::kKpDepthConfidenceThr().c_str(), depthConfThr);
+		depthConfThr = 100;
+	}
+	_depthConfidenceThr = (unsigned char)depthConfThr;
 	Parameters::parse(parameters, Parameters::kKpSubPixWinSize(), _subPixWinSize);
 	Parameters::parse(parameters, Parameters::kKpSubPixIterations(), _subPixIterations);
 	Parameters::parse(parameters, Parameters::kKpSubPixEps(), _subPixEps);
@@ -1170,7 +1180,9 @@ std::vector<cv::Point3f> Feature2D::generateKeypoints3D(
 					data.depthOrRightRaw(),
 					data.cameraModels(),
 					_minDepth,
-					_maxDepth);
+					_maxDepth,
+					data.depthConfidenceRaw(),
+					_depthConfidenceThr);
 		}
 	}
 

@@ -86,6 +86,30 @@ TEST(Util3dFeaturesTest, GenerateKeypoints3DDepthMultiCameras) {
     EXPECT_NEAR(keypoints3d[3].x, -2.0f, 1e-5);
 }
 
+TEST(Util3dFeaturesTest, GenerateKeypoints3DDepthConfidenceFilter) {
+    std::vector<cv::KeyPoint> keypoints = {
+        cv::KeyPoint(10.0f, 10.0f, 1.0f),
+        cv::KeyPoint(20.0f, 20.0f, 1.0f)
+    };
+    cv::Mat depth = cv::Mat::ones(30, 30, CV_32FC1) * 2.0f;
+    cv::Mat conf = cv::Mat::zeros(30, 30, CV_8UC1);
+    conf.at<unsigned char>(10, 10) = 80; // first keypoint high conf
+    conf.at<unsigned char>(20, 20) = 20; // second keypoint low conf
+    CameraModel model(100, 100, 15, 15, Transform::getIdentity(), 0, cv::Size(30,30));
+
+    // thr=0: both valid
+    auto k3d = util3d::generateKeypoints3DDepth(keypoints, depth, model, 0, 0, conf, 0);
+    ASSERT_EQ(k3d.size(), 2u);
+    EXPECT_TRUE(util3d::isFinite(k3d[0]));
+    EXPECT_TRUE(util3d::isFinite(k3d[1]));
+
+    // thr=40: only first kept
+    k3d = util3d::generateKeypoints3DDepth(keypoints, depth, model, 0, 0, conf, 40);
+    ASSERT_EQ(k3d.size(), 2u);
+    EXPECT_TRUE(util3d::isFinite(k3d[0]));
+    EXPECT_FALSE(util3d::isFinite(k3d[1]));
+}
+
 TEST(Util3dFeaturesTest, GenerateKeypoints3DDisparityValidDisparity) {
     std::vector<cv::KeyPoint> keypoints = {
         cv::KeyPoint(5.0f, 5.0f, 1.0f),

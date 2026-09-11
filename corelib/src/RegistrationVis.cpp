@@ -162,6 +162,7 @@ RegistrationVis::RegistrationVis(const ParametersMap & parameters, Registration 
 	uInsert(_featureParameters, ParametersPair(Parameters::kKpSSC(), _featureParameters.at(Parameters::kVisSSC())));
 	uInsert(_featureParameters, ParametersPair(Parameters::kKpMaxDepth(), _featureParameters.at(Parameters::kVisMaxDepth())));
 	uInsert(_featureParameters, ParametersPair(Parameters::kKpMinDepth(), _featureParameters.at(Parameters::kVisMinDepth())));
+	uInsert(_featureParameters, ParametersPair(Parameters::kKpDepthConfidenceThr(), _featureParameters.at(Parameters::kVisDepthConfidenceThr())));
 	uInsert(_featureParameters, ParametersPair(Parameters::kKpRoiRatios(), _featureParameters.at(Parameters::kVisRoiRatios())));
 	uInsert(_featureParameters, ParametersPair(Parameters::kKpSubPixEps(), _featureParameters.at(Parameters::kVisSubPixWinSize())));
 	uInsert(_featureParameters, ParametersPair(Parameters::kKpSubPixIterations(), _featureParameters.at(Parameters::kVisSubPixIterations())));
@@ -322,6 +323,10 @@ void RegistrationVis::parseParameters(const ParametersMap & parameters)
 	if(uContains(parameters, Parameters::kVisMinDepth()))
 	{
 		uInsert(_featureParameters, ParametersPair(Parameters::kKpMinDepth(), parameters.at(Parameters::kVisMinDepth())));
+	}
+	if(uContains(parameters, Parameters::kVisDepthConfidenceThr()))
+	{
+		uInsert(_featureParameters, ParametersPair(Parameters::kKpDepthConfidenceThr(), parameters.at(Parameters::kVisDepthConfidenceThr())));
 	}
 	if(uContains(parameters, Parameters::kVisRoiRatios()))
 	{
