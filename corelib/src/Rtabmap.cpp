@@ -6381,8 +6381,6 @@ int Rtabmap::detectMoreLoopClosures(
 			}
 		}
 
-		}
-
 		// No upfront graph-distance filtering here: the check is done per
 		// candidate against the live adjacency (which includes the loop
 		// closures accepted so far), in both the parallel and serial paths.
