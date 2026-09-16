@@ -52,6 +52,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QtGui/QVector3D>
 #include <QMainWindow>
 #include <set>
+#include <algorithm>
 
 #include <vtkCamera.h>
 #include <vtkPropPicker.h>
@@ -2579,17 +2580,25 @@ void CloudViewer::centerCameraOnVisible(bool onlyIfOutOfView)
 	double bounds[6];
 	if(!computeVisibleBounds(bounds))
 	{
-		// nothing displayed
+		return;
+	}
+	centerCameraOnBounds(bounds, false, onlyIfOutOfView);
+}
+
+void CloudViewer::centerCameraOnBounds(const double bounds[6], bool topDown, bool onlyIfOutOfView)
+{
+	if(bounds[0] > bounds[1] || bounds[2] > bounds[3] || bounds[4] > bounds[5])
+	{
 		return;
 	}
 
 	double cx = (bounds[0]+bounds[1])/2.0;
 	double cy = (bounds[2]+bounds[3])/2.0;
 	double cz = (bounds[4]+bounds[5])/2.0;
-	double diagonal = sqrt(
-			(bounds[1]-bounds[0])*(bounds[1]-bounds[0]) +
-			(bounds[3]-bounds[2])*(bounds[3]-bounds[2]) +
-			(bounds[5]-bounds[4])*(bounds[5]-bounds[4]));
+	double width = std::max(bounds[1]-bounds[0], 1.0);
+	double height = std::max(bounds[3]-bounds[2], 1.0);
+	double depth = std::max(bounds[5]-bounds[4], 1.0);
+	double diagonal = sqrt(width*width + height*height + depth*depth);
 
 	if(onlyIfOutOfView)
 	{
@@ -2602,7 +2611,37 @@ void CloudViewer::centerCameraOnVisible(bool onlyIfOutOfView)
 		}
 	}
 
-	// elevated side view containing all the data, z up
+	if(topDown)
+	{
+		vtkInteractorStyle * style = _visualizer->getInteractorStyle();
+		if(style && style->GetCurrentRenderer() == NULL)
+		{
+			style->SetCurrentRenderer(style->GetDefaultRenderer());
+		}
+		setCameraOrtho(true);
+
+		double distance = std::max(std::max(width, height), 5.0);
+		this->setCameraPosition(
+				(float)cx, (float)cy, (float)(cz + distance),
+				(float)cx, (float)cy, (float)cz,
+				0, 1, 0);
+
+		int * size = _visualizer->getRenderWindow()->GetSize();
+		double aspect = size[1] > 0 ? double(size[0])/double(size[1]) : 1.0;
+		double parallelScale = std::max(height, width/aspect) * 0.55;
+		vtkRenderer* renderer = NULL;
+		_visualizer->getRendererCollection()->InitTraversal ();
+		while ((renderer = _visualizer->getRendererCollection()->GetNextItem ()) != NULL)
+		{
+			vtkCamera * cam = renderer->GetActiveCamera();
+			cam->SetParallelProjection(true);
+			cam->SetParallelScale(parallelScale);
+		}
+		_lastCameraOrientation= _lastCameraPose = cv::Vec3f(0,0,0);
+		this->refreshView();
+		return;
+	}
+
 	double distance = diagonal>0.0?diagonal:10.0;
 	this->setCameraPosition(
 			(float)(cx - distance), (float)cy, (float)(cz + 0.5*distance),
@@ -2940,53 +2979,18 @@ bool CloudViewer::pickBasemap(const QPoint & widgetPos, double & mapX, double & 
 void CloudViewer::setCameraTopDown()
 {
 	double bounds[6];
-	bool hasData = computeVisibleBounds(bounds);
-	double cx = 0.0, cy = 0.0, cz = 0.0, width = 10.0, height = 10.0;
-	if(hasData)
+	if(computeVisibleBounds(bounds))
 	{
-		cx = (bounds[0]+bounds[1])/2.0;
-		cy = (bounds[2]+bounds[3])/2.0;
-		cz = (bounds[4]+bounds[5])/2.0;
-		width = std::max(bounds[1]-bounds[0], 1.0);
-		height = std::max(bounds[3]-bounds[2], 1.0);
-	}
-	else
-	{
-		float px, py, pz, fx, fy, fz, ux, uy, uz;
-		getCameraPosition(px, py, pz, fx, fy, fz, ux, uy, uz);
-		cx = fx; cy = fy; cz = fz;
+		centerCameraOnBounds(bounds, true);
+		return;
 	}
 
-	// The interactor style needs a current renderer to switch to ortho mode
-	// (it is normally only set after the first mouse event).
-	vtkInteractorStyle * style = _visualizer->getInteractorStyle();
-	if(style && style->GetCurrentRenderer() == NULL)
-	{
-		style->SetCurrentRenderer(style->GetDefaultRenderer());
-	}
-	setCameraOrtho(true);
-
-	double distance = std::max(width, height);
-	distance = std::max(distance, 5.0);
-	this->setCameraPosition(
-			(float)cx, (float)cy, (float)(cz + distance),
-			(float)cx, (float)cy, (float)cz,
-			0, 1, 0);
-
-	// fit the data in the viewport
-	int * size = _visualizer->getRenderWindow()->GetSize();
-	double aspect = size[1] > 0 ? double(size[0])/double(size[1]) : 1.0;
-	double parallelScale = std::max(height, width/aspect) * 0.55;
-	vtkRenderer* renderer = NULL;
-	_visualizer->getRendererCollection()->InitTraversal ();
-	while ((renderer = _visualizer->getRendererCollection()->GetNextItem ()) != NULL)
-	{
-		vtkCamera * cam = renderer->GetActiveCamera();
-		cam->SetParallelProjection(true);
-		cam->SetParallelScale(parallelScale);
-	}
-	_lastCameraOrientation= _lastCameraPose = cv::Vec3f(0,0,0);
-	this->refreshView();
+	float px, py, pz, fx, fy, fz, ux, uy, uz;
+	getCameraPosition(px, py, pz, fx, fy, fz, ux, uy, uz);
+	bounds[0] = fx - 5.0; bounds[1] = fx + 5.0;
+	bounds[2] = fy - 5.0; bounds[3] = fy + 5.0;
+	bounds[4] = fz; bounds[5] = fz;
+	centerCameraOnBounds(bounds, true);
 }
 
 void CloudViewer::setCloudsHidden(bool hidden)

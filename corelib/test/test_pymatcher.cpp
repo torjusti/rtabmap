@@ -13,6 +13,7 @@
 
 #ifdef RTABMAP_PYTHON
 
+#include <rtabmap/core/MatcherMetrics.h>
 #include "python/PyMatcher.h"  // private header (see CMakeLists.txt include dirs)
 
 #include <rtabmap/utilite/UConversion.h>
@@ -23,6 +24,8 @@
 
 #include <fstream>
 #include <memory>
+#include <thread>
+#include <atomic>
 #include <string>
 
 using namespace rtabmap;
@@ -135,6 +138,15 @@ TEST(PyMatcher, BasicMatching)
 		EXPECT_EQ(i, matches[i].trainIdx);
 	}
 
+	const auto totals=MatcherMetrics::snapshot();
+	const auto key=scriptPath+" [indoor]";
+	ASSERT_EQ(totals.count(key),1u);
+	const auto first=totals.at(key);
+	EXPECT_EQ(first.calls,1u); EXPECT_EQ(first.pairs,1u); EXPECT_EQ(first.failures,0u);
+	EXPECT_GT(first.pythonSeconds,0); EXPECT_GT(first.initializationSeconds,0);
+	matcher.match(descFrom,descTo,kptsFrom,kptsTo,cv::Size(640,480));
+	const auto delta=MatcherMetrics::snapshot().at(key)-first;
+	EXPECT_EQ(delta.calls,1u); EXPECT_EQ(delta.pairs,1u); EXPECT_DOUBLE_EQ(delta.initializationSeconds,0);
 	UFile::erase(scriptPath);
 }
 
@@ -229,6 +241,39 @@ TEST(PyMatcher, ZeroImageSizeReturnsEmpty)
 	EXPECT_TRUE(matches.empty());
 
 	UFile::erase(scriptPath);
+}
+
+
+TEST(PyMatcher, MetricsCountFailedBatchOnceAndFallbackPairsOnce)
+{
+    const std::string path=writeStubScript(99);
+    {
+        std::ofstream out(path,std::ios::app);
+        out << "\nimport time\n"
+               "original_match = match\n"
+               "def match(*args):\n"
+               "    time.sleep(0.05)\n"
+               "    return original_match(*args)\n"
+               "def match_batch(*args):\n"
+               "    raise RuntimeError('intentional batch failure for timing test')\n";
+    }
+    PyMatcher matcher(path,0.2f,20,false,"indoor");
+    const auto descriptors=makeDescriptors(3,8); const auto keypoints=makeKeypoints(3);
+    std::atomic<int> ready(0); std::atomic<bool> go(false);
+    std::vector<std::thread> workers; std::vector<size_t> sizes(8);
+    for(int i=0;i<8;++i) workers.emplace_back([&,i]() {
+        ++ready; while(!go) std::this_thread::yield();
+        sizes[i]=matcher.match(descriptors,descriptors,keypoints,keypoints,cv::Size(640,480)).size();
+    });
+    while(ready<8) std::this_thread::yield();
+    go=true;
+    for(auto & t:workers) t.join();
+    for(size_t count:sizes) EXPECT_EQ(count,3u);
+    auto m=MatcherMetrics::snapshot().at(path+" [indoor]");
+    EXPECT_EQ(m.pairs,8u); EXPECT_EQ(m.batchPairs,0u);
+    EXPECT_GT(m.batchCalls,0u); EXPECT_EQ(m.failures,m.batchCalls);
+    EXPECT_EQ(m.calls,8u+m.failures); EXPECT_GT(m.pythonSeconds,0.35);
+    UFile::erase(path);
 }
 
 #endif  // RTABMAP_PYTHON

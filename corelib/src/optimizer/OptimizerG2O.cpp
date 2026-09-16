@@ -43,6 +43,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #if defined(RTABMAP_G2O) || defined(RTABMAP_ORB_SLAM)
 #include "g2o/core/sparse_optimizer.h"
+#include "g2o/core/hyper_graph_action.h"
 #include "g2o/core/block_solver.h"
 #include "g2o/core/factory.h"
 #include "g2o/core/optimization_algorithm_factory.h"
@@ -1985,6 +1986,10 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 		}
 
 		UDEBUG("Initial optimization...");
+		if(!reportProgress("Initializing bundle adjustment solver..."))
+		{
+			return std::map<int, Transform>();
+		}
 		optimizer.initializeOptimization();
 
 		UASSERT(optimizer.verifyInformationMatrices());
@@ -1996,11 +2001,50 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 		int outliersCount = 0;
 		int outliersCountFar = 0;
 
+		bool stop = false;
+		int iterOffset = 0;
+		const int pass1Iters = robustKernelDelta_>0.0 ? std::min(5, iterations()) : 0;
+		const int totalIters = pass1Iters + iterations();
+		struct BAProgressAction : public g2o::HyperGraphAction
+		{
+			OptimizerG2O * self;
+			bool * stopFlag;
+			int * offset;
+			int total;
+			virtual HyperGraphAction * operator()(const g2o::HyperGraph *, Parameters * parameters)
+			{
+				int iter = 0;
+				if(ParametersIteration * p = dynamic_cast<ParametersIteration *>(parameters))
+				{
+					iter = p->iteration;
+				}
+				if(!self->reportProgress(uFormat("Bundle adjustment iteration %d/%d", *offset + iter + 1, total)))
+				{
+					*stopFlag = true;
+				}
+				return this;
+			}
+		};
+		BAProgressAction progressAction;
+		progressAction.self = this;
+		progressAction.stopFlag = &stop;
+		progressAction.offset = &iterOffset;
+		progressAction.total = std::max(1, totalIters);
+		optimizer.addPreIterationAction(&progressAction);
+		optimizer.setForceStopFlag(&stop);
+
 		for(int i=0; i<(robustKernelDelta_>0.0?2:1); ++i)
 		{
 			// Pass 1 only needs to expose the bad residuals; pass 2 gets the full
 			// budget. std::min so a caller asking for fewer than 5 gets that.
-			it += optimizer.optimize(i==0&&robustKernelDelta_>0.0?std::min(5, iterations()):iterations());
+			const int passIters = i==0&&robustKernelDelta_>0.0?std::min(5, iterations()):iterations();
+			it += optimizer.optimize(passIters);
+			iterOffset += passIters;
+			if(stop)
+			{
+				UWARN("g2o bundle adjustment canceled after %d iteration(s).", it);
+				return std::map<int, Transform>();
+			}
 
 			// early stop condition
 			optimizer.computeActiveErrors();
@@ -2053,6 +2097,8 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 				UDEBUG("outliers=%d outliersCountFar=%d", outliersCount, outliersCountFar);
 			}
 		}
+		optimizer.removePreIterationAction(&progressAction);
+		optimizer.setForceStopFlag(0);
 
 		std::map<int, int> edgesPerWord;
 		std::map<int, int> outlierEdgesPerWord;

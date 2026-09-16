@@ -41,6 +41,7 @@ set(corelib_test_sources
 	test_rtabmap.cpp                    #Rtabmap.h
 	test_link.cpp                       #Link.h
 	test_optimizer.cpp                  #Optimizer.h
+	test_colmap.cpp                     #Colmap.h
 	test_gps.cpp                        #GPS.h
 	test_imu.cpp                        #IMU.h
 	test_imufilter.cpp                  #IMUFilter.h

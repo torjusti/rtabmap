@@ -73,6 +73,31 @@ namespace rtabmap {
 namespace {
 
 #ifdef RTABMAP_CERES
+class CeresBAProgressCallback : public ceres::IterationCallback
+{
+public:
+	CeresBAProgressCallback(OptimizerCeres * optimizer, int offset, int total) :
+		optimizer_(optimizer),
+		offset_(offset),
+		total_(total)
+	{}
+	virtual ceres::CallbackReturnType operator()(const ceres::IterationSummary & summary)
+	{
+		if(!optimizer_->reportProgress(uFormat("Bundle adjustment iteration %d/%d",
+				offset_ + summary.iteration + 1, std::max(1, total_))))
+		{
+			return ceres::SOLVER_ABORT;
+		}
+		return ceres::SOLVER_CONTINUE;
+	}
+private:
+	OptimizerCeres * optimizer_;
+	int offset_;
+	int total_;
+};
+#endif
+
+#ifdef RTABMAP_CERES
 #if CERES_VERSION_MAJOR >= 3 || \
     (CERES_VERSION_MAJOR == 2 && CERES_VERSION_MINOR >= 1)
 inline void SetCeresProblemManifold(ceres::Problem& problem, double* params,
@@ -862,6 +887,9 @@ std::map<int, Transform> OptimizerCeres::optimizeBA(
 	// there is only one pass, so it gets everything.
 	const bool rejectOutliers = robustKernelDelta_ > 0.0 && baProblem.num_observations() > 0;
 	options.max_num_iterations = rejectOutliers ? std::min(5, iterations()) : iterations();
+	const int totalIters = (rejectOutliers ? std::min(5, iterations()) : 0) + iterations();
+	CeresBAProgressCallback progressCallback(this, 0, std::max(1, totalIters));
+	options.callbacks.push_back(&progressCallback);
 	ceres::Solver::Summary summary;
 	ceres::Solve(options, &problem, &summary);
 	if(ULogger::level() == ULogger::kDebug)
@@ -935,6 +963,9 @@ std::map<int, Transform> OptimizerCeres::optimizeBA(
 			UDEBUG("Ceres BA: re-solving without %d rejected observation(s) over %d word(s), %d point(s) restored...",
 					rejectedCount, (int)rejectedPerWord.size(), (int)pointsToRestore.size());
 			options.max_num_iterations = iterations();
+			CeresBAProgressCallback pass2Callback(this, rejectOutliers ? std::min(5, iterations()) : 0, std::max(1, totalIters));
+			options.callbacks.clear();
+			options.callbacks.push_back(&pass2Callback);
 			ceres::Solver::Summary reSummary;
 			ceres::Solve(options, &problem, &reSummary);
 			if(!reSummary.IsSolutionUsable())

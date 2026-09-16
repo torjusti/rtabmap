@@ -76,7 +76,9 @@ SET(SRC_FILES
     Link.cpp
     LaserScan.cpp
     
+    MatcherMetrics.cpp
     Optimizer.cpp
+    Colmap.cpp
     optimizer/OptimizerTORO.cpp
     optimizer/OptimizerG2O.cpp
     optimizer/OptimizerGTSAM.cpp

@@ -313,7 +313,8 @@ void Signature::changeWordsRef(int oldWordId, int activeWordId)
 void Signature::setWords(const std::multimap<int, int> & words,
 		const std::vector<cv::KeyPoint> & keypoints,
 		const std::vector<cv::Point3f> & points,
-		const cv::Mat & descriptors)
+		const cv::Mat & descriptors,
+		bool cloneDescriptors)
 {
 	UASSERT_MSG(descriptors.empty() || descriptors.rows == (int)words.size(), uFormat("words=%d, descriptors=%d", (int)words.size(), descriptors.rows).c_str());
 	UASSERT_MSG(points.empty() || points.size() == words.size(),  uFormat("words=%d, points=%d", (int)words.size(), (int)points.size()).c_str());
@@ -335,7 +336,7 @@ void Signature::setWords(const std::multimap<int, int> & words,
 	_words = words;
 	_wordsKpts = keypoints;
 	_words3 = points;
-	_wordsDescriptors = descriptors.clone();
+	_wordsDescriptors = cloneDescriptors ? descriptors.clone() : descriptors;
 }
 
 bool Signature::isBadSignature() const

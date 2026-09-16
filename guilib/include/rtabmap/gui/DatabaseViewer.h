@@ -31,6 +31,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "rtabmap/gui/rtabmap_gui_export.h" // DLL export/import defines
 
 #include <QMainWindow>
+#include <QAction>
 #include <QtCore/QByteArray>
 #include <QtCore/QMap>
 #include <QtCore/QPointF>
@@ -64,11 +65,13 @@ class QSpinBox;
 namespace rtabmap
 {
 class DBDriver;
+class LoopSelectionState;
 class ImageView;
 class SensorData;
 class CloudViewer;
 class OctoMap;
 class ExportCloudsDialog;
+class ExportColmapDialog;
 class EditDepthArea;
 class EditMapArea;
 class LinkRefiningDialog;
@@ -151,6 +154,7 @@ private Q_SLOTS:
 	void exportPosesTORO();
 	void exportPosesG2O();
 	void exportPosesKML();
+	void exportColmap();
 	void exportGPS_TXT();
 	void exportGPS_KML();
 	void generateLocalGraph();
@@ -160,6 +164,9 @@ private Q_SLOTS:
 	void view3DMapFromFile();
 	void generate3DMap();
 	void detectMoreLoopClosures();
+	void sparsifyLoopClosures();
+	void undoLoopSparsification();
+	void restoreSparsifiedLoops();
 	void mergeComponents();
 	void updateAllNeighborCovariances();
 	void updateAllLoopClosureCovariances();
@@ -254,14 +261,16 @@ private:
 			int from,
 			int to);
 	std::multimap<int, rtabmap::Link> updateLinksWithModifications(
-			const std::multimap<int, rtabmap::Link> & edgeConstraints);
+			const std::multimap<int, rtabmap::Link> & edgeConstraints, bool applySparsification = true);
+	void saveLoopSelection();
+	void refreshLoopSelection();
 	void updateNeighborsSlider(int from = 0, int to = 0);
 	void updateLoopClosuresSlider(int from, int to);
 	void updateLoopClosuresSlider();
 	void updateCovariances(const QList<Link> & links);
 	void refineLinks(const QList<Link> & links);
 	void refineConstraint(int from, int to, Registration * reg, RegistrationIcp * regIcp, bool silent);
-	bool addConstraint(int from, int to, Registration * reg, bool silent, bool silentlyUseOptimizedGraphAsGuess = false, Optimizer * optimizer = 0);
+	bool addConstraint(int from, int to, Registration * reg, bool silent, bool silentlyUseOptimizedGraphAsGuess = false, Optimizer * optimizer = 0, const Link * verifiedLink = 0, Link * preparedLink = 0, double * quality = 0);
 	// knownCrsXY: optional CRS coordinates of the point (e.g. read from the
 	// basemap) used to prefill the anchor dialog.
 	void addAnchorPoint(int nodeId, const Transform & tLocal, const double * knownCrsXY = 0);
@@ -296,6 +305,7 @@ private:
 	// Returns true if the open "View 3D map" windows now all show the given poses.
 	bool reposeMapViewers(const std::map<int, Transform> & poses);
 	void updateAnchorMarkersInViewers();
+	bool centerMapViewerOnPriors(CloudViewer * viewer);
 	std::map<int, Transform> optimizeGeoreferencedComponentPoses(
 			int rootId,
 			const std::multimap<int, Link> & allLinks);
@@ -321,6 +331,7 @@ private:
 	QList<rtabmap::Link> loopLinks_;
 	int lastSliderIndexBrowsed_;
 	rtabmap::DBDriver * dbDriver_;
+	std::shared_ptr<LoopSelectionState> loopSelection_;
 	QString pathDatabase_;
 	std::string databaseFileName_;
 	std::list<std::map<int, rtabmap::Transform> > graphes_;
@@ -349,6 +360,8 @@ private:
 	LocalGridCache generatedLocalMaps_;
 	OctoMap * octomap_;
 	ExportCloudsDialog * exportDialog_;
+	ExportColmapDialog * exportColmapDialog_;
+	QAction * exportColmapAction_;
 	QDialog * editDepthDialog_;
 	EditDepthArea * editDepthArea_;
 	QDialog * editMapDialog_;

@@ -27,7 +27,12 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "rtabmap/gui/DatabaseViewer.h"
 #include "rtabmap/gui/CloudViewer.h"
+#include "rtabmap/gui/ExportColmapDialog.h"
 #include "ui_DatabaseViewer.h"
+#include "LoopPoseGrouping.h"
+#include "LoopSparseSelection.h"
+#include "LoopSelectionState.h"
+#include <rtabmap/core/MatcherMetrics.h>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -180,6 +185,8 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	lastValidNodeId_(0),
 	octomap_(0),
 	exportDialog_(new ExportCloudsDialog(this)),
+	exportColmapDialog_(new ExportColmapDialog(this)),
+	exportColmapAction_(0),
 	editDepthDialog_(new QDialog(this)),
 	editMapDialog_(new QDialog(this)),
 	linkRefiningDialog_(new LinkRefiningDialog(this)),
@@ -200,6 +207,7 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	infoTotalOdom_(0.0),
 	infoSessions_(0)
 {
+	loopSelection_.reset(new LoopSelectionState);
 	pathDatabase_ = QDir::homePath()+"/Documents/RTAB-Map"; //use home directory by default
 
 	if(!UDirectory::exists(pathDatabase_.toStdString()))
@@ -400,6 +408,9 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	connect(ui_->actionClose_database, SIGNAL(triggered()), this, SLOT(closeDatabase()));
 	connect(ui_->actionDatabase_recovery, SIGNAL(triggered()), this, SLOT(recoverDatabase()));
 	connect(ui_->actionExport, SIGNAL(triggered()), this, SLOT(exportDatabase()));
+	exportColmapAction_ = new QAction(tr("Export COLMAP model..."), this);
+	ui_->menuFile->insertAction(ui_->actionExport, exportColmapAction_);
+	connect(exportColmapAction_, SIGNAL(triggered()), this, SLOT(exportColmap()));
 	connect(ui_->actionExtract_images, SIGNAL(triggered()), this, SLOT(extractImages()));
 	connect(ui_->actionEdit_depth_image, SIGNAL(triggered()), this, SLOT(editDepthImage()));
 	connect(ui_->actionGenerate_graph_dot, SIGNAL(triggered()), this, SLOT(generateGraph()));
@@ -425,6 +436,20 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	connect(ui_->actionView_3D_map_from_file, SIGNAL(triggered()), this, SLOT(view3DMapFromFile()));
 	connect(ui_->actionGenerate_3D_map_pcd, SIGNAL(triggered()), this, SLOT(generate3DMap()));
 	connect(ui_->actionDetect_more_loop_closures, SIGNAL(triggered()), this, SLOT(detectMoreLoopClosures()));
+	QAction * sparsifyAction = new QAction(tr("Sparsify loop closures..."),this);
+	QAction * undoSparsifyAction = new QAction(tr("Undo loop sparsification"),this);
+	QAction * restoreSparsifyAction = new QAction(tr("Restore all sparsified loops"),this);
+	for(QAction * action : {sparsifyAction,undoSparsifyAction,restoreSparsifyAction})
+		ui_->menuEdit->insertAction(ui_->actionRefine_links,action);
+	connect(sparsifyAction,&QAction::triggered,this,&DatabaseViewer::sparsifyLoopClosures);
+	connect(undoSparsifyAction,&QAction::triggered,this,&DatabaseViewer::undoLoopSparsification);
+	connect(restoreSparsifyAction,&QAction::triggered,this,&DatabaseViewer::restoreSparsifiedLoops);
+	connect(ui_->menuEdit,&QMenu::aboutToShow,this,[=]() {
+		const bool ready=dbDriver_ && !graphOptimizationRunning_ && !reposeRunning_;
+		sparsifyAction->setEnabled(ready);
+		undoSparsifyAction->setEnabled(ready && !loopSelection_->undo.empty());
+		restoreSparsifyAction->setEnabled(ready && !loopSelection_->selection.disabled.empty());
+	});
 	connect(ui_->actionMerge_components_using_selected_nodes, SIGNAL(triggered()), this, SLOT(mergeComponents()));
 	connect(ui_->actionUpdate_all_neighbor_covariances, SIGNAL(triggered()), this, SLOT(updateAllNeighborCovariances()));
 	connect(ui_->actionUpdate_all_loop_closure_covariances, SIGNAL(triggered()), this, SLOT(updateAllLoopClosureCovariances()));
@@ -449,6 +474,10 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	ui_->menuEdit->setEnabled(false);
 	ui_->actionGenerate_3D_map_pcd->setEnabled(false);
 	ui_->actionExport->setEnabled(false);
+	if(exportColmapAction_)
+	{
+		exportColmapAction_->setEnabled(false);
+	}
 	ui_->actionExtract_images->setEnabled(false);
 	ui_->menuExport_poses->setEnabled(false);
 	ui_->menuExport_GPS->setEnabled(false);
@@ -609,6 +638,24 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	connect(ui_->spinBox_minGraphDistance, SIGNAL(valueChanged(int)), this, SLOT(configModified()));
 	connect(ui_->checkBox_detectMore_loopsInDistance, SIGNAL(stateChanged(int)), this, SLOT(configModified()));
 	connect(ui_->checkBox_detectMore_parallel, SIGNAL(stateChanged(int)), this, SLOT(configModified()));
+	connect(ui_->checkBox_detectMore_sparse, SIGNAL(toggled(bool)), this, SLOT(configModified()));
+	connect(ui_->doubleSpinBox_detectMore_spacing, SIGNAL(valueChanged(double)), this, SLOT(configModified()));
+	connect(ui_->spinBox_detectMore_budget, SIGNAL(valueChanged(int)), this, SLOT(configModified()));
+	auto updateSparseControls = [this](bool enabled) {
+		ui_->doubleSpinBox_detectMore_spacing->setEnabled(enabled);
+		ui_->spinBox_detectMore_budget->setEnabled(enabled);
+		ui_->spinBox_minGraphDistance->setVisible(!enabled);
+		ui_->label_40->setVisible(!enabled);
+		ui_->checkBox_detectMore_loopsInDistance->setVisible(!enabled);
+		ui_->label_detectMore_loopsInDistance->setVisible(!enabled);
+	};
+	connect(ui_->checkBox_detectMore_sparse, &QCheckBox::toggled, this, updateSparseControls);
+	updateSparseControls(ui_->checkBox_detectMore_sparse->isChecked());
+	connect(ui_->checkBox_detectMore_groupPoses, SIGNAL(toggled(bool)), this, SLOT(configModified()));
+	connect(ui_->checkBox_detectMore_groupPoses, SIGNAL(toggled(bool)), ui_->doubleSpinBox_detectMore_groupDistance, SLOT(setEnabled(bool)));
+	connect(ui_->checkBox_detectMore_groupPoses, SIGNAL(toggled(bool)), ui_->doubleSpinBox_detectMore_groupAngle, SLOT(setEnabled(bool)));
+	connect(ui_->doubleSpinBox_detectMore_groupDistance, SIGNAL(valueChanged(double)), this, SLOT(configModified()));
+	connect(ui_->doubleSpinBox_detectMore_groupAngle, SIGNAL(valueChanged(double)), this, SLOT(configModified()));
 	connect(ui_->checkBox_opt_graph_as_guess, SIGNAL(stateChanged(int)), this, SLOT(configModified()));
 
 	connect(ui_->lineEdit_obstacleColor, SIGNAL(textChanged(const QString &)), this, SLOT(configModified()));
@@ -846,6 +893,12 @@ void DatabaseViewer::readSettings()
 	ui_->spinBox_minGraphDistance->setValue(settings.value("min_graph_distance", ui_->spinBox_minGraphDistance->value()).toInt());
 	ui_->checkBox_detectMore_loopsInDistance->setChecked(settings.value("loops_in_graph_distance", ui_->checkBox_detectMore_loopsInDistance->isChecked()).toBool());
 	ui_->checkBox_detectMore_parallel->setChecked(settings.value("parallel_registration", ui_->checkBox_detectMore_parallel->isChecked()).toBool());
+	ui_->checkBox_detectMore_sparse->setChecked(settings.value("sparse_loop_selection", ui_->checkBox_detectMore_sparse->isChecked()).toBool());
+	ui_->doubleSpinBox_detectMore_spacing->setValue(settings.value("loop_spacing_metres", ui_->doubleSpinBox_detectMore_spacing->value()).toDouble());
+	ui_->spinBox_detectMore_budget->setValue(settings.value("loop_candidate_budget", ui_->spinBox_detectMore_budget->value()).toInt());
+	ui_->checkBox_detectMore_groupPoses->setChecked(settings.value("group_repeated_poses", ui_->checkBox_detectMore_groupPoses->isChecked()).toBool());
+	ui_->doubleSpinBox_detectMore_groupDistance->setValue(settings.value("pose_group_distance", ui_->doubleSpinBox_detectMore_groupDistance->value()).toDouble());
+	ui_->doubleSpinBox_detectMore_groupAngle->setValue(settings.value("pose_group_angle", ui_->doubleSpinBox_detectMore_groupAngle->value()).toDouble());
 	settings.endGroup();
 	settings.endGroup();
 
@@ -948,6 +1001,12 @@ void DatabaseViewer::writeSettings()
 	settings.setValue("min_graph_distance", ui_->spinBox_minGraphDistance->value());
 	settings.setValue("loops_in_graph_distance", ui_->checkBox_detectMore_loopsInDistance->isChecked());
 	settings.setValue("parallel_registration", ui_->checkBox_detectMore_parallel->isChecked());
+	settings.setValue("sparse_loop_selection", ui_->checkBox_detectMore_sparse->isChecked());
+	settings.setValue("loop_spacing_metres", ui_->doubleSpinBox_detectMore_spacing->value());
+	settings.setValue("loop_candidate_budget", ui_->spinBox_detectMore_budget->value());
+	settings.setValue("group_repeated_poses", ui_->checkBox_detectMore_groupPoses->isChecked());
+	settings.setValue("pose_group_distance", ui_->doubleSpinBox_detectMore_groupDistance->value());
+	settings.setValue("pose_group_angle", ui_->doubleSpinBox_detectMore_groupAngle->value());
 	settings.endGroup();
 	settings.endGroup();
 
@@ -1036,6 +1095,12 @@ void DatabaseViewer::restoreDefaultSettings()
 	ui_->checkBox_optimize_on_all_changes->setChecked(true);
 	ui_->checkBox_detectMore_loopsInDistance->setChecked(true);
 	ui_->checkBox_detectMore_parallel->setChecked(true);
+	ui_->checkBox_detectMore_sparse->setChecked(true);
+	ui_->doubleSpinBox_detectMore_spacing->setValue(5.0);
+	ui_->spinBox_detectMore_budget->setValue(32);
+	ui_->checkBox_detectMore_groupPoses->setChecked(true);
+	ui_->doubleSpinBox_detectMore_groupDistance->setValue(0.10);
+	ui_->doubleSpinBox_detectMore_groupAngle->setValue(5.0);
 }
 
 void DatabaseViewer::openDatabase()
@@ -1077,6 +1142,11 @@ bool DatabaseViewer::openDatabase(const QString & path, const ParametersMap & ov
 					pathDatabase_ = QDir::currentPath();
 				}
 				databaseFileName_ = UFile::getName(path.toStdString());
+				loopSelection_.reset(new LoopSelectionState);
+				loopSelection_->path=QDir(pathDatabase_).filePath(QString::fromStdString(databaseFileName_))+".loop-selection.json";
+				QString selectionError;
+				if(!loopSelection_->load(&selectionError))
+					QMessageBox::warning(this,tr("Loop selection metadata"),selectionError+tr("\nAll loops are active. The existing sidecar will not be overwritten."));
 				ui_->graphViewer->setWorkingDirectory(pathDatabase_);
 
 				// look if there are saved parameters
@@ -1416,6 +1486,8 @@ bool DatabaseViewer::closeDatabase()
 			}
 		}
 
+		saveLoopSelection();
+		loopSelection_.reset(new LoopSelectionState);
 		delete dbDriver_;
 		dbDriver_ = 0;
 		if(basemap_)
@@ -1469,6 +1541,10 @@ bool DatabaseViewer::closeDatabase()
 		ui_->menuEdit->setEnabled(false);
 		ui_->actionGenerate_3D_map_pcd->setEnabled(false);
 		ui_->actionExport->setEnabled(false);
+		if(exportColmapAction_)
+		{
+			exportColmapAction_->setEnabled(false);
+		}
 		ui_->actionExtract_images->setEnabled(false);
 		ui_->menuExport_poses->setEnabled(false);
 		ui_->menuExport_GPS->setEnabled(false);
@@ -2209,6 +2285,10 @@ void DatabaseViewer::updateIds()
 	ui_->menuEdit->setEnabled(true);
 	ui_->actionGenerate_3D_map_pcd->setEnabled(true);
 	ui_->actionExport->setEnabled(true);
+	if(exportColmapAction_)
+	{
+		exportColmapAction_->setEnabled(true);
+	}
 	ui_->actionExtract_images->setEnabled(true);
 	ui_->menuExport_poses->setEnabled(false);
 	ui_->menuExport_GPS->setEnabled(false);
@@ -2883,6 +2963,34 @@ void DatabaseViewer::exportPosesG2O()
 void DatabaseViewer::exportPosesKML()
 {
 	exportPoses(5);
+}
+
+void DatabaseViewer::exportColmap()
+{
+	if(dbDriver_ == 0)
+	{
+		QMessageBox::warning(this, tr("Cannot export"), tr("No database open."));
+		return;
+	}
+	if(graphes_.empty())
+	{
+		this->updateGraphView();
+		if(graphes_.empty())
+		{
+			QMessageBox::warning(this, tr("Cannot export"), tr("No optimized graph available."));
+			return;
+		}
+	}
+
+	std::map<int, Transform> poses = uValueAt(graphes_, (int)graphes_.size()-1);
+	if(poses.empty())
+	{
+		QMessageBox::warning(this, tr("Cannot export"), tr("Optimized graph is empty."));
+		return;
+	}
+
+	exportColmapDialog_->setWorkingDirectory(pathDatabase_);
+	exportColmapDialog_->exportColmap(poses, graphLinks_, std::map<int, Signature>(), dbDriver_, ui_->parameters_toolbox->getParameters());
 }
 
 void DatabaseViewer::exportPoses(int format)
@@ -4718,9 +4826,12 @@ void DatabaseViewer::registerMapViewer(CloudViewer * viewer, bool fromFile)
 	if(basemap_ && basemap_->isLoaded())
 	{
 		viewer->setBasemap(basemap_);
-		viewer->setCameraTopDown();
 	}
 	updateAnchorMarkersInViewers();
+	if(!centerMapViewerOnPriors(viewer) && basemap_ && basemap_->isLoaded())
+	{
+		viewer->setCameraTopDown();
+	}
 }
 
 bool DatabaseViewer::reposeMapViewers(const std::map<int, Transform> & poses)
@@ -5292,6 +5403,57 @@ std::map<int, Transform> DatabaseViewer::optimizeGeoreferencedComponentPoses(
 	return optimized;
 }
 
+void DatabaseViewer::saveLoopSelection()
+{
+	QString error;
+	if(!loopSelection_->save(&error))
+		QMessageBox::warning(this,tr("Loop selection not saved"),error+tr("\nThe selection still works in this session, but may not survive reopening the database."));
+}
+
+void DatabaseViewer::refreshLoopSelection()
+{
+	loopSelection_->dirty=true;
+	saveLoopSelection();
+	updateLoopClosuresSlider();
+	regenerateGraphComponents();
+	if(ui_->comboBox_optimizationFlavor->currentIndex()==2)
+	{
+		const bool blocked=ui_->comboBox_optimizationFlavor->blockSignals(true);
+		ui_->comboBox_optimizationFlavor->setCurrentIndex(0);
+		ui_->comboBox_optimizationFlavor->blockSignals(blocked);
+	}
+	updateGraphViewInternal(true);
+}
+
+void DatabaseViewer::sparsifyLoopClosures()
+{
+	if(!dbDriver_ || graphOptimizationRunning_ || reposeRunning_) return;
+	const auto links=updateLinksWithModifications(links_,false);
+	LoopSparsificationDialog dialog(odomPoses_,links,mapIds_,*loopSelection_,ui_->doubleSpinBox_detectMore_spacing->value(),this);
+	if(dialog.exec()==QDialog::Accepted)
+	{
+		loopSelection_->undo.push_back(loopSelection_->selection);
+		loopSelection_->selection=dialog.resultSelection();
+		refreshLoopSelection();
+	}
+}
+
+void DatabaseViewer::undoLoopSparsification()
+{
+	if(!dbDriver_ || graphOptimizationRunning_ || reposeRunning_ || loopSelection_->undo.empty()) return;
+	loopSelection_->selection=loopSelection_->undo.back();
+	loopSelection_->undo.pop_back();
+	refreshLoopSelection();
+}
+
+void DatabaseViewer::restoreSparsifiedLoops()
+{
+	if(!dbDriver_ || graphOptimizationRunning_ || reposeRunning_ || loopSelection_->selection.disabled.empty()) return;
+	loopSelection_->undo.push_back(loopSelection_->selection);
+	loopSelection_->selection.disabled.clear();
+	refreshLoopSelection();
+}
+
 void DatabaseViewer::detectMoreLoopClosures()
 {
 	if(graphes_.empty())
@@ -5306,6 +5468,8 @@ void DatabaseViewer::detectMoreLoopClosures()
 
 	std::map<int, Transform> optimizedPoses = graphes_.back();
 
+	const auto matcherBefore=MatcherMetrics::snapshot();
+	QElapsedTimer operationTime; operationTime.start();
 	const ParametersMap & parameters = ui_->parameters_toolbox->getParameters();
 	bool loopCovLimited = Parameters::defaultRGBDLoopCovLimited();
 	Parameters::parse(parameters, Parameters::kRGBDLoopCovLimited(), loopCovLimited);
@@ -5325,8 +5489,9 @@ void DatabaseViewer::detectMoreLoopClosures()
 	bool useOptimizedGraphAsGuess = ui_->checkBox_opt_graph_as_guess->isChecked();
 	std::set<int> selectedIds = ui_->graphViewer->getSelectedNodeIds();
 	int fromToMapId = ui_->spinBox_fromToMapId->value();
-	int minimumGraphDistance = ui_->spinBox_minGraphDistance->value();
-	bool loopsInGraphDistance = ui_->checkBox_detectMore_loopsInDistance->isChecked();
+	bool sparseSelection = ui_->checkBox_detectMore_sparse->isChecked();
+	int minimumGraphDistance = sparseSelection ? 0 : ui_->spinBox_minGraphDistance->value();
+	bool loopsInGraphDistance = !sparseSelection && ui_->checkBox_detectMore_loopsInDistance->isChecked();
 	if(!interSession && !intraSession && selectedIds.empty())
 	{
 		QMessageBox::warning(this,
@@ -5341,6 +5506,28 @@ void DatabaseViewer::detectMoreLoopClosures()
 	progressDialog->setCancelButtonVisible(true);
 	progressDialog->setMinimumWidth(800);
 	progressDialog->show();
+	auto finishDetection=[&]() {
+		// Only persist scores for database constraints or additions. Unselected
+		// registration candidates have no stored link to reuse on a later pass.
+		std::set<loopSelection::Pair> stored;
+		for(const auto & e:links_) stored.insert(loopSelection::ordered(e.second.from(),e.second.to()));
+		for(const auto & e:linksAdded_) stored.insert(loopSelection::ordered(e.second.from(),e.second.to()));
+		for(auto it=loopSelection_->scores.begin();it!=loopSelection_->scores.end();)
+			if(!stored.count(it->first)) {it=loopSelection_->scores.erase(it); loopSelection_->dirty=true;}
+			else ++it;
+		saveLoopSelection();
+		for(const auto & entry : MatcherMetrics::snapshot())
+		{
+			const auto old=matcherBefore.find(entry.first);
+			const auto m=entry.second-(old==matcherBefore.end()?MatcherMetrics():old->second);
+			if(m.calls || m.initializationSeconds>0)
+				progressDialog->appendText(tr("Matcher %1: %2 returned pairs, %3 Python calls (%4 batch calls, %5 batched pairs), %6 failed calls.\n"
+					"Python matching including transfers: %7 s; initialization: %8 s; %9 ms/returned pair. Whole operation: %10 s.")
+					.arg(QString::fromStdString(entry.first)).arg(m.pairs).arg(m.calls).arg(m.batchCalls).arg(m.batchPairs).arg(m.failures)
+					.arg(m.pythonSeconds,0,'f',3).arg(m.initializationSeconds,0,'f',3)
+					.arg(m.pairs?1000*m.pythonSeconds/m.pairs:0,0,'f',3).arg(operationTime.elapsed()/1000.0,0,'f',1));
+		}
+	};
 
 	std::shared_ptr<Registration> reg(Registration::create(ui_->parameters_toolbox->getParameters()));
 	// Reuse the same optimizer for all candidate links so that incremental
@@ -5512,7 +5699,7 @@ void DatabaseViewer::detectMoreLoopClosures()
 	// within minimumGraphDistance-1 hops?" is needed, not the shortest path.
 	auto linkedWithinGraphDistance = [&](int from, int to) -> bool
 	{
-		if(abs(from - to) < minimumGraphDistance)
+		if(!sparseSelection && !ui_->checkBox_detectMore_groupPoses->isChecked() && abs(from - to) < minimumGraphDistance)
 		{
 			return true; // ids are sequential along the odometry chain
 		}
@@ -5622,6 +5809,453 @@ void DatabaseViewer::detectMoreLoopClosures()
 		signatureCache.insert(std::make_pair(id, std::make_pair(s, signatureCacheLru.insert(signatureCacheLru.begin(), id))));
 		return s;
 	};
+
+	if(sparseSelection)
+	{
+		using namespace loopSparseSelection;
+		std::set<int> eligible;
+		for(const auto & p : optimizedPoses)
+			if(p.first>0 && !p.second.isNull() && (!weights_.count(p.first) || weights_.at(p.first)>=0) &&
+				(selectedIds.empty() || selectedIds.count(p.first))) eligible.insert(p.first);
+		Trajectory paths=trajectory(odomPoses_,links,mapIds_);
+		for(int id : eligible) if(!paths.count(id)) paths[id]={id,0,0};
+		loopPoseGrouping::Groups groups;
+		if(ui_->checkBox_detectMore_groupPoses->isChecked())
+			groups=loopPoseGrouping::makeGroups(odomPoses_,links,mapIds_,eligible,
+				ui_->doubleSpinBox_detectMore_groupDistance->value(),ui_->doubleSpinBox_detectMore_groupAngle->value()*CV_PI/180.0);
+		std::set<int> grouped;
+		for(const auto & g : groups) grouped.insert(g.second.begin(),g.second.end());
+		for(int id : eligible) if(!grouped.count(id)) groups[id]={id};
+		const double spacing=ui_->doubleSpinBox_detectMore_spacing->value();
+		const size_t budget=ui_->spinBox_detectMore_budget->value();
+		SpacingIndex occupied(paths,spacing);
+		std::set<Pair> active, removed, attempted;
+		for(const auto & e : links)
+		{
+			const Link & l=e.second;
+			active.insert(ordered(l.from(),l.to()));
+			if(l.type()!=Link::kNeighbor && l.type()!=Link::kNeighborMerged &&
+				l.from()!=l.to() && paths.count(l.from()) && paths.count(l.to())) occupied.insert(ordered(l.from(),l.to()));
+		}
+		for(const auto & e : updateLinksWithModifications(links_,false)) active.insert(ordered(e.second.from(),e.second.to()));
+		for(const auto & e : linksRemoved_) removed.insert(ordered(e.second.from(),e.second.to()));
+		auto allowed=[&](Pair p) {
+			if(active.count(p) || removed.count(p) || occupied.covered(p)) return false;
+			int mapFrom=uValue(mapIds_,p.first,-1), mapTo=uValue(mapIds_,p.second,-1);
+			bool cross=nodeToComponent.count(p.first) && nodeToComponent.count(p.second) &&
+				nodeToComponent.at(p.first)!=nodeToComponent.at(p.second);
+			if(selectedIds.empty() && !cross && !((interSession && mapFrom!=mapTo) || (intraSession && mapFrom==mapTo))) return false;
+			if(fromToMapId>=0 && mapFrom!=fromToMapId && mapTo!=fromToMapId) return false;
+			// Do not add a shortcut over an already short odometry path. Use
+			// the metre setting rather than a separate, frame-rate-dependent hop cutoff.
+			if(near(paths.at(p.first),paths.at(p.second),spacing)) return false;
+			return true;
+		};
+		const bool parallel=ui_->checkBox_detectMore_parallel->isChecked() && !reextractVisualFeatures &&
+			!reg->isScanRequired() && !reg->isUserDataRequired();
+		progressDialog->appendText(tr("Sparse selection: %1 frames, %2 search poses; %3 m intervals/spacing, "
+			"up to %4 registration attempts per interval pair per iteration. Existing loops reserve spacing.")
+			.arg(eligible.size()).arg(groups.size()).arg(spacing).arg(budget));
+		int registered=0, valid=0, noScore=0, suppressed=0, graphRejected=0;
+		for(int iteration=0;iteration<iterations && !progressDialog->isCanceled();++iteration)
+		{
+			progressDialog->appendText(tr("Iteration %1/%2: finding uncovered overlaps and choosing candidate pairs...")
+				.arg(iteration+1).arg(iterations));
+			QApplication::processEvents();
+			std::map<Neighborhood,Pool> pools;
+			size_t ticks=0;
+			loopPoseGrouping::visitCandidates(groups,optimizedPoses,
+				ui_->doubleSpinBox_detectMore_radiusMin->value(),ui_->doubleSpinBox_detectMore_radius->value(),
+				ui_->doubleSpinBox_detectMore_angle->value()*CV_PI/180.0,
+				[&](Pair p,double cost) {
+					if(attempted.count(p) || !allowed(p)) return;
+					Neighborhood key=neighborhood(p,paths,spacing);
+					auto it=pools.find(key);
+					if(it==pools.end()) it=pools.emplace(key,Pool(4*budget)).first;
+					it->second.offer({p,cost});
+				},[&]() {
+					if(++ticks%128==0) QApplication::processEvents();
+					return progressDialog->isCanceled();
+				});
+			if(progressDialog->isCanceled()) break;
+			std::vector<Pair> candidates;
+			for(const auto & pool : pools)
+			{
+				const auto chosen=pool.second.choose(budget,paths);
+				candidates.insert(candidates.end(),chosen.begin(),chosen.end());
+			}
+			progressDialog->appendText(tr("Iteration %1/%2: %3 uncovered interval pairs, %4 candidate attempts.")
+				.arg(iteration+1).arg(iterations).arg(pools.size()).arg(candidates.size()));
+			pools.clear();
+			if(candidates.empty()) break;
+			// Progress is per iteration, with room for registration and selection.
+			// Keep a final step reserved for graph refresh so completion is explicit.
+			progressDialog->setMaximumSteps(2*candidates.size()+1);
+			progressDialog->setValue(0);
+			progressDialog->appendText(tr("Registering candidates. Live selections are provisional: later matches can replace them, "
+				"and graph validation runs after all candidates in this iteration have been compared."));
+			struct Verified { Pair nodes; Link link; double quality; };
+			std::vector<Verified> successful;
+			const int registeredBefore=registered;
+			QElapsedTimer registrationTime, registrationLogTime;
+			registrationTime.start(); registrationLogTime.start();
+			auto better=[](const Verified & a,const Verified & b) {
+				return a.quality!=b.quality ? a.quality>b.quality : a.nodes<b.nodes;
+			};
+			auto reportRegistration=[&](bool force) {
+				if(!force && registrationLogTime.elapsed()<1000) return;
+				// Preview exactly the same quality/spacing policy used below, but
+				// do not add links or run graph optimization from progress reporting.
+				std::vector<const Verified *> ranked;
+				for(const auto & candidate : successful) ranked.push_back(&candidate);
+				std::sort(ranked.begin(),ranked.end(),[&](const Verified * a,const Verified * b) { return better(*a,*b); });
+				SpacingIndex provisional(paths,spacing);
+				int selected=0;
+				for(const Verified * candidate : ranked)
+					if(!occupied.covered(candidate->nodes) && !provisional.covered(candidate->nodes))
+					{
+						provisional.insert(candidate->nodes); ++selected;
+					}
+				int completed=registered-registeredBefore;
+				double seconds=registrationTime.elapsed()/1000.0;
+				double rate=seconds>0 ? completed/seconds : 0;
+				progressDialog->appendText(tr("Registered %1/%2 candidates: %3 matched, %4 failed; %5 candidates/s.\n"
+					"Selected provisionally: %6 loops; %7 redundant by spacing.")
+					.arg(completed).arg(candidates.size()).arg(successful.size()).arg(completed-int(successful.size()))
+					.arg(rate,0,'f',1).arg(selected).arg(successful.size()-selected));
+				registrationLogTime.restart();
+			};
+			for(size_t c=0;c<candidates.size() && !progressDialog->isCanceled();)
+			{
+				size_t end=std::min(candidates.size(),c+(parallel?size_t(256):size_t(1)));
+				struct Task { Pair nodes; Signature from,to; Transform transform; RegistrationInfo info; double quality=0; };
+				std::vector<Task> tasks;
+				if(parallel)
+				{
+					for(size_t k=c;k<end;++k)
+					{
+						Task task; task.nodes=candidates[k];
+						task.from=getCachedSignature(task.nodes.first); task.to=getCachedSignature(task.nodes.second);
+						tasks.push_back(task);
+						if(k%16==0) QApplication::processEvents();
+						if(progressDialog->isCanceled()) break;
+					}
+					if(progressDialog->isCanceled()) break;
+					std::atomic<bool> done(false),cancel(false);
+					// A completed flag publishes each task's result independently.
+					// Only the GUI thread consumes results and touches Qt widgets.
+					std::unique_ptr<std::atomic<bool>[]> ready(new std::atomic<bool>[tasks.size()]);
+					for(size_t k=0;k<tasks.size();++k) ready[k]=false;
+					std::vector<bool> consumed(tasks.size(),false);
+					auto collectCompleted=[&]() {
+						int completed=0;
+						for(size_t k=0;k<tasks.size();++k)
+						{
+							if(consumed[k] || !ready[k].load()) continue;
+							consumed[k]=true;
+							const Task & task=tasks[k];
+							attempted.insert(task.nodes); ++registered; ++completed;
+							if(!task.transform.isNull())
+							{
+								++valid;
+								if(task.quality<=0) ++noScore;
+								cv::Mat information=task.info.covariance.inv();
+								if(odomMaxInf_.size()==6)
+									for(int d=0;d<6;++d) information.at<double>(d,d)=std::min(information.at<double>(d,d),odomMaxInf_[d]);
+								successful.push_back({task.nodes,Link(task.nodes.first,task.nodes.second,Link::kUserClosure,task.transform,information),task.quality});
+								loopSelection_->remember(successful.back().link,task.quality,task.info.inliers,task.info.matches);
+							}
+						}
+						if(completed) progressDialog->incrementStep(completed);
+					};
+					std::thread worker([&]() {
+#ifdef _OPENMP
+						#pragma omp parallel for schedule(dynamic) num_threads(regThreads) if(regThreads>1)
+#endif
+						for(int k=0;k<(int)tasks.size();++k) if(!cancel)
+						{
+							Task & task=tasks[k];
+							task.transform=reg->computeTransformationMod(task.from,task.to,Transform(),&task.info);
+							if(!task.transform.isNull()) task.quality=informationScore(task.from,task.to,task.transform,task.info);
+							ready[k].store(true);
+						}
+						done=true;
+					});
+					while(!done)
+					{
+						collectCompleted();
+						if(!progressDialog->isCanceled()) reportRegistration(false);
+						QApplication::processEvents();
+						if(progressDialog->isCanceled()) cancel=true;
+						QThread::msleep(20);
+					}
+					worker.join();
+					collectCompleted();
+					if(progressDialog->isCanceled()) break;
+				}
+				else
+				{
+					Pair p=candidates[c]; Link prepared; double quality=0;
+					attempted.insert(p); ++registered;
+					if(addConstraint(p.first,p.second,reg.get(),true,useOptimizedGraphAsGuess,optimizer.get(),0,&prepared,&quality))
+					{
+						++valid;
+						if(quality<=0) ++noScore;
+						successful.push_back({p,prepared,quality});
+					}
+					progressDialog->incrementStep();
+				}
+				c=end;
+				reportRegistration(c==candidates.size());
+				QApplication::processEvents();
+			}
+			// Cancellation discards the incomplete iteration; previous iterations remain.
+			if(progressDialog->isCanceled()) break;
+			std::sort(successful.begin(),successful.end(),better);
+			progressDialog->setMaximumSteps(candidates.size()+successful.size()+1);
+			progressDialog->appendText(tr("Selecting loops from %1 successful registrations, strongest first. "
+				"Checking spacing and graph validation before adding each loop...").arg(successful.size()));
+			QApplication::processEvents();
+			int addedBefore=added, suppressedBefore=suppressed, rejectedBefore=graphRejected;
+			size_t examined=0;
+			QElapsedTimer selectionLogTime;
+			selectionLogTime.start();
+			for(const auto & candidate : successful)
+			{
+				if(progressDialog->isCanceled()) break;
+				if(occupied.covered(candidate.nodes)) ++suppressed;
+				else if(addConstraint(candidate.nodes.first,candidate.nodes.second,reg.get(),true,false,optimizer.get(),&candidate.link))
+				{
+					++added; active.insert(candidate.nodes); occupied.insert(candidate.nodes);
+					lastAdded=std::make_pair(candidate.nodes.second,candidate.nodes.first);
+				}
+				else ++graphRejected;
+				++examined;
+				progressDialog->incrementStep();
+				if(selectionLogTime.elapsed()>=1000 || examined==successful.size())
+				{
+					progressDialog->appendText(tr("Selected %1 loops: reviewed %2/%3 matches; %4 excluded by spacing, "
+						"%5 rejected by graph validation.").arg(added-addedBefore).arg(examined).arg(successful.size())
+						.arg(suppressed-suppressedBefore).arg(graphRejected-rejectedBefore));
+					selectionLogTime.restart();
+				}
+				QApplication::processEvents();
+			}
+			progressDialog->appendText(tr("Iteration %1: %2/%3 candidates registered, %4 matched; %5 loops added, "
+				"%6 excluded by spacing, %7 rejected by graph validation. Elapsed %8 s.")
+				.arg(iteration+1).arg(registered-registeredBefore).arg(candidates.size()).arg(successful.size())
+				.arg(added-addedBefore).arg(suppressed-suppressedBefore).arg(graphRejected-rejectedBefore)
+				.arg(registrationTime.elapsed()/1000.0,0,'f',1));
+			// Even an all-failure iteration may have untried candidates beyond the
+			// budget. Only an empty shortlist proves this search is exhausted.
+			if(added>addedBefore && iteration+1<iterations && !progressDialog->isCanceled())
+			{
+				progressDialog->appendText(tr("Refreshing graph and component membership before the next iteration..."));
+				QApplication::processEvents();
+				regenerateGraphComponents(); updateGraphView(); optimizedPoses=graphes_.back();
+				optimizedPoses.insert(extraComponentPoses.begin(),extraComponentPoses.end());
+			}
+		}
+		odomMaxInf_.clear();
+		if(added)
+		{
+			progressDialog->appendText(tr("Refreshing graph and component membership for %1 new loops...").arg(added));
+			QApplication::processEvents();
+			regenerateGraphComponents(); updateGraphView(); updateLoopClosuresSlider(lastAdded.first,lastAdded.second);
+		}
+		if(progressDialog->isCanceled())
+			progressDialog->appendText(tr("Canceled: %1 successful registrations were not selected/validated; %2 already added loops remain.")
+				.arg(valid-suppressed-graphRejected-added).arg(added));
+		progressDialog->appendText(tr("Sparse selection finished: %1 attempts, %2 registrations succeeded, %3 spaced out, "
+			"%4 rejected by graph validation, %5 new loops.").arg(registered).arg(valid).arg(suppressed).arg(graphRejected).arg(added));
+		if(noScore) progressDialog->appendText(tr("%1 successful candidates lacked enough calibrated 3D-to-2D inliers for the quality score; "
+			"these ranked last, with node IDs breaking ties.").arg(noScore));
+		finishDetection();
+		progressDialog->setValue(progressDialog->maximumSteps());
+		return;
+	}
+
+	if(ui_->checkBox_detectMore_groupPoses->isChecked())
+	{
+		using namespace loopPoseGrouping;
+		std::set<int> eligible;
+		for(const auto & p : optimizedPoses)
+			if(p.first > 0 && !p.second.isNull() &&
+				(!weights_.count(p.first) || weights_.at(p.first) >= 0) &&
+				(selectedIds.empty() || selectedIds.count(p.first))) eligible.insert(p.first);
+		Groups groups = makeGroups(odomPoses_, links, mapIds_, eligible,
+				ui_->doubleSpinBox_detectMore_groupDistance->value(),
+				ui_->doubleSpinBox_detectMore_groupAngle->value()*CV_PI/180.0);
+		std::map<int, int> groupOf;
+		for(const auto & group : groups)
+			for(int id : group.second) groupOf[id] = group.first;
+		// Nodes without usable recorded odometry remain searchable as singletons.
+		for(int id : eligible)
+			if(!groupOf.count(id)) { groups[id] = {id}; groupOf[id] = id; }
+		progressDialog->appendText(tr("Pose grouping: %1 frames reduced to %2 search poses. "
+				"Middle frame first; up to two alternative frames per group on failure.")
+				.arg(eligible.size()).arg(groups.size()));
+
+		std::set<Pair> attempted;
+		int registered = 0;
+		for(int n=0; n<iterations && !progressDialog->isCanceled(); ++n)
+		{
+			const auto proposals = loopPoseGrouping::candidates(groups, optimizedPoses,
+					ui_->doubleSpinBox_detectMore_radiusMin->value(),
+					ui_->doubleSpinBox_detectMore_radius->value(),
+					ui_->doubleSpinBox_detectMore_angle->value()*CV_PI/180.0);
+			// Existing closures at ANY member of either group cover that overlap.
+			std::set<Pair> covered;
+			for(const auto & entry : updateLinksWithModifications(links_))
+			{
+				const Link & l = entry.second;
+				if(l.type() != Link::kNeighbor && l.type() != Link::kNeighborMerged &&
+					l.from() != l.to() && groupOf.count(l.from()) && groupOf.count(l.to()))
+					covered.insert(ordered(groupOf.at(l.from()), groupOf.at(l.to())));
+			}
+			struct Attempt { Pair group; Pair nodes; };
+			std::vector<Attempt> queue;
+			std::map<Pair, size_t> next;
+			auto allowed = [&](Pair p) {
+				int from=p.first, to=p.second;
+				if(!optimizedPoses.count(from) || !optimizedPoses.count(to)) return false;
+				int mapFrom=uValue(mapIds_, from, -1), mapTo=uValue(mapIds_, to, -1);
+				bool cross = nodeToComponent.count(from) && nodeToComponent.count(to) &&
+						nodeToComponent.at(from) != nodeToComponent.at(to);
+				if(selectedIds.empty() && !cross &&
+					!((interSession && mapFrom!=mapTo) || (intraSession && mapFrom==mapTo))) return false;
+				if(fromToMapId>=0 && mapFrom!=fromToMapId && mapTo!=fromToMapId) return false;
+				if(findActiveLink(from,to).isValid() || containsLink(linksRemoved_,from,to) ||
+					(minimumGraphDistance>1 && linkedWithinGraphDistance(from,to))) return false;
+				double distance=optimizedPoses.at(from).getDistance(optimizedPoses.at(to));
+				return distance >= ui_->doubleSpinBox_detectMore_radiusMin->value() &&
+						distance < ui_->doubleSpinBox_detectMore_radius->value();
+			};
+			auto enqueue = [&](Pair group) {
+				if(covered.count(group)) return;
+				const auto & options = proposals.at(group);
+				for(size_t & i=next[group]; i<options.size();)
+				{
+					Pair p=options[i++];
+					if(!attempted.count(p) && allowed(p))
+					{
+						queue.push_back({group,p});
+						progressDialog->setMaximumSteps(progressDialog->maximumSteps()+1);
+						return;
+					}
+				}
+			};
+			for(const auto & proposal : proposals) enqueue(proposal.first);
+			progressDialog->appendText(tr("Iteration %1/%2: %3 group pairs, %4 initial candidates. "
+					"Alternatives are tested only after failure.").arg(n+1).arg(iterations).arg(proposals.size()).arg(queue.size()));
+			int addedBefore=added;
+			// Queue contains at most one outstanding attempt per group pair.
+			// Append fallbacks after results, and advance by the ACTUAL batch
+			// size, so a short last batch does not skip appended alternatives.
+			for(size_t c=0; c<queue.size() && !progressDialog->isCanceled();)
+			{
+				size_t end=std::min(queue.size(), c+(parallelDetection?size_t(256):size_t(1)));
+				struct Task { Attempt attempt; Signature from, to; Transform t; RegistrationInfo info; };
+				std::vector<Task> tasks;
+				for(size_t k=c; k<end; ++k)
+				{
+					Attempt attempt=queue[k];
+					if(!allowed(attempt.nodes))
+					{
+						progressDialog->incrementStep();
+						enqueue(attempt.group);
+						continue;
+					}
+					attempted.insert(attempt.nodes);
+					tasks.push_back(Task());
+					tasks.back().attempt=attempt;
+					if(parallelDetection)
+					{
+						tasks.back().from=getCachedSignature(attempt.nodes.first);
+						tasks.back().to=getCachedSignature(attempt.nodes.second);
+					}
+					if(k%16==0) QApplication::processEvents();
+					if(progressDialog->isCanceled()) break;
+				}
+				if(progressDialog->isCanceled()) break;
+				if(parallelDetection && !tasks.empty())
+				{
+					registered += tasks.size();
+					std::atomic<bool> done(false), cancel(false);
+					std::thread worker([&]() {
+#ifdef _OPENMP
+						#pragma omp parallel for schedule(dynamic) num_threads(regThreads) if(regThreads > 1)
+#endif
+						for(int k=0; k<(int)tasks.size(); ++k)
+							if(!cancel) tasks[k].t=reg->computeTransformationMod(tasks[k].from, tasks[k].to, Transform(), &tasks[k].info);
+						done=true;
+					});
+					while(!done)
+					{
+						QApplication::processEvents();
+						if(progressDialog->isCanceled()) cancel=true;
+						QThread::msleep(20);
+					}
+					worker.join();
+				}
+				for(auto & task : tasks)
+				{
+					if(progressDialog->isCanceled()) break;
+					int from=task.attempt.nodes.first, to=task.attempt.nodes.second;
+					bool accepted=false;
+					if(allowed(task.attempt.nodes))
+					{
+						if(!parallelDetection) ++registered;
+						if(parallelDetection && !task.t.isNull())
+						{
+							cv::Mat information=task.info.covariance.inv();
+							if(odomMaxInf_.size()==6)
+								for(int d=0; d<6; ++d)
+									information.at<double>(d,d)=std::min(information.at<double>(d,d),odomMaxInf_[d]);
+							Link link(from,to,Link::kUserClosure,task.t,information);
+							link=link.inverse(); // DatabaseViewer stores from > to.
+							linksAdded_.insert(std::make_pair(link.from(),link));
+							loopSelection_->remember(link,loopSparseSelection::informationScore(task.from,task.to,task.t,task.info),task.info.inliers,task.info.matches);
+							accepted=true;
+						}
+						else if(!parallelDetection)
+							accepted=addConstraint(from,to,reg.get(),true,useOptimizedGraphAsGuess,optimizer.get());
+					}
+					if(accepted)
+					{
+						++added;
+						covered.insert(task.attempt.group);
+						addLinkToAdjacency(from,to);
+						lastAdded=std::make_pair(to,from);
+						if(!parallelDetection && maxOptimizationError>0.0f && !graphes_.empty())
+						{
+							optimizedPoses=graphes_.back();
+							optimizedPoses.insert(extraComponentPoses.begin(),extraComponentPoses.end());
+						}
+					}
+					else enqueue(task.attempt.group);
+					progressDialog->incrementStep();
+				}
+				c=end;
+				if(parallelDetection || c%32==0 || c==queue.size())
+					progressDialog->appendText(tr("Pose groups: %1 registrations, %2 new loop closures.").arg(registered).arg(added));
+				QApplication::processEvents();
+			}
+			if(added==addedBefore) break; // all available fallbacks were tried
+			if(n+1<iterations && !progressDialog->isCanceled())
+			{
+				updateGraphView();
+				optimizedPoses=graphes_.back();
+				optimizedPoses.insert(extraComponentPoses.begin(),extraComponentPoses.end());
+			}
+		}
+		odomMaxInf_.clear();
+		if(added) { updateGraphView(); updateLoopClosuresSlider(lastAdded.first,lastAdded.second); }
+		progressDialog->appendText(tr("Pose grouping finished: %1 registrations, %2 new loop closures.").arg(registered).arg(added));
+		finishDetection();
+		progressDialog->setValue(progressDialog->maximumSteps());
+		return;
+	}
 
 	for(int n=0; n<iterations; ++n)
 	{
@@ -5857,6 +6491,7 @@ void DatabaseViewer::detectMoreLoopClosures()
 							}
 						}
 						Link newLink(chunk[b].from, chunk[b].to, Link::kUserClosure, chunk[b].t, information);
+						loopSelection_->remember(newLink,loopSparseSelection::informationScore(chunk[b].fromS,chunk[b].toS,chunk[b].t,chunk[b].info),chunk[b].info.inliers,chunk[b].info.matches);
 						linksAdded_.insert(std::make_pair(newLink.from(), newLink));
 						UINFO("Added new loop closure between %d and %d.", chunk[b].from, chunk[b].to);
 						++added;
@@ -5991,7 +6626,8 @@ void DatabaseViewer::detectMoreLoopClosures()
 	UINFO("Total added %d loop closures.", added);
 
 	progressDialog->appendText(tr("Total new loop closures detected=%1").arg(added));
-	progressDialog->setValue(progressDialog->maximumSteps());
+	finishDetection();
+		progressDialog->setValue(progressDialog->maximumSteps());
 }
 
 void DatabaseViewer::mergeComponents()
@@ -6512,6 +7148,13 @@ void DatabaseViewer::resetAllChanges()
 			QMessageBox::Yes | QMessageBox::No,
 			QMessageBox::No) == QMessageBox::Yes)
 	{
+		if(!loopSelection_->selection.disabled.empty() || !loopSelection_->selection.protectedLinks.empty())
+		{
+			loopSelection_->undo.push_back(loopSelection_->selection);
+			loopSelection_->selection=LoopSelectionState::Snapshot();
+			loopSelection_->dirty=true;
+			saveLoopSelection();
+		}
 		linksAdded_.clear();
 		linksRefined_.clear();
 		linksRemoved_.clear();
@@ -9377,6 +10020,97 @@ void DatabaseViewer::updateAnchorMarkersInViewers()
 	}
 }
 
+bool DatabaseViewer::centerMapViewerOnPriors(CloudViewer * viewer)
+{
+	if(!viewer || !dbDriver_)
+	{
+		return false;
+	}
+
+	std::map<int, Link> priors;
+	std::multimap<int, Link> allLinks = updateLinksWithModifications(links_);
+	for(std::multimap<int, Link>::iterator iter=allLinks.begin(); iter!=allLinks.end(); ++iter)
+	{
+		if(iter->second.from() == iter->second.to() && iter->second.from() < 0 &&
+		   iter->second.type() == Link::kPosePrior)
+		{
+			priors.insert(std::make_pair(iter->second.from(), iter->second));
+		}
+	}
+	if(priors.empty())
+	{
+		return false;
+	}
+
+	const std::map<int, Transform> * optimizedPoses = graphes_.empty()?0:&graphes_.back();
+	double minX = 0, maxX = 0, minY = 0, maxY = 0, minZ = 0, maxZ = 0;
+	bool first = true;
+	for(std::map<int, Link>::iterator iter=priors.begin(); iter!=priors.end(); ++iter)
+	{
+		Transform priorPose = iter->second.transform();
+		const Transform * landmarkPose = 0;
+		if(optimizedPoses && optimizedPoses->find(iter->first) != optimizedPoses->end())
+		{
+			landmarkPose = &optimizedPoses->at(iter->first);
+		}
+		double zInf = iter->second.infMatrix().at<double>(2,2);
+		bool zFree = !(zInf > 0.0) || std::sqrt(1.0/zInf) >= kAnchorSigmaZFree;
+		if(zFree && landmarkPose)
+		{
+			priorPose.z() = landmarkPose->z();
+		}
+		if(first)
+		{
+			minX = maxX = priorPose.x();
+			minY = maxY = priorPose.y();
+			minZ = maxZ = priorPose.z();
+			first = false;
+		}
+		else
+		{
+			minX = std::min(minX, (double)priorPose.x());
+			maxX = std::max(maxX, (double)priorPose.x());
+			minY = std::min(minY, (double)priorPose.y());
+			maxY = std::max(maxY, (double)priorPose.y());
+			minZ = std::min(minZ, (double)priorPose.z());
+			maxZ = std::max(maxZ, (double)priorPose.z());
+		}
+	}
+
+	// Single GPS pin (or a tight cluster) still needs a usable neighborhood.
+	const double minSpan = 40.0;
+	double spanX = maxX - minX;
+	double spanY = maxY - minY;
+	double pad = std::max(10.0, 0.15 * std::max(spanX, spanY));
+	if(spanX < minSpan)
+	{
+		double cx = (minX + maxX) / 2.0;
+		minX = cx - minSpan/2.0;
+		maxX = cx + minSpan/2.0;
+	}
+	else
+	{
+		minX -= pad;
+		maxX += pad;
+	}
+	if(spanY < minSpan)
+	{
+		double cy = (minY + maxY) / 2.0;
+		minY = cy - minSpan/2.0;
+		maxY = cy + minSpan/2.0;
+	}
+	else
+	{
+		minY -= pad;
+		maxY += pad;
+	}
+
+	double bounds[6] = {minX, maxX, minY, maxY, minZ, maxZ};
+	bool topDown = basemap_ && basemap_->isLoaded();
+	viewer->centerCameraOnBounds(bounds, topDown);
+	return true;
+}
+
 // An anchor marker sphere was clicked in a 3D map viewer: select the
 // corresponding anchor in the Anchor Points panel.
 void DatabaseViewer::sphereClickedInMapViewer(const std::string & id)
@@ -11490,6 +12224,13 @@ void DatabaseViewer::updateGraphViewInternal(bool force)
 				.arg(totalPriors)
 				.arg(totalLandmarks)
 				.arg(totalGravity));
+		if(!loopSelection_->selection.disabled.empty())
+		{
+			std::set<loopSelection::Pair> excluded;
+			for(const auto & e : updateLinksWithModifications(links_,false))
+				if(e.second.from()>e.second.to() && loopSelection_->disabled(e.second)) excluded.insert(loopSelection::ordered(e.second.from(),e.second.to()));
+			ui_->label_loopClosures->setText(ui_->label_loopClosures->text()+tr(" — %1 loops excluded by sparsification").arg(excluded.size()));
+		}
 
 		// remove intermediate nodes?
 		if(ui_->checkBox_ignoreIntermediateNodes->isVisible() &&
@@ -12789,9 +13530,10 @@ void DatabaseViewer::addConstraint()
 	addConstraint(from, to, reg.get(), false);
 }
 
-bool DatabaseViewer::addConstraint(int from, int to, Registration * reg, bool silent, bool silentlyUseOptimizedGraphAsGuess, Optimizer * optimizer)
+bool DatabaseViewer::addConstraint(int from, int to, Registration * reg, bool silent, bool silentlyUseOptimizedGraphAsGuess, Optimizer * optimizer, const Link * verifiedLink, Link * preparedLink, double * quality)
 {
 	UASSERT(reg);
+	UASSERT(!preparedLink || (silent && !verifiedLink));
 
 	bool switchedIds = false;
 	if(from == to)
@@ -12812,7 +13554,14 @@ bool DatabaseViewer::addConstraint(int from, int to, Registration * reg, bool si
 
 	Link newLink;
 	RegistrationInfo info;
-	if(!containsLink(linksAdded_, from, to) &&
+	if(verifiedLink)
+	{
+		if(!silent || !verifiedLink->isValid() ||
+			loopPoseGrouping::ordered(verifiedLink->from(),verifiedLink->to()) != loopPoseGrouping::ordered(from,to) ||
+			findActiveLink(from,to).isValid() || containsLink(linksRemoved_,from,to)) return false;
+		newLink=*verifiedLink;
+	}
+	else if(!containsLink(linksAdded_, from, to) &&
 	   !containsLink(links_, from, to))
 	{
 		UASSERT(!containsLink(linksRemoved_, from, to));
@@ -13037,6 +13786,17 @@ bool DatabaseViewer::addConstraint(int from, int to, Registration * reg, bool si
 		newLink = rtabmap::graph::findLink(linksRemoved_, from, to)->second;
 	}
 
+	double savedQuality=newLink.isValid() && fromS && toS ?
+		loopSparseSelection::informationScore(*fromS,*toS,newLink.transform(),info):0.0;
+	if(preparedLink)
+	{
+		*preparedLink=newLink;
+		if(quality) *quality=savedQuality;
+		if(newLink.isValid()) loopSelection_->remember(newLink,savedQuality,info.inliers,info.matches);
+		for(Signature * signature : signatures) delete signature;
+		return newLink.isValid();
+	}
+
 	bool updateConstraints = newLink.isValid();
 	float maxOptimizationError = uStr2Float(ui_->parameters_toolbox->getParameters().at(Parameters::kRGBDOptimizeMaxError()));
 	if(newLink.isValid() &&
@@ -13172,6 +13932,7 @@ bool DatabaseViewer::addConstraint(int from, int to, Registration * reg, bool si
 				newLink = newLink.inverse();
 			}
 			linksAdded_.insert(std::make_pair(newLink.from(), newLink));
+			loopSelection_->remember(newLink,savedQuality,info.inliers,info.matches);
 		}
 	}
 	
@@ -13242,6 +14003,7 @@ bool DatabaseViewer::addConstraint(int from, int to, Registration * reg, bool si
 		delete *iter;
 	}
 
+	if(!silent) saveLoopSelection();
 	return updateConstraints;
 }
 
@@ -13415,7 +14177,7 @@ void DatabaseViewer::rejectConstraint()
 }
 
 std::multimap<int, rtabmap::Link> DatabaseViewer::updateLinksWithModifications(
-		const std::multimap<int, rtabmap::Link> & edgeConstraints)
+		const std::multimap<int, rtabmap::Link> & edgeConstraints, bool applySparsification)
 {
 	UDEBUG("linksAdded_=%d linksRefined_=%d linksRemoved_=%d", (int)linksAdded_.size(), (int)linksRefined_.size(), (int)linksRemoved_.size());
 
@@ -13478,6 +14240,7 @@ std::multimap<int, rtabmap::Link> DatabaseViewer::updateLinksWithModifications(
 		}
 	}
 
+	if(applySparsification) loopSelection_->filterLinks(links);
 	return links;
 }
 
