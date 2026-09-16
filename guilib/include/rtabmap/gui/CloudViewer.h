@@ -338,6 +338,9 @@ public:
 	// world-referenced priors). If onlyIfOutOfView is true, the camera is
 	// left alone when the data is already around the current focal point.
 	void centerCameraOnVisible(bool onlyIfOutOfView = false);
+	// Center on an axis-aligned box (xmin,xmax,ymin,ymax,zmin,zmax).
+	// topDown uses an orthographic map view (same as setCameraTopDown).
+	void centerCameraOnBounds(const double bounds[6], bool topDown = false, bool onlyIfOutOfView = false);
 
 	void removeAllClouds(); //including meshes
 	bool removeCloud(const std::string & id); //including mesh

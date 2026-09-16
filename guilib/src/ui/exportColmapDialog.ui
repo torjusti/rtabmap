@@ -1,0 +1,358 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>ExportColmapDialog</class>
+ <widget class="QDialog" name="ExportColmapDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>640</width>
+    <height>560</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Export COLMAP</string>
+  </property>
+  <layout class="QVBoxLayout" name="verticalLayout">
+   <item>
+    <layout class="QHBoxLayout" name="horizontalLayout_path">
+     <item>
+      <widget class="QLabel" name="label_path">
+       <property name="text">
+        <string>Output directory</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLineEdit" name="lineEdit_path"/>
+     </item>
+     <item>
+      <widget class="QToolButton" name="toolButton_path">
+       <property name="text">
+        <string>...</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="groupBox_output">
+     <property name="title">
+      <string>Output</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_output" columnstretch="0,1">
+      <item row="0" column="0">
+       <widget class="QComboBox" name="comboBox_cameraModel">
+        <item>
+         <property name="text">
+          <string>PINHOLE</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>OPENCV</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>SIMPLE_RADIAL</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLabel" name="label_cameraModel">
+        <property name="text">
+         <string>COLMAP camera model. OPENCV (default) writes fx, fy, cx, cy and k1, k2, p1, p2 from the calibration, matching stored images that still have distortion. PINHOLE drops distortion — use it when images are already rectified. SIMPLE_RADIAL writes f, cx, cy, k1.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QCheckBox" name="checkBox_exportImages">
+        <property name="text">
+         <string>Export images</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLabel" name="label_exportImages">
+        <property name="text">
+         <string>Write RGB images to images/. Uncheck to write only the model files.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QCheckBox" name="checkBox_allKeypoints">
+        <property name="text">
+         <string>All keypoints</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLabel" name="label_allKeypoints">
+        <property name="text">
+         <string>Write every keypoint of each frame in images.txt, with POINT3D_ID = -1 for those not attached to a 3D point. Uncheck to write only keypoints that belong to a track.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="groupBox_blur">
+     <property name="title">
+      <string>Motion Blur Filtering</string>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_blur" columnstretch="0,1">
+      <item row="0" column="0" colspan="2">
+       <widget class="QLabel" name="label_blurIntro">
+        <property name="text">
+         <string>Optional. Cameras failing these checks are excluded from the export. 0 means not used.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QDoubleSpinBox" name="doubleSpinBox_laplacianVariance">
+        <property name="decimals">
+         <number>0</number>
+        </property>
+        <property name="maximum">
+         <double>9999.000000000000000</double>
+        </property>
+        <property name="value">
+         <double>0.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLabel" name="label_laplacian">
+        <property name="text">
+         <string>Laplacian variance threshold. Below this, the image is considered blurred. 50 is a reasonable default.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QDoubleSpinBox" name="doubleSpinBox_linearSpeed">
+        <property name="suffix">
+         <string> m/s</string>
+        </property>
+        <property name="value">
+         <double>0.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLabel" name="label_linearSpeed">
+        <property name="text">
+         <string>Maximum linear speed. Frames captured faster than this are excluded.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QDoubleSpinBox" name="doubleSpinBox_angularSpeed">
+        <property name="suffix">
+         <string> rad/s</string>
+        </property>
+        <property name="value">
+         <double>0.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QLabel" name="label_angularSpeed">
+        <property name="text">
+         <string>Maximum angular speed. Frames captured faster than this are excluded.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <widget class="QGroupBox" name="groupBox_export_points">
+     <property name="title">
+      <string>Export 3D points (bundle adjustment)</string>
+     </property>
+     <property name="checkable">
+      <bool>true</bool>
+     </property>
+     <property name="checked">
+      <bool>true</bool>
+     </property>
+     <layout class="QGridLayout" name="gridLayout_points" columnstretch="0,1">
+      <item row="0" column="0">
+       <widget class="QComboBox" name="comboBox_sbaType">
+        <item>
+         <property name="text">
+          <string>TORO</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>g2o</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>GTSAM</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>Ceres</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>CVSBA</string>
+         </property>
+        </item>
+       </widget>
+      </item>
+      <item row="0" column="1">
+       <widget class="QLabel" name="label_sbaType">
+        <property name="text">
+         <string>Bundle adjustment back-end. This is the same solve previously offered by the Bundler export.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="0">
+       <widget class="QSpinBox" name="sba_iterations">
+        <property name="maximum">
+         <number>1000</number>
+        </property>
+        <property name="value">
+         <number>20</number>
+        </property>
+       </widget>
+      </item>
+      <item row="1" column="1">
+       <widget class="QLabel" name="label_iterations">
+        <property name="text">
+         <string>Bundle adjustment iterations. 0 computes the 3D points and correspondences without optimizing the poses.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="0">
+       <widget class="QDoubleSpinBox" name="sba_variance">
+        <property name="decimals">
+         <number>4</number>
+        </property>
+        <property name="minimum">
+         <double>0.000100000000000</double>
+        </property>
+        <property name="maximum">
+         <double>1000.000000000000000</double>
+        </property>
+        <property name="value">
+         <double>1.000000000000000</double>
+        </property>
+       </widget>
+      </item>
+      <item row="2" column="1">
+       <widget class="QLabel" name="label_variance">
+        <property name="text">
+         <string>Pixel variance on the u/v axes of every reprojection edge.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="0">
+       <widget class="QCheckBox" name="sba_rematchFeatures">
+        <property name="text">
+         <string>Rematch features</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+      <item row="3" column="1">
+       <widget class="QLabel" name="label_rematch">
+        <property name="text">
+         <string>Re-match descriptors between linked frames instead of reusing the word ids assigned during mapping.</string>
+        </property>
+        <property name="wordWrap">
+         <bool>true</bool>
+        </property>
+       </widget>
+      </item>
+     </layout>
+    </widget>
+   </item>
+   <item>
+    <spacer name="verticalSpacer">
+     <property name="orientation">
+      <enum>Qt::Vertical</enum>
+     </property>
+     <property name="sizeHint" stdset="0">
+      <size>
+       <width>20</width>
+       <height>10</height>
+      </size>
+     </property>
+    </spacer>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="orientation">
+      <enum>Qt::Horizontal</enum>
+     </property>
+     <property name="standardButtons">
+      <set>QDialogButtonBox::Cancel|QDialogButtonBox::Ok|QDialogButtonBox::RestoreDefaults</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>accepted()</signal>
+   <receiver>ExportColmapDialog</receiver>
+   <slot>accept()</slot>
+  </connection>
+  <connection>
+   <sender>buttonBox</sender>
+   <signal>rejected()</signal>
+   <receiver>ExportColmapDialog</receiver>
+   <slot>reject()</slot>
+  </connection>
+ </connections>
+</ui>

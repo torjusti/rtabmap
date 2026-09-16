@@ -3,6 +3,7 @@
  */
 
 #include <python/PyMatcher.h>
+#include <rtabmap/core/MatcherMetrics.h>
 #include <rtabmap/utilite/ULogger.h>
 #include <rtabmap/utilite/UDirectory.h>
 #include <rtabmap/utilite/UFile.h>
@@ -86,6 +87,7 @@ PyMatcher::PyMatcher(
 
 PyMatcher::~PyMatcher()
 {
+	MatcherMetrics::report(path_+" ["+model_+"]");
 	pybind11::gil_scoped_acquire acquire;
 	if(pFunc_)
 	{
@@ -265,7 +267,9 @@ bool PyMatcher::ensureInitialized(int descriptorDim)
 		UERROR("%s", getPythonTraceback().c_str());
 		return false;
 	}
-	UDEBUG("init time = %fs", timer.ticks());
+	const double initSeconds=timer.ticks();
+	MatcherMetrics::initialized(path_+" ["+model_+"]",initSeconds);
+	UDEBUG("init time = %fs", initSeconds);
 	return true;
 }
 
@@ -387,7 +391,9 @@ void PyMatcher::executeBatch(const std::vector<MatchRequest*> & batch)
 
 		UDEBUG("Preparing batch data time = %fs (batch=%d)", timer.ticks(), (int)b);
 
+		UTimer pythonCallTimer;
 		PyObject * pReturn = PyObject_CallFunctionObjArgs(pFuncBatch_, pKpQuery, pKpTrain, pScoresQuery, pScoresTrain, pDescQuery, pDescTrain, pCounts, pImageWidth, pImageHeight, NULL);
+		MatcherMetrics::record(path_+" ["+model_+"]",b,pythonCallTimer.ticks(),pReturn==NULL);
 		if(pReturn == NULL)
 		{
 			UWARN("Failed to call match_batch() function (batch=%d)! Falling "
@@ -504,7 +510,9 @@ void PyMatcher::executeSingle(MatchRequest & request)
 
 	UDEBUG("Preparing data time = %fs", timer.ticks());
 
+	UTimer pythonCallTimer;
 	PyObject *pReturn = PyObject_CallFunctionObjArgs(pFunc_, pKeypointsQuery, pkeypointsTrain, pScoresQuery, pScoresTrain, pDescriptorsQuery, pDescriptorsTrain, pImageWidth, pImageHeight, NULL);
+	MatcherMetrics::record(path_+" ["+model_+"]",1,pythonCallTimer.ticks(),pReturn==NULL);
 	if(pReturn == NULL)
 	{
 		UERROR("Failed to call match() function!");

@@ -33,12 +33,16 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <map>
 #include <list>
 #include <set>
+#include <string>
 #include <atomic>
 #include <rtabmap/core/Link.h>
 #include <rtabmap/core/Parameters.h>
 #include <rtabmap/core/Signature.h>
 
 namespace rtabmap {
+
+class ProgressState;
+class DBDriver;
 
 /**
  * @class FeatureBA
@@ -52,11 +56,12 @@ namespace rtabmap {
 class FeatureBA
 {
 public:
-	FeatureBA(const cv::KeyPoint & kptIn, const float & depthIn = 0.0f, const cv::Mat & descriptorIn = cv::Mat(), int cameraIndexIn = 0):
+	FeatureBA(const cv::KeyPoint & kptIn, const float & depthIn = 0.0f, const cv::Mat & descriptorIn = cv::Mat(), int cameraIndexIn = 0, int featureIndexIn = -1):
 		kpt(kptIn),
 		depth(depthIn),
 		descriptor(descriptorIn),
-		cameraIndex(cameraIndexIn)
+		cameraIndex(cameraIndexIn),
+		featureIndex(featureIndexIn)
 	{
 		//UDEBUG("kpt=(%f,%f) depth=%f, camIndex=%d", kpt.pt.x, kpt.pt.y, depth, cameraIndex);
 	}
@@ -64,6 +69,12 @@ public:
 	float depth;          ///< Depth at @ref kpt in meters, or 0 if unknown (monocular).
 	cv::Mat descriptor;   ///< Optional descriptor for the keypoint (used when re-matching is enabled).
 	int cameraIndex;      ///< Index into the frame's camera model list for multi-camera rigs.
+	/**
+	 * Position of this feature in its frame's own feature array, or -1 when unknown.
+	 * Lets a consumer (the COLMAP writer) tie a track back to a frame's keypoints
+	 * without holding those keypoints for every track at once.
+	 */
+	int featureIndex;
 };
 
 typedef std::map<int, std::set<int> > BAOutliers; // <word ID, rejected pose IDs>, matching wordReferences
@@ -259,6 +270,19 @@ public:
 	void cancel() { canceled_ = true; }
 
 	/**
+	 * Optional progress/cancel hook used by @ref computeBACorrespondences and
+	 * @ref optimizeBA. The GUI passes a @ref ProgressState that pumps a progress
+	 * bar; the CLI prints the same messages. Not owned.
+	 */
+	void setProgressState(const ProgressState * state) { progressState_ = state; }
+	const ProgressState * progressState() const { return progressState_; }
+	/**
+	 * @brief Report a progress message and check cooperative cancellation.
+	 * @return false if the caller asked to stop.
+	 */
+	bool reportProgress(const std::string & msg) const;
+
+	/**
 	 * @brief Bundle adjustment: jointly refine poses and 3D points (back-end-level entry point).
 	 *
 	 * Concrete subclasses (g2o, Ceres, cvsba) override this; the base implementation errors out.
@@ -304,7 +328,9 @@ public:
 			std::map<int, cv::Point3f> & points3DMap,
 			std::map<int, std::map<int, FeatureBA> > & wordReferences,
 			bool rematchFeatures = false,
-			const ParametersMap & registrationParameters = ParametersMap());
+			const ParametersMap & registrationParameters = ParametersMap(),
+			BAOutliers * outliers = 0,
+			DBDriver * dbDriver = 0);
 
 	/** @brief BA convenience wrapper: like the overload above but ignores the
 	 *  refined 3D points and observation map. */
@@ -314,7 +340,8 @@ public:
 			const std::multimap<int, Link> & links,
 			const std::map<int, Signature> & signatures,
 			bool rematchFeatures = false,
-			const ParametersMap & registrationParameters = ParametersMap());
+			const ParametersMap & registrationParameters = ParametersMap(),
+			DBDriver * dbDriver = 0);
 
 	/**
 	 * @brief Refine a single two-frame link via BA.
@@ -340,10 +367,18 @@ public:
 	 *
 	 * @param rematchFeatures  If true, descriptors are re-matched between frames instead of
 	 *                         relying on pre-existing word ids — more robust to feature drift.
-	 * @param useLinkTransformAsGuess  If true, the link's transform seeds the PnP guess
-	 *                                 instead of estimating it from scratch.
+	 * @param useLinkTransformAsGuess  If true, the link's transform seeds the PnP guess.
+	 *                                 If false, the relative pose between the two frames in
+	 *                                 @p poses is used when both are present (guided matching
+	 *                                 in a search window). Landmarks, gravity, priors and
+	 *                                 virtual closures are skipped; undirected duplicates are
+	 *                                 matched once. Matching is parallelized when OpenMP is
+	 *                                 available (except GPU brute-force).
 	 * @param registrationParameters  Forwarded to @ref RegistrationVis (estimation type,
 	 *                                inlier counts, NNDR, etc.).
+	 * @param dbDriver  Optional. When set, frame features are streamed from the
+	 *                  database through an LRU cache instead of requiring every
+	 *                  signature to already live in @p signatures.
 	 */
 	void computeBACorrespondences(
 			const std::map<int, Transform> & poses,
@@ -353,7 +388,8 @@ public:
 			std::map<int, std::map<int, FeatureBA > > & wordReferences,
 			bool rematchFeatures = false,
 			bool useLinkTransformAsGuess = false,
-			ParametersMap registrationParameters = ParametersMap());
+			ParametersMap registrationParameters = ParametersMap(),
+			DBDriver * dbDriver = 0);
 
 protected:
 	Optimizer(
@@ -381,6 +417,7 @@ private:
 	float gravitySigma_;
 	double loopRedundancyRadius_;
 	std::atomic<bool> canceled_;
+	const ProgressState * progressState_;
 };
 
 } /* namespace rtabmap */

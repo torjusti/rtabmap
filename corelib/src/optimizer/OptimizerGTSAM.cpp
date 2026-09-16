@@ -1578,12 +1578,27 @@ std::map<int, Transform> OptimizerGTSAM::optimizeBA(
 		pcg->epsilon_rel_ = 1e-10;
 #endif
 		params.iterativeParams = pcg;
-		gtsam::NonlinearOptimizer * optimizer = new gtsam::LevenbergMarquardtOptimizer(graph, initialEstimate, params);
+		gtsam::LevenbergMarquardtOptimizer optimizer(graph, initialEstimate, params);
 		UDEBUG("GTSAM BA optimizing (max iterations=%d, robustKernel=%f)...", maxIterations, robustKernelDelta_);
-		result = optimizer->optimize();
-		finalError = optimizer->error();
+		double lastError = optimizer.error();
+		for(int i=0; i<maxIterations; ++i)
+		{
+			if(!reportProgress(uFormat("Bundle adjustment iteration %d/%d", i+1, maxIterations)))
+			{
+				UWARN("GTSAM bundle adjustment canceled after %d iteration(s).", i);
+				return false;
+			}
+			optimizer.iterate();
+			const double newError = optimizer.error();
+			if(gtsam::checkConvergence(params, lastError, newError))
+			{
+				break;
+			}
+			lastError = newError;
+		}
+		result = optimizer.values();
+		finalError = optimizer.error();
 		UDEBUG("GTSAM BA done (initialError=%f finalError=%f time=%fs)", graph.error(initialEstimate), finalError, timer.ticks());
-		delete optimizer;
 	}
 	catch(const gtsam::IndeterminantLinearSystemException & e)
 	{

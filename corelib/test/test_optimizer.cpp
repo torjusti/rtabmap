@@ -3233,3 +3233,171 @@ INSTANTIATE_TEST_SUITE_P(
 		{
 			return optimizerTypeName(info.param);
 		});
+
+// Loop density must follow real odometry edges, never consecutive node IDs.
+namespace {
+struct RedundancyGraph
+{
+	std::map<int, Transform> poses;
+	std::multimap<int, Link> links;
+	void node(int id, float x=0) { poses[id]=Transform(x,0,0,0,0,0); }
+	void edge(int a, int b, Link::Type type, float length=1)
+	{
+		links.emplace(a,Link(a,b,type,Transform(length,0,0,0,0,0),cv::Mat::eye(6,6,CV_64FC1)*12));
+	}
+	std::multimap<int,Link> weighted(double radius=1.0, bool ignored=false) const
+	{
+		std::unique_ptr<Optimizer> optimizer(Optimizer::create(ParametersMap()));
+		optimizer->setLoopRedundancyRadius(radius);
+		optimizer->setCovarianceIgnored(ignored);
+		return optimizer->downweightRedundantLoopClosures(poses,links);
+	}
+};
+
+double loopInformation(const std::multimap<int,Link> & links, int a, int b)
+{
+	for(const auto & e : links)
+		if(e.second.from()==a && e.second.to()==b) return e.second.infMatrix().at<double>(0,0);
+	ADD_FAILURE() << "Missing link " << a << " -> " << b;
+	return -1;
+}
+}
+
+TEST(OptimizerRedundancy, DisconnectedRecordingsAtSamePlaceRemainIndependent)
+{
+	RedundancyGraph g;
+	// C->A and C->B are separate component connections, despite coincident
+	// poses and adjacent IDs at the A/B recording boundary.
+	for(int id : {1,2,3}) g.node(id);
+	g.edge(1,2,Link::kGlobalClosure);
+	g.edge(1,3,Link::kUserClosure);
+	auto out=g.weighted();
+	EXPECT_DOUBLE_EQ(loopInformation(out,1,2),12);
+	EXPECT_DOUBLE_EQ(loopInformation(out,1,3),12);
+}
+
+TEST(OptimizerRedundancy, RealEdgesConnectInterleavedIDsAndReversedLoops)
+{
+	RedundancyGraph g;
+	for(int id=1;id<=6;++id) g.node(id);
+	g.edge(1,3,Link::kNeighbor,0.5);
+	g.edge(3,5,Link::kNeighbor,0.5);
+	g.edge(2,4,Link::kNeighbor,0.5);
+	g.edge(4,6,Link::kNeighborMerged,0.5);
+	g.edge(1,2,Link::kGlobalClosure);
+	g.edge(4,3,Link::kLocalSpaceClosure);
+	g.edge(5,6,Link::kUserClosure);
+	auto out=g.weighted();
+	EXPECT_DOUBLE_EQ(loopInformation(out,1,2),4);
+	EXPECT_DOUBLE_EQ(loopInformation(out,4,3),4);
+	EXPECT_DOUBLE_EQ(loopInformation(out,5,6),4);
+	EXPECT_DOUBLE_EQ(loopInformation(out,1,3),12);
+	EXPECT_DOUBLE_EQ(loopInformation(out,4,6),12);
+	EXPECT_DOUBLE_EQ(loopInformation(g.links,1,2),12); // input is immutable
+}
+
+TEST(OptimizerRedundancy, MissingOdometryEdgeSplitsOneSideOfTheNeighborhood)
+{
+	RedundancyGraph g;
+	for(int id : {1,2,10,11}) g.node(id);
+	g.edge(1,2,Link::kNeighbor,0.1);
+	// No edge 10->11: those endpoints must remain on different chains.
+	g.edge(1,10,Link::kGlobalClosure);
+	g.edge(2,11,Link::kGlobalClosure);
+	auto out=g.weighted();
+	EXPECT_DOUBLE_EQ(loopInformation(out,1,10),12);
+	EXPECT_DOUBLE_EQ(loopInformation(out,2,11),12);
+}
+
+TEST(OptimizerRedundancy, LoopClosuresDoNotCreateOdometryShortcuts)
+{
+	RedundancyGraph g;
+	for(int id : {1,2,10,11}) g.node(id);
+	// Poses overlap after optimization, but recorded odometry is 10 m long.
+	g.edge(1,2,Link::kNeighbor,10);
+	g.edge(10,11,Link::kNeighbor,10);
+	g.edge(1,10,Link::kGlobalClosure,0);
+	g.edge(2,11,Link::kLocalTimeClosure,0);
+	auto out=g.weighted();
+	EXPECT_DOUBLE_EQ(loopInformation(out,1,10),12);
+	EXPECT_DOUBLE_EQ(loopInformation(out,2,11),12);
+}
+
+TEST(OptimizerRedundancy, BothEndpointsMustBeWithinInclusiveRadius)
+{
+	RedundancyGraph g;
+	for(int id : {1,2,3,10,11,12}) g.node(id);
+	g.edge(1,2,Link::kNeighbor,1);
+	g.edge(2,3,Link::kNeighbor,0.1);
+	g.edge(10,11,Link::kNeighbor,1);
+	g.edge(11,12,Link::kNeighbor,4);
+	g.edge(1,10,Link::kGlobalClosure);
+	g.edge(2,11,Link::kGlobalClosure);
+	g.edge(3,12,Link::kGlobalClosure);
+	auto out=g.weighted();
+	EXPECT_DOUBLE_EQ(loopInformation(out,1,10),6);
+	EXPECT_DOUBLE_EQ(loopInformation(out,2,11),6);
+	EXPECT_DOUBLE_EQ(loopInformation(out,3,12),12);
+}
+
+TEST(OptimizerRedundancy, SameChainLoopsAreIndependentOfDirection)
+{
+	RedundancyGraph g;
+	for(int id=1;id<=10;++id) g.node(id,float(id));
+	for(int id=1;id<10;++id) g.edge(id,id+1,Link::kNeighbor,1);
+	g.edge(1,8,Link::kGlobalClosure);
+	g.edge(9,2,Link::kGlobalClosure);
+	g.edge(3,10,Link::kGlobalClosure);
+	auto out=g.weighted();
+	EXPECT_DOUBLE_EQ(loopInformation(out,1,8),6);
+	EXPECT_DOUBLE_EQ(loopInformation(out,9,2),4);
+	EXPECT_DOUBLE_EQ(loopInformation(out,3,10),6);
+}
+
+TEST(OptimizerRedundancy, DisabledAndCovarianceIgnoredPreserveInformation)
+{
+	RedundancyGraph g;
+	for(int id=1;id<=4;++id) g.node(id);
+	g.edge(1,2,Link::kNeighbor,0.1);
+	g.edge(3,4,Link::kNeighbor,0.1);
+	g.edge(1,3,Link::kGlobalClosure);
+	g.edge(2,4,Link::kGlobalClosure);
+	EXPECT_DOUBLE_EQ(loopInformation(g.weighted(0),1,3),12);
+	EXPECT_DOUBLE_EQ(loopInformation(g.weighted(1,true),1,3),12);
+}
+
+TEST(OptimizerRedundancy, CountsMatchIndependentBruteForceOnMultipleChains)
+{
+	RedundancyGraph g;
+	std::map<int,std::pair<int,double> > positions;
+	for(int chain=0;chain<3;++chain)
+		for(int k=0;k<30;++k)
+		{
+			int id=3*k+chain+1;
+			g.node(id);
+			positions[id]={chain,k*0.25};
+			if(k) g.edge(id-3,id,Link::kNeighbor,0.25);
+		}
+	std::mt19937 rng(723);
+	std::set<std::pair<int,int> > pairs;
+	while(pairs.size()<100)
+	{
+		int a=int(rng()%90)+1,b=int(rng()%90)+1;
+		if(a==b || (positions[a].first==positions[b].first && std::abs(a-b)==3)) continue;
+		if(!pairs.insert(std::minmax(a,b)).second) continue;
+		g.edge(a,b,Link::kGlobalClosure);
+	}
+	const double radius=0.75;
+	auto out=g.weighted(radius);
+	auto near=[&](int a,int b) {
+		return positions.at(a).first==positions.at(b).first &&
+			std::abs(positions.at(a).second-positions.at(b).second)<=radius;
+	};
+	for(const auto & e : g.links) if(e.second.type()==Link::kGlobalClosure)
+	{
+		int a=e.second.from(),b=e.second.to(),count=0;
+		for(const auto & p : pairs)
+			if((near(a,p.first) && near(b,p.second)) || (near(a,p.second) && near(b,p.first))) ++count;
+		EXPECT_DOUBLE_EQ(loopInformation(out,a,b),12.0/count);
+	}
+}

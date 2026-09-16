@@ -56,11 +56,12 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "rtabmap/gui/CloudViewer.h"
 #include "rtabmap/gui/LoopClosureViewer.h"
 #include "rtabmap/gui/ExportCloudsDialog.h"
-#include "rtabmap/gui/ExportBundlerDialog.h"
+#include "rtabmap/gui/ExportColmapDialog.h"
 #include "rtabmap/gui/AboutDialog.h"
 #include "rtabmap/gui/PostProcessingDialog.h"
 #include "rtabmap/gui/DepthCalibrationDialog.h"
 #include "rtabmap/gui/RecoveryState.h"
+#include "rtabmap/gui/TexturingState.h"
 #include "rtabmap/gui/MultiSessionLocWidget.h"
 
 #include <rtabmap/utilite/UStl.h>
@@ -152,7 +153,7 @@ MainWindow::MainWindow(PreferencesDialog * prefDialog, QWidget * parent, bool sh
 	_preferencesDialog(0),
 	_aboutDialog(0),
 	_exportCloudsDialog(0),
-	_exportBundlerDialog(0),
+	_exportColmapDialog(0),
 	_dataRecorder(0),
 	_lastId(0),
 	_firstStamp(0.0f),
@@ -208,8 +209,8 @@ MainWindow::MainWindow(PreferencesDialog * prefDialog, QWidget * parent, bool sh
 	_aboutDialog->setObjectName("AboutDialog");
 	_exportCloudsDialog = new ExportCloudsDialog(this);
 	_exportCloudsDialog->setObjectName("ExportCloudsDialog");
-	_exportBundlerDialog = new ExportBundlerDialog(this);
-	_exportBundlerDialog->setObjectName("ExportBundlerDialog");
+	_exportColmapDialog = new ExportColmapDialog(this);
+	_exportColmapDialog->setObjectName("ExportColmapDialog");
 	_postProcessingDialog = new PostProcessingDialog(this);
 	_postProcessingDialog->setObjectName("PostProcessingDialog");
 	_depthCalibrationDialog = new DepthCalibrationDialog(this);
@@ -261,7 +262,7 @@ MainWindow::MainWindow(PreferencesDialog * prefDialog, QWidget * parent, bool sh
 	_preferencesDialog->loadMainWindowState(this, _savedMaximized, statusBarShown);
 	_preferencesDialog->loadWindowGeometry(_preferencesDialog);
 	_preferencesDialog->loadWindowGeometry(_exportCloudsDialog);
-	_preferencesDialog->loadWindowGeometry(_exportBundlerDialog);
+	_preferencesDialog->loadWindowGeometry(_exportColmapDialog);
 	_preferencesDialog->loadWindowGeometry(_postProcessingDialog);
 	_preferencesDialog->loadWindowGeometry(_depthCalibrationDialog);
 	_preferencesDialog->loadWindowGeometry(_aboutDialog);
@@ -411,7 +412,7 @@ MainWindow::MainWindow(PreferencesDialog * prefDialog, QWidget * parent, bool sh
 	connect(_ui->actionSave_point_cloud, SIGNAL(triggered()), this, SLOT(exportClouds()));
 	connect(_ui->actionExport_2D_Grid_map_bmp_png, SIGNAL(triggered()), this, SLOT(exportGridMap()));
 	connect(_ui->actionExport_images_RGB_jpg_Depth_png, SIGNAL(triggered()), this , SLOT(exportImages()));
-	connect(_ui->actionExport_cameras_in_Bundle_format_out, SIGNAL(triggered()), SLOT(exportBundlerFormat()));
+	connect(_ui->actionExport_cameras_in_Bundle_format_out, SIGNAL(triggered()), SLOT(exportColmapFormat()));
 	connect(_ui->actionExport_octomap, SIGNAL(triggered()), this, SLOT(exportOctomap()));
 	connect(_ui->actionView_high_res_point_cloud, SIGNAL(triggered()), this, SLOT(viewClouds()));
 	connect(_ui->actionReset_Odometry, SIGNAL(triggered()), this, SLOT(resetOdometry()));
@@ -534,7 +535,7 @@ MainWindow::MainWindow(PreferencesDialog * prefDialog, QWidget * parent, bool sh
 	connect(_ui->graphicsView_graphView, SIGNAL(configChanged()), this, SLOT(configGUIModified()));
 	connect(_cloudViewer, SIGNAL(configChanged()), this, SLOT(configGUIModified()));
 	connect(_exportCloudsDialog, SIGNAL(configChanged()), this, SLOT(configGUIModified()));
-	connect(_exportBundlerDialog, SIGNAL(configChanged()), this, SLOT(configGUIModified()));
+	connect(_exportColmapDialog, SIGNAL(configChanged()), this, SLOT(configGUIModified()));
 	connect(_postProcessingDialog, SIGNAL(configChanged()), this, SLOT(configGUIModified()));
 	connect(_depthCalibrationDialog, SIGNAL(configChanged()), this, SLOT(configGUIModified()));
 	connect(_multiSessionLocWidget->getImageView(), SIGNAL(configChanged()), this, SLOT(configGUIModified()));
@@ -593,14 +594,14 @@ MainWindow::MainWindow(PreferencesDialog * prefDialog, QWidget * parent, bool sh
 	_ui->statsToolBox->setNewFigureMaxItems(50);
 	_ui->statsToolBox->setWorkingDirectory(_preferencesDialog->getWorkingDirectory());
 	_ui->graphicsView_graphView->setWorkingDirectory(_preferencesDialog->getWorkingDirectory());
-	_exportBundlerDialog->setWorkingDirectory(_preferencesDialog->getWorkingDirectory());
+	_exportColmapDialog->setWorkingDirectory(_preferencesDialog->getWorkingDirectory());
 	_cloudViewer->setBackfaceCulling(true, false);
 	_preferencesDialog->loadWidgetState(_cloudViewer);
 	_preferencesDialog->loadWidgetState(_multiSessionLocWidget->getImageView());
 
 	//dialog states
 	_preferencesDialog->loadWidgetState(_exportCloudsDialog);
-	_preferencesDialog->loadWidgetState(_exportBundlerDialog);
+	_preferencesDialog->loadWidgetState(_exportColmapDialog);
 	_preferencesDialog->loadWidgetState(_postProcessingDialog);
 	_preferencesDialog->loadWidgetState(_depthCalibrationDialog);
 
@@ -5033,7 +5034,7 @@ void MainWindow::applyPrefSettings(const rtabmap::ParametersMap & parameters, bo
 		{
 			_ui->statsToolBox->setWorkingDirectory(_preferencesDialog->getWorkingDirectory());
 			_ui->graphicsView_graphView->setWorkingDirectory(_preferencesDialog->getWorkingDirectory());
-			_exportBundlerDialog->setWorkingDirectory(_preferencesDialog->getWorkingDirectory());
+			_exportColmapDialog->setWorkingDirectory(_preferencesDialog->getWorkingDirectory());
 		}
 
 		if(_state != kIdle && parametersModified.size())
@@ -5523,7 +5524,7 @@ void MainWindow::saveConfigGUI()
 	_preferencesDialog->saveWidgetState(_ui->imageView_loopClosure);
 	_preferencesDialog->saveWidgetState(_ui->imageView_odometry);
 	_preferencesDialog->saveWidgetState(_exportCloudsDialog);
-	_preferencesDialog->saveWidgetState(_exportBundlerDialog);
+	_preferencesDialog->saveWidgetState(_exportColmapDialog);
 	_preferencesDialog->saveWidgetState(_postProcessingDialog);
 	_preferencesDialog->saveWidgetState(_depthCalibrationDialog);
 	_preferencesDialog->saveWidgetState(_ui->graphicsView_graphView);
@@ -6722,7 +6723,7 @@ void MainWindow::postProcessing(
 	}
 	if(sba)
 	{
-		totalSteps+=1;
+		totalSteps += sbaIterations > 1 ? sbaIterations : 1;
 	}
 	_progressDialog->setMaximumSteps(totalSteps);
 	_progressDialog->show();
@@ -7164,13 +7165,13 @@ void MainWindow::postProcessing(
 		_progressDialog->appendText(tr("SBA (%1 nodes, %2 constraints, %3 iterations)...")
 					.arg(optimizedPoses.size()).arg(linksOut.size()).arg(sbaIterations));
 		QApplication::processEvents();
-		uSleep(100);
-		QApplication::processEvents();
 
 		ParametersMap parametersSBA = _preferencesDialog->getAllParameters();
 		uInsert(parametersSBA, std::make_pair(Parameters::kOptimizerIterations(), uNumber2Str(sbaIterations)));
 		uInsert(parametersSBA, std::make_pair(Parameters::kOptimizerPixelVariance(), uNumber2Str(sbaVariance)));
 		Optimizer * sbaOptimizer = Optimizer::create(sbaType, parametersSBA);
+		TexturingState sbaState(_progressDialog, true);
+		sbaOptimizer->setProgressState(&sbaState);
 		std::map<int, Transform>  newPoses = sbaOptimizer->optimizeBA(
 			optimizedPoses.begin()->first,
 			optimizedPoses,
@@ -7179,7 +7180,12 @@ void MainWindow::postProcessing(
 			sbaRematchFeatures,
 			parametersSBA);
 		delete sbaOptimizer;
-		if(newPoses.size())
+		if(sbaState.isCanceled() || _progressCanceled)
+		{
+			_progressDialog->appendText(tr("SBA... canceled!"));
+			_progressDialog->setAutoClose(false);
+		}
+		else if(newPoses.size())
 		{
 			optimizedPoses = newPoses;
 			_progressDialog->appendText(tr("SBA... done!"));
@@ -8452,9 +8458,9 @@ void MainWindow::exportImages()
 	}
 }
 
-void MainWindow::exportBundlerFormat()
+void MainWindow::exportColmapFormat()
 {
-	if(_exportBundlerDialog->isVisible())
+	if(_exportColmapDialog->isVisible())
 	{
 		return;
 	}
@@ -8488,9 +8494,9 @@ void MainWindow::exportBundlerFormat()
 			{
 				UWARN("Missing image in cache for node %d", iter->first);
 			}
-			else if((_cachedSignatures[iter->first].sensorData().cameraModels().size() == 1 &&
+			else if((_cachedSignatures[iter->first].sensorData().cameraModels().size() >= 1 &&
 					 _cachedSignatures[iter->first].sensorData().cameraModels().at(0).isValidForProjection()) ||
-			        (_cachedSignatures[iter->first].sensorData().stereoCameraModels().size() == 1 &&
+			        (_cachedSignatures[iter->first].sensorData().stereoCameraModels().size() >= 1 &&
 			         _cachedSignatures[iter->first].sensorData().stereoCameraModels()[0].isValidForProjection()))
 			{
 				poses.insert(*iter);
@@ -8508,10 +8514,11 @@ void MainWindow::exportBundlerFormat()
 
 	if(poses.size())
 	{
-		_exportBundlerDialog->exportBundler(
+		_exportColmapDialog->exportColmap(
 					poses,
 					_currentLinksMap,
-					_cachedSignatures,
+					_cachedSignatures.toStdMap(),
+					0,
 					_preferencesDialog->getAllParameters());
 		
 		if(!poses.empty())
@@ -8531,7 +8538,7 @@ void MainWindow::exportBundlerFormat()
 	}
 	else
 	{
-		QMessageBox::warning(this, tr("Exporting cameras..."), tr("No poses exported because of missing images. Try refreshing the cache (with clouds)."));
+		QMessageBox::warning(this, tr("Exporting COLMAP..."), tr("No poses exported because of missing images. Try refreshing the cache (with clouds)."));
 	}
 }
 

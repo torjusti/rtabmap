@@ -1539,7 +1539,7 @@
   </action>
   <action name="actionExport_cameras_in_Bundle_format_out">
    <property name="text">
-    <string>Export cameras in Bundler format (*.out)...</string>
+    <string>Export COLMAP model...</string>
    </property>
   </action>
   <action name="actionRaw_format_txt">

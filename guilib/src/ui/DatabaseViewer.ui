@@ -3029,7 +3029,7 @@
          <item row="10" column="1">
           <widget class="QLabel" name="label_detectMore_parallel">
            <property name="text">
-            <string>Parallel registration of the candidates (requires RGBD/OptimizeMaxError=0)</string>
+            <string>Parallel registration of the candidates (legacy mode requires RGBD/OptimizeMaxError=0)</string>
            </property>
            <property name="toolTip">
             <string>When unchecked, candidates are registered sequentially.</string>
@@ -3037,6 +3037,80 @@
            <property name="wordWrap">
             <bool>true</bool>
            </property>
+          </widget>
+         </item>
+         <item row="14" column="0" colspan="2">
+          <widget class="QCheckBox" name="checkBox_detectMore_sparse">
+           <property name="text"><string>Select sparse loop closures</string></property>
+           <property name="checked"><bool>true</bool></property>
+           <property name="toolTip"><string>Budget registrations per pair of odometry intervals, compare successful links, then select strong links at the requested spacing. Existing loops count toward spacing. Same-chain candidates closer along odometry than the loop spacing are excluded. Pose grouping can be disabled independently.</string></property>
+          </widget>
+         </item>
+         <item row="15" column="0">
+          <widget class="QDoubleSpinBox" name="doubleSpinBox_detectMore_spacing">
+           <property name="suffix"><string> m</string></property>
+           <property name="minimum"><double>0.1</double></property>
+           <property name="maximum"><double>1000.0</double></property>
+           <property name="value"><double>5.0</double></property>
+          </widget>
+         </item>
+         <item row="15" column="1">
+          <widget class="QLabel" name="label_detectMore_spacing">
+           <property name="text"><string>Loop spacing along odometry</string></property>
+           <property name="toolTip"><string>Two links compete when both corresponding endpoints lie closer than this distance along the same respective odometry chains. Also excludes candidate links shorter than this along the same odometry chain, and defines the interval length for the candidate budget. Other route pairs remain independent.</string></property>
+           <property name="wordWrap"><bool>true</bool></property>
+          </widget>
+         </item>
+         <item row="16" column="0">
+          <widget class="QSpinBox" name="spinBox_detectMore_budget">
+           <property name="minimum"><number>1</number></property>
+           <property name="maximum"><number>1024</number></property>
+           <property name="value"><number>32</number></property>
+          </widget>
+         </item>
+         <item row="16" column="1">
+          <widget class="QLabel" name="label_detectMore_budget">
+           <property name="text"><string>Candidate attempts per interval pair / iteration</string></property>
+           <property name="toolTip"><string>Failures count toward this budget. Choose spatially diverse pairs from a bounded pool, starting with similar camera poses. Later iterations try fresh alternatives in uncovered overlaps.</string></property>
+           <property name="wordWrap"><bool>true</bool></property>
+          </widget>
+         </item>
+         <item row="11" column="0" colspan="2">
+          <widget class="QCheckBox" name="checkBox_detectMore_groupPoses">
+           <property name="text"><string>Group repeated camera poses</string></property>
+           <property name="toolTip"><string>Search once per group of consecutive, similarly oriented camera poses. Use the middle, first and last frames as alternatives (up to nine pairs per group pair). Sparse selection compares alternatives within its candidate budget; without sparse selection, use the first successful alternative. Uses recorded odometry; separate sessions and revisits stay separate. Disable to search individual frames.</string></property>
+           <property name="checked"><bool>true</bool></property>
+          </widget>
+         </item>
+         <item row="12" column="0">
+          <widget class="QDoubleSpinBox" name="doubleSpinBox_detectMore_groupDistance">
+           <property name="suffix"><string> m</string></property>
+           <property name="decimals"><number>3</number></property>
+           <property name="minimum"><double>0.001</double></property>
+           <property name="maximum"><double>10.0</double></property>
+           <property name="singleStep"><double>0.01</double></property>
+           <property name="value"><double>0.1</double></property>
+          </widget>
+         </item>
+         <item row="12" column="1">
+          <widget class="QLabel" name="label_detectMore_groupDistance">
+           <property name="text"><string>Pose group translation limit</string></property>
+           <property name="toolTip"><string>Maximum displacement from the first pose of the group, rather than from the previous frame.</string></property>
+          </widget>
+         </item>
+         <item row="13" column="0">
+          <widget class="QDoubleSpinBox" name="doubleSpinBox_detectMore_groupAngle">
+           <property name="suffix"><string> deg</string></property>
+           <property name="minimum"><double>0.1</double></property>
+           <property name="maximum"><double>180.0</double></property>
+           <property name="singleStep"><double>1.0</double></property>
+           <property name="value"><double>5.0</double></property>
+          </widget>
+         </item>
+         <item row="13" column="1">
+          <widget class="QLabel" name="label_detectMore_groupAngle">
+           <property name="text"><string>Pose group rotation limit</string></property>
+           <property name="toolTip"><string>Maximum full rotation from the first pose, including roll.</string></property>
           </widget>
          </item>
         </layout>

@@ -81,6 +81,10 @@ std::map<int, Transform> OptimizerCVSBA::optimizeBA(
 	params.fixedDistortion = 5; // updated below
 	params.verbose=ULogger::level() <= ULogger::kInfo;
 	sba.setParams(params);
+	if(!reportProgress("Bundle adjustment (CVSBA)..."))
+	{
+		return std::map<int, Transform>();
+	}
 
 	std::vector<cv::Mat> cameraMatrix(poses.size()); //nframes
 	std::vector<cv::Mat> R(poses.size()); //nframes

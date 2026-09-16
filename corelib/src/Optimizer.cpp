@@ -31,12 +31,25 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rtabmap/utilite/UConversion.h>
 #include <rtabmap/utilite/UTimer.h>
 #include <rtabmap/core/Optimizer.h>
+#include <rtabmap/core/ProgressState.h>
+#include <rtabmap/core/OdometryArcLength.h>
+#include <tuple>
 #include <algorithm>
 #include <rtabmap/core/Graph.h>
 #include <rtabmap/core/util3d_transforms.h>
 #include <rtabmap/core/RegistrationVis.h>
+#include <rtabmap/core/DBDriver.h>
+#include <rtabmap/core/GPS.h>
+#include <rtabmap/core/EnvSensor.h>
 #include <set>
 #include <queue>
+#include <utility>
+#include <vector>
+#include <list>
+#include <mutex>
+#ifdef _OPENMP
+#include <omp.h>
+#endif
 
 #include <rtabmap/core/optimizer/OptimizerTORO.h>
 #include <rtabmap/core/optimizer/OptimizerG2O.h>
@@ -348,7 +361,8 @@ Optimizer::Optimizer(int iterations, bool slam2d, bool covarianceIgnored, double
 		landmarksIgnored_(landmarksIgnored),
 		gravitySigma_(gravitySigma),
 		loopRedundancyRadius_(Parameters::defaultOptimizerLoopRedundancyRadius()),
-		canceled_(false)
+		canceled_(false),
+		progressState_(0)
 {
 }
 
@@ -362,7 +376,8 @@ Optimizer::Optimizer(const ParametersMap & parameters) :
 		landmarksIgnored_(Parameters::defaultOptimizerLandmarksIgnored()),
 		gravitySigma_(Parameters::defaultOptimizerGravitySigma()),
 		loopRedundancyRadius_(Parameters::defaultOptimizerLoopRedundancyRadius()),
-		canceled_(false)
+		canceled_(false),
+		progressState_(0)
 {
 	parseParameters(parameters);
 }
@@ -381,6 +396,30 @@ void Optimizer::parseParameters(const ParametersMap & parameters)
 	UASSERT(loopRedundancyRadius_ >= 0.0);
 }
 
+bool Optimizer::reportProgress(const std::string & msg) const
+{
+	if(canceled_)
+	{
+		return false;
+	}
+	if(progressState_)
+	{
+		if(progressState_->isCanceled())
+		{
+			return false;
+		}
+		if(!progressState_->callback(msg))
+		{
+			return false;
+		}
+		if(progressState_->isCanceled())
+		{
+			return false;
+		}
+	}
+	return true;
+}
+
 std::multimap<int, Link> Optimizer::downweightRedundantLoopClosures(
 		const std::map<int, Transform> & poses,
 		const std::multimap<int, Link> & linksIn) const
@@ -391,28 +430,19 @@ std::multimap<int, Link> Optimizer::downweightRedundantLoopClosures(
 	}
 	UTimer timer;
 
-	// Cumulative trajectory arc length at each node (in node id order). Nodes
-	// of different sessions end up far apart along this axis, so they never
-	// cluster together.
-	std::map<int, double> arcLength;
-	double s = 0.0;
-	const Transform * previous = 0;
-	for(std::map<int, Transform>::const_iterator iter=poses.lower_bound(1); iter!=poses.end(); ++iter)
-	{
-		if(previous)
-		{
-			s += previous->getDistance(iter->second);
-		}
-		arcLength.insert(std::make_pair(iter->first, s));
-		previous = &iter->second;
-	}
+	// Share the detector's actual-odometry-chain coordinates. Optimizers have
+	// no session IDs: connectivity comes only from Neighbor/NeighborMerged
+	// edges. Loop closures never join chains for redundancy calculations.
+	const odometryGraph::Trajectory arcLength = odometryGraph::trajectory(poses, linksIn, std::map<int,int>());
 
 	std::multimap<int, Link> links = linksIn;
 
 	// Collect loop closures with their endpoint positions along the trajectory,
-	// ordered so that sa <= sb (handles swapped link directions).
+	// canonicalized by chain ID, then distance (handles swapped directions).
 	struct LoopRef
 	{
+		int chainA;
+		int chainB;
 		double sa;
 		double sb;
 		Link * link;
@@ -425,13 +455,18 @@ std::multimap<int, Link> Optimizer::downweightRedundantLoopClosures(
 		   iter->second.type() == Link::kLocalTimeClosure ||
 		   iter->second.type() == Link::kUserClosure)
 		{
-			std::map<int, double>::iterator fromIter = arcLength.find(iter->second.from());
-			std::map<int, double>::iterator toIter = arcLength.find(iter->second.to());
+			auto fromIter = arcLength.find(iter->second.from());
+			auto toIter = arcLength.find(iter->second.to());
 			if(fromIter != arcLength.end() && toIter != arcLength.end())
 			{
 				LoopRef ref;
-				ref.sa = fromIter->second < toIter->second ? fromIter->second : toIter->second;
-				ref.sb = fromIter->second < toIter->second ? toIter->second : fromIter->second;
+				const std::pair<std::pair<int,double>,std::pair<int,double> > endpoints = std::minmax(
+					std::make_pair(fromIter->second.chain, fromIter->second.metres),
+					std::make_pair(toIter->second.chain, toIter->second.metres));
+				ref.chainA = endpoints.first.first;
+				ref.chainB = endpoints.second.first;
+				ref.sa = endpoints.first.second;
+				ref.sb = endpoints.second.second;
 				ref.link = &iter->second;
 				loops.push_back(ref);
 			}
@@ -452,14 +487,19 @@ std::multimap<int, Link> Optimizer::downweightRedundantLoopClosures(
 	{
 		order[i] = i;
 	}
-	std::sort(order.begin(), order.end(), [&loops](size_t a, size_t b) {return loops[a].sa < loops[b].sa;});
+	std::sort(order.begin(), order.end(), [&loops](size_t a, size_t b) {
+		return std::tie(loops[a].chainA, loops[a].chainB, loops[a].sa, loops[a].sb) <
+			std::tie(loops[b].chainA, loops[b].chainB, loops[b].sa, loops[b].sb);
+	});
 
 	std::vector<int> counts(loops.size(), 1);
 	for(size_t i=0; i<order.size(); ++i)
 	{
 		for(size_t j=i+1; j<order.size(); ++j)
 		{
-			if(loops[order[j]].sa - loops[order[i]].sa > loopRedundancyRadius_)
+			if(loops[order[j]].chainA != loops[order[i]].chainA ||
+			   loops[order[j]].chainB != loops[order[i]].chainB ||
+			   loops[order[j]].sa - loops[order[i]].sa > loopRedundancyRadius_)
 			{
 				break; // sorted by sa: no further candidates for i
 			}
@@ -604,6 +644,36 @@ std::map<int, Transform> Optimizer::optimizeBA(
 	return std::map<int, Transform>();
 }
 
+static bool cameraModelsFromData(
+		const std::vector<CameraModel> & cameraModels,
+		const std::vector<StereoCameraModel> & stereoModels,
+		std::vector<CameraModel> & models)
+{
+	models.clear();
+	if(cameraModels.size() >= 1 && cameraModels.at(0).isValidForProjection())
+	{
+		models = cameraModels;
+		return true;
+	}
+	if(!stereoModels.empty() && stereoModels[0].isValidForProjection())
+	{
+		for(size_t i = 0; i < stereoModels.size(); ++i)
+		{
+			CameraModel model = stereoModels[i].left();
+			models.push_back(CameraModel(
+					model.fx(),
+					model.fy(),
+					model.cx(),
+					model.cy(),
+					model.localTransform(),
+					-stereoModels[i].baseline() * model.fx(),
+					model.imageSize()));
+		}
+		return true;
+	}
+	return false;
+}
+
 std::map<int, Transform> Optimizer::optimizeBA(
 		int rootId,
 		const std::map<int, Transform> & posesIn,
@@ -612,48 +682,35 @@ std::map<int, Transform> Optimizer::optimizeBA(
 		std::map<int, cv::Point3f> & points3DMap,
 		std::map<int, std::map<int, FeatureBA> > & wordReferences,
 		bool rematchFeatures,
-		const ParametersMap & registrationParameters)
+		const ParametersMap & registrationParameters,
+		BAOutliers * outliers,
+		DBDriver * dbDriver)
 {
 	UDEBUG("");
+	resetCancel();
 	std::map<int, std::vector<CameraModel> > multiModels;
 	std::map<int, Transform> poses;
 	for(std::map<int, Transform>::const_iterator iter=posesIn.lower_bound(1); iter!=posesIn.end(); ++iter)
 	{
-		// Get camera model
 		std::vector<CameraModel> models;
+		bool found = false;
 		if(uContains(signatures, iter->first))
 		{
 			const SensorData & s = signatures.at(iter->first).sensorData();
-			if(s.cameraModels().size() >= 1 && s.cameraModels().at(0).isValidForProjection())
+			found = cameraModelsFromData(s.cameraModels(), s.stereoCameraModels(), models);
+		}
+		else if(dbDriver)
+		{
+			std::vector<CameraModel> cameraModels;
+			std::vector<StereoCameraModel> stereoModels;
+			if(dbDriver->getCalibration(iter->first, cameraModels, stereoModels))
 			{
-				models = s.cameraModels();
-			}
-			else if(!s.stereoCameraModels().empty() && s.stereoCameraModels()[0].isValidForProjection())
-			{
-				for(size_t i=0; i<s.stereoCameraModels().size(); ++i)
-				{
-					CameraModel model = s.stereoCameraModels()[i].left();
-
-					// Set Tx = -baseline*fx for stereo BA
-					models.push_back(CameraModel(
-							model.fx(),
-							model.fy(),
-							model.cx(),
-							model.cy(),
-							model.localTransform(),
-							-s.stereoCameraModels()[i].baseline()*model.fx(),
-							model.imageSize()));
-				}
-			}
-			else
-			{
-				UERROR("Missing calibration for node %d", iter->first);
-				return std::map<int, Transform>();
+				found = cameraModelsFromData(cameraModels, stereoModels, models);
 			}
 		}
-		else
+		if(!found)
 		{
-			UERROR("Did not find node %d in cache", iter->first);
+			UERROR("Missing calibration for node %d", iter->first);
 			return std::map<int, Transform>();
 		}
 
@@ -661,10 +718,13 @@ std::map<int, Transform> Optimizer::optimizeBA(
 		poses.insert(*iter);
 	}
 
-	// compute correspondences
-	this->computeBACorrespondences(poses, links, signatures, points3DMap, wordReferences, rematchFeatures, false, registrationParameters);
+	this->computeBACorrespondences(poses, links, signatures, points3DMap, wordReferences, rematchFeatures, false, registrationParameters, dbDriver);
+	if(isCanceled() || (progressState_ && progressState_->isCanceled()))
+	{
+		return std::map<int, Transform>();
+	}
 
-	return optimizeBA(rootId, poses, links, multiModels, points3DMap, wordReferences);
+	return optimizeBA(rootId, poses, links, multiModels, points3DMap, wordReferences, outliers);
 }
 
 std::map<int, Transform> Optimizer::optimizeBA(
@@ -673,11 +733,12 @@ std::map<int, Transform> Optimizer::optimizeBA(
 		const std::multimap<int, Link> & links,
 		const std::map<int, Signature> & signatures,
 		bool rematchFeatures,
-		const ParametersMap & registrationParameters)
+		const ParametersMap & registrationParameters,
+		DBDriver * dbDriver)
 {
 	std::map<int, cv::Point3f> points3DMap;
 	std::map<int, std::map<int, FeatureBA> > wordReferences;
-	return optimizeBA(rootId, poses, links, signatures, points3DMap, wordReferences, rematchFeatures, registrationParameters);
+	return optimizeBA(rootId, poses, links, signatures, points3DMap, wordReferences, rematchFeatures, registrationParameters, 0, dbDriver);
 }
 
 Transform Optimizer::optimizeBA(
@@ -716,6 +777,357 @@ struct KeyPointCompare
    }
 };
 
+namespace {
+
+bool isVisualBACorrespondenceLink(const Link & link)
+{
+	if(link.from() <= 0 || link.to() <= 0 || link.from() == link.to())
+	{
+		return false;
+	}
+	switch(link.type())
+	{
+	case Link::kPosePrior:
+	case Link::kLandmark:
+	case Link::kGravity:
+	case Link::kVirtualClosure:
+		return false;
+	default:
+		return true;
+	}
+}
+
+bool hasCameraModel(const Signature & s)
+{
+	return !s.sensorData().cameraModels().empty() || !s.sensorData().stereoCameraModels().empty();
+}
+
+struct BACorrCandidate
+{
+	Link link;
+	int fromId;
+	int toId;
+};
+
+struct BACorrInlier
+{
+	int indexFrom;
+	int indexTo;
+	cv::KeyPoint ptFrom;
+	cv::KeyPoint ptTo;
+	cv::Point3f pFrom;
+	int cameraIndexFrom;
+	int cameraIndexTo;
+	float depthFrom;
+	float depthTo;
+};
+
+struct BACorrMatch
+{
+	bool ok;
+	int fromId;
+	int toId;
+	std::vector<BACorrInlier> inliers;
+	BACorrMatch() : ok(false), fromId(0), toId(0) {}
+};
+
+// Words + calibration only. Copying a full Signature also duplicates every
+// graph link on the node and, after RegistrationVis::setWords(), pins a
+// cloned descriptor matrix for as long as the copy lives.
+Signature makeBAWorkSignature(const Signature & src, bool keepDescriptors)
+{
+	Signature s(src.id(), src.mapId(), src.getWeight(), src.getStamp());
+	s.setWords(
+			src.getWords(),
+			src.getWordsKpts(),
+			src.getWords3(),
+			keepDescriptors ? src.getWordsDescriptors() : cv::Mat(),
+			keepDescriptors);
+	if(!src.sensorData().cameraModels().empty())
+	{
+		s.sensorData().setCameraModels(src.sensorData().cameraModels());
+	}
+	if(!src.sensorData().stereoCameraModels().empty())
+	{
+		s.sensorData().setStereoCameraModels(src.sensorData().stereoCameraModels());
+	}
+	return s;
+}
+
+void observationGeometry(
+		const Signature & s,
+		cv::KeyPoint & pt,
+		const cv::Point3f & p,
+		int & cameraIndex,
+		float & depth)
+{
+	cameraIndex = 0;
+	if(s.sensorData().cameraModels().size() > 1 || s.sensorData().stereoCameraModels().size() > 1)
+	{
+		const float subImageWidth = s.sensorData().cameraModels().size() > 1 ?
+				s.sensorData().cameraModels()[0].imageWidth() :
+				s.sensorData().stereoCameraModels()[0].left().imageWidth();
+		cameraIndex = int(pt.pt.x / subImageWidth);
+		pt.pt.x = pt.pt.x - (subImageWidth * float(cameraIndex));
+	}
+	depth = 0.0f;
+	if(!s.sensorData().cameraModels().empty())
+	{
+		depth = util3d::transformPoint(p, s.sensorData().cameraModels()[cameraIndex].localTransform().inverse()).z;
+	}
+	else
+	{
+		UASSERT(!s.sensorData().stereoCameraModels().empty());
+		depth = util3d::transformPoint(p, s.sensorData().stereoCameraModels()[cameraIndex].localTransform().inverse()).z;
+	}
+}
+
+void extractBAInliers(
+		const Signature & sFrom,
+		const Signature & sTo,
+		const RegistrationInfo & info,
+		std::vector<BACorrInlier> & out)
+{
+	out.clear();
+	out.reserve(info.inliersIDs.size());
+	for(unsigned int i = 0; i < info.inliersIDs.size(); ++i)
+	{
+		const int indexFrom = sFrom.getWords().lower_bound(info.inliersIDs[i])->second;
+		const cv::Point3f & p = sFrom.getWords3()[indexFrom];
+		if(p.x <= 0.0f)
+		{
+			continue;
+		}
+		BACorrInlier inlier;
+		inlier.indexFrom = indexFrom;
+		inlier.indexTo = sTo.getWords().lower_bound(info.inliersIDs[i])->second;
+		inlier.ptFrom = sFrom.getWordsKpts()[indexFrom];
+		inlier.ptTo = sTo.getWordsKpts()[inlier.indexTo];
+		inlier.pFrom = p;
+		observationGeometry(sFrom, inlier.ptFrom, p, inlier.cameraIndexFrom, inlier.depthFrom);
+		cv::Point3f pTo(0, 0, 0);
+		if(!sTo.getWords3().empty())
+		{
+			UASSERT(inlier.indexTo < (int)sTo.getWords3().size());
+			pTo = sTo.getWords3()[inlier.indexTo];
+		}
+		observationGeometry(sTo, inlier.ptTo, pTo, inlier.cameraIndexTo, inlier.depthTo);
+		if(sTo.getWords3().empty())
+		{
+			inlier.depthTo = 0.0f;
+		}
+		out.push_back(inlier);
+	}
+}
+
+class BAFeatureCache
+{
+public:
+	BAFeatureCache(
+			const std::map<int, Signature> * loaded,
+			DBDriver * db,
+			unsigned long maxBytes) :
+		loaded_(loaded),
+		db_(db),
+		maxBytes_(maxBytes),
+		bytes_(0)
+	{}
+
+	bool get(int id, Signature & out)
+	{
+		std::lock_guard<std::mutex> lock(mutex_);
+		std::map<int, CacheEntry>::iterator it = cache_.find(id);
+		if(it != cache_.end())
+		{
+			lru_.erase(it->second.lruIt);
+			lru_.push_front(id);
+			it->second.lruIt = lru_.begin();
+			out = it->second.signature;
+			return true;
+		}
+		Signature loaded;
+		if(!loadUnlocked(id, loaded))
+		{
+			return false;
+		}
+		const unsigned long sz = std::max(1ul, loaded.getMemoryUsed(true));
+		evictUnlocked(sz);
+		lru_.push_front(id);
+		CacheEntry entry;
+		entry.signature = loaded;
+		entry.lruIt = lru_.begin();
+		entry.bytes = sz;
+		cache_.insert(std::make_pair(id, entry));
+		bytes_ += sz;
+		out = loaded;
+		return true;
+	}
+
+private:
+	struct CacheEntry
+	{
+		Signature signature;
+		std::list<int>::iterator lruIt;
+		unsigned long bytes;
+	};
+
+	bool loadUnlocked(int id, Signature & out)
+	{
+		if(loaded_)
+		{
+			std::map<int, Signature>::const_iterator it = loaded_->find(id);
+			if(it != loaded_->end())
+			{
+				out = makeBAWorkSignature(it->second, true);
+				return true;
+			}
+		}
+		if(!db_)
+		{
+			return false;
+		}
+		std::multimap<int, int> words;
+		std::vector<cv::KeyPoint> kpts;
+		std::vector<cv::Point3f> pts;
+		cv::Mat desc;
+		db_->getLocalFeatures(id, words, kpts, pts, desc);
+		std::vector<CameraModel> models;
+		std::vector<StereoCameraModel> stereo;
+		db_->getCalibration(id, models, stereo);
+		Transform pose;
+		Transform gt;
+		int mapId = 0;
+		int weight = 0;
+		std::string label;
+		double stamp = 0.0;
+		std::vector<float> vel;
+		GPS gps;
+		EnvSensors sensors;
+		db_->getNodeInfo(id, pose, mapId, weight, label, stamp, gt, vel, gps, sensors);
+		out = Signature(id, mapId, weight, stamp);
+		out.setWords(words, kpts, pts, desc, false);
+		if(!models.empty())
+		{
+			out.sensorData().setCameraModels(models);
+		}
+		if(!stereo.empty())
+		{
+			out.sensorData().setStereoCameraModels(stereo);
+		}
+		return true;
+	}
+
+	void evictUnlocked(unsigned long incoming)
+	{
+		while(!cache_.empty() && bytes_ + incoming > maxBytes_ && cache_.size() > 2)
+		{
+			const int old = lru_.back();
+			lru_.pop_back();
+			std::map<int, CacheEntry>::iterator it = cache_.find(old);
+			if(it != cache_.end())
+			{
+				if(bytes_ >= it->second.bytes)
+				{
+					bytes_ -= it->second.bytes;
+				}
+				else
+				{
+					bytes_ = 0;
+				}
+				cache_.erase(it);
+			}
+		}
+	}
+
+	const std::map<int, Signature> * loaded_;
+	DBDriver * db_;
+	unsigned long maxBytes_;
+	unsigned long bytes_;
+	std::mutex mutex_;
+	std::list<int> lru_;
+	std::map<int, CacheEntry> cache_;
+};
+
+void mergeBACorrMatches(
+		std::vector<BACorrMatch> & matches,
+		const std::map<int, Transform> & poses,
+		std::map<int, cv::Point3f> & points3DMap,
+		std::map<int, std::map<int, FeatureBA> > & wordReferences,
+		std::map<int, std::map<cv::KeyPoint, int, KeyPointCompare> > & frameToWordMap,
+		int & wordCount,
+		int & edgeWithWordsAdded)
+{
+	for(size_t mi = 0; mi < matches.size(); ++mi)
+	{
+		BACorrMatch & match = matches[mi];
+		if(!match.ok || match.inliers.empty())
+		{
+			continue;
+		}
+
+		std::map<int, Transform>::const_iterator poseIter = poses.find(match.fromId);
+		if(poseIter == poses.end())
+		{
+			continue;
+		}
+		Transform pose = poseIter->second;
+		UASSERT(!pose.isNull());
+		for(size_t i = 0; i < match.inliers.size(); ++i)
+		{
+			BACorrInlier & inlier = match.inliers[i];
+			int wordId = -1;
+
+			std::map<int, std::map<cv::KeyPoint, int, KeyPointCompare> >::iterator fromIter = frameToWordMap.find(match.fromId);
+			std::map<int, std::map<cv::KeyPoint, int, KeyPointCompare> >::iterator toIter = frameToWordMap.find(match.toId);
+			bool fromAlreadyAdded = false;
+			bool toAlreadyAdded = false;
+			if( fromIter != frameToWordMap.end() &&
+				fromIter->second.find(inlier.ptFrom) != fromIter->second.end())
+			{
+				wordId = fromIter->second.at(inlier.ptFrom);
+				fromAlreadyAdded = true;
+			}
+			if( toIter != frameToWordMap.end() &&
+				toIter->second.find(inlier.ptTo) != toIter->second.end())
+			{
+				wordId = toIter->second.at(inlier.ptTo);
+				toAlreadyAdded = true;
+			}
+
+			if(wordId == -1)
+			{
+				wordId = ++wordCount;
+				wordReferences.insert(std::make_pair(wordId, std::map<int, FeatureBA>()));
+				points3DMap.insert(std::make_pair(wordId, util3d::transformPoint(inlier.pFrom, pose)));
+			}
+			else
+			{
+				UASSERT(wordReferences.find(wordId) != wordReferences.end());
+				UASSERT(points3DMap.find(wordId) != points3DMap.end());
+			}
+
+			if(!fromAlreadyAdded)
+			{
+				wordReferences.at(wordId).insert(std::make_pair(match.fromId, FeatureBA(inlier.ptFrom, inlier.depthFrom, cv::Mat(), inlier.cameraIndexFrom, inlier.indexFrom)));
+				frameToWordMap.insert(std::make_pair(match.fromId, std::map<cv::KeyPoint, int, KeyPointCompare>()));
+				frameToWordMap.at(match.fromId).insert(std::make_pair(inlier.ptFrom, wordId));
+			}
+
+			if(!toAlreadyAdded)
+			{
+				wordReferences.at(wordId).insert(std::make_pair(match.toId, FeatureBA(inlier.ptTo, inlier.depthTo, cv::Mat(), inlier.cameraIndexTo, inlier.indexTo)));
+				frameToWordMap.insert(std::make_pair(match.toId, std::map<cv::KeyPoint, int, KeyPointCompare>()));
+				frameToWordMap.at(match.toId).insert(std::make_pair(inlier.ptTo, wordId));
+			}
+		}
+		++edgeWithWordsAdded;
+		match.inliers.clear();
+		match.inliers.shrink_to_fit();
+	}
+}
+
+} // namespace
+
 void Optimizer::computeBACorrespondences(
 		const std::map<int, Transform> & poses,
 		const std::multimap<int, Link> & links,
@@ -724,222 +1136,238 @@ void Optimizer::computeBACorrespondences(
 		std::map<int, std::map<int, FeatureBA> > & wordReferences,
 		bool rematchFeatures,
 		bool useLinkTransformAsGuess,
-		ParametersMap registrationParameters)
+		ParametersMap registrationParameters,
+		DBDriver * dbDriver)
 {
-	UDEBUG("rematchFeatures=%d", rematchFeatures?1:0);
+	UDEBUG("rematchFeatures=%d dbDriver=%d", rematchFeatures?1:0, dbDriver?1:0);
 	int wordCount = 0;
 	int edgeWithWordsAdded = 0;
 
-	// Some defaults if not provided
 	registrationParameters.insert(ParametersPair(Parameters::kVisEstimationType(), "1"));
 	registrationParameters.insert(ParametersPair(Parameters::kVisPnPReprojError(), "5"));
 	registrationParameters.insert(ParametersPair(Parameters::kVisMinInliers(), "6"));
 	registrationParameters.insert(ParametersPair(Parameters::kVisCorNNDR(), "0.6"));
-	RegistrationVis reg(registrationParameters);
 
-	std::map<int, std::map<cv::KeyPoint, int, KeyPointCompare> > frameToWordMap; // <FrameId, <Keypoint, wordId> >
+	BAFeatureCache cache(&signatures, dbDriver, 512ul * 1024ul * 1024ul);
+	std::map<int, int> weightCache;
+	auto weightOf = [&](int id) -> int
+	{
+		std::map<int, int>::const_iterator it = weightCache.find(id);
+		if(it != weightCache.end())
+		{
+			return it->second;
+		}
+		int weight = 0;
+		std::map<int, Signature>::const_iterator siter = signatures.find(id);
+		if(siter != signatures.end())
+		{
+			weight = siter->second.getWeight();
+		}
+		else if(dbDriver)
+		{
+			dbDriver->getWeight(id, weight);
+		}
+		else
+		{
+			weight = -1;
+		}
+		weightCache.insert(std::make_pair(id, weight));
+		return weight;
+	};
+
+	std::vector<BACorrCandidate> candidates;
+	std::set<std::pair<int, int> > seenPairs;
+	candidates.reserve(links.size());
 	for(std::multimap<int, Link>::const_iterator iter=links.lower_bound(1); iter!=links.end(); ++iter)
 	{
 		Link link = iter->second;
+		if(!isVisualBACorrespondenceLink(link))
+		{
+			continue;
+		}
 		if(link.to() < link.from())
 		{
 			link = link.inverse();
 		}
-		if(link.to() != link.from() &&
-		   uContains(signatures, link.from()) &&
-		   uContains(signatures, link.to()) &&
-		   uContains(poses, link.from()))
+		if(!seenPairs.insert(std::make_pair(link.from(), link.to())).second)
 		{
-			Signature sFrom = signatures.at(link.from());
-			if(sFrom.getWeight() >= 0) // ignore intermediate links
+			continue;
+		}
+		if(poses.find(link.from()) == poses.end())
+		{
+			continue;
+		}
+		if(weightOf(link.from()) < 0)
+		{
+			continue;
+		}
+		int toId = link.to();
+		if(weightOf(toId) < 0)
+		{
+			bool resolved = false;
+			for(std::multimap<int, Link>::const_iterator jter=links.find(toId);
+				jter != links.end();
+				++jter)
 			{
-				Signature sTo = signatures.at(link.to());
-
-				if((sFrom.sensorData().cameraModels().empty() && sFrom.sensorData().stereoCameraModels().empty()) ||
-				   (sTo.sensorData().cameraModels().empty() && sTo.sensorData().stereoCameraModels().empty()))
+				if(weightOf(jter->second.to()) >= 0)
 				{
-					UERROR("No camera models found");
+					toId = jter->second.to();
+					resolved = true;
+					break;
+				}
+			}
+			if(!resolved)
+			{
+				continue;
+			}
+		}
+
+		BACorrCandidate candidate;
+		candidate.link = link;
+		candidate.fromId = link.from();
+		candidate.toId = toId;
+		candidates.push_back(candidate);
+	}
+	std::sort(candidates.begin(), candidates.end(), [](const BACorrCandidate & a, const BACorrCandidate & b)
+	{
+		if(a.fromId != b.fromId)
+		{
+			return a.fromId < b.fromId;
+		}
+		return a.toId < b.toId;
+	});
+
+	const int totalLinks = (int)candidates.size();
+	if(!reportProgress(uFormat("Correspondences 0/%d", totalLinks)))
+	{
+		points3DMap.clear();
+		wordReferences.clear();
+		canceled_ = true;
+		return;
+	}
+
+	std::atomic<int> processed(0);
+	std::atomic<bool> abort(false);
+	UTimer progressTimer;
+	int nnType = Parameters::defaultVisCorNNType();
+	Parameters::parse(registrationParameters, Parameters::kVisCorNNType(), nnType);
+	int threads = 1;
+#ifdef _OPENMP
+	if(nnType != 4)
+	{
+		threads = std::max(1, omp_get_max_threads());
+	}
+#endif
+
+	std::map<int, std::map<cv::KeyPoint, int, KeyPointCompare> > frameToWordMap;
+	const int chunkSize = 256;
+	for(int start = 0; start < totalLinks && !abort.load(); start += chunkSize)
+	{
+		const int end = std::min(start + chunkSize, totalLinks);
+		std::vector<BACorrMatch> matches(end - start);
+
+#ifdef _OPENMP
+#pragma omp parallel num_threads(threads)
+#endif
+		{
+			RegistrationVis reg(registrationParameters);
+#ifdef _OPENMP
+#pragma omp for schedule(dynamic)
+#endif
+			for(int i = start; i < end; ++i)
+			{
+				if(abort.load())
+				{
 					continue;
 				}
 
-				if(sTo.getWeight() < 0)
+				const BACorrCandidate & candidate = candidates[i];
+				Signature fromSrc;
+				Signature toSrc;
+				if(!cache.get(candidate.fromId, fromSrc) || !cache.get(candidate.toId, toSrc))
 				{
-					for(std::multimap<int, Link>::const_iterator jter=links.find(sTo.id());
-						sTo.getWeight() < 0 && jter!=links.end() &&  uContains(signatures, jter->second.to());
-						++jter)
+					continue;
+				}
+				if(!hasCameraModel(fromSrc) || !hasCameraModel(toSrc) ||
+				   fromSrc.getWordsKpts().empty() || toSrc.getWordsKpts().empty() || fromSrc.getWords3().empty())
+				{
+					continue;
+				}
+
+				BACorrMatch & out = matches[i - start];
+				out.fromId = candidate.fromId;
+				out.toId = candidate.toId;
+				Signature sFrom = makeBAWorkSignature(fromSrc, rematchFeatures);
+				Signature sTo = makeBAWorkSignature(toSrc, rematchFeatures);
+				if(rematchFeatures && sFrom.getWordsDescriptors().empty() && sTo.getWordsDescriptors().empty())
+				{
+					UWARN("Rematching features is enabled but signatures (%d and %d) don't have word descriptors!? "
+						  "Features won't be rematched. If it is an old database, do rtabmap-reprocess "
+						  "so that signatures contain word desriptors.",
+						  sFrom.id(), sTo.id());
+				}
+
+				Transform guess;
+				if(useLinkTransformAsGuess)
+				{
+					guess = candidate.link.transform();
+				}
+				else
+				{
+					std::map<int, Transform>::const_iterator pFrom = poses.find(candidate.fromId);
+					std::map<int, Transform>::const_iterator pTo = poses.find(candidate.toId);
+					if(pFrom != poses.end() && pTo != poses.end() &&
+					   !pFrom->second.isNull() && !pTo->second.isNull())
 					{
-						sTo = signatures.at(jter->second.to());
+						guess = pFrom->second.inverse() * pTo->second;
 					}
 				}
 
-				if(sFrom.getWordsKpts().size() &&
-					sTo.getWordsKpts().size() &&
-					sFrom.getWords3().size())
+				RegistrationInfo info;
+				Transform t = reg.computeTransformationMod(sFrom, sTo, guess, &info);
+				UDEBUG("%d->%d, inliers=%d", sFrom.id(), sTo.id(), (int)info.inliersIDs.size());
+				if(!t.isNull())
 				{
-					if(!rematchFeatures)
-					{
-						sFrom.setWordsDescriptors(cv::Mat());
-						sTo.setWordsDescriptors(cv::Mat());
-					}
-					else if(sFrom.getWordsDescriptors().empty() && sTo.getWordsDescriptors().empty())
-					{
-						UWARN("Rematching features is enabled but signatures (%d and %d) don't have word descriptors!? "
-							  "Features won't be rematched. If it is an old database, do rtabmap-reprocess "
-							  "so that signatures contain word desriptors.",
-							  sFrom.id(), sTo.id());
-					}
+					out.ok = true;
+					extractBAInliers(sFrom, sTo, info, out.inliers);
+				}
+				else
+				{
+					UWARN("Not enough inliers (%d) between %d and %d", (int)info.inliersIDs.size(), sFrom.id(), sTo.id());
+				}
 
-					RegistrationInfo info;
-					Transform t = reg.computeTransformationMod(sFrom, sTo, useLinkTransformAsGuess?iter->second.transform():Transform(), &info);
-					UDEBUG("%d->%d, inliers=%d",sFrom.id(), sTo.id(), (int)info.inliersIDs.size());
-
-					if(!t.isNull())
+				const int n = ++processed;
+				if(n == 1 || n == totalLinks || (n % 16) == 0)
+				{
+#ifdef _OPENMP
+#pragma omp critical(ba_corr_progress)
+#endif
 					{
-						if(!rematchFeatures)
+						if(!abort.load() &&
+						   (n == 1 || n == totalLinks || progressTimer.getElapsedTime() >= 0.05))
 						{
-							// set descriptors for the output
-							if(sFrom.getWords().size() &&
-							   sFrom.getWordsDescriptors().empty() &&
-							   (int)sFrom.getWords().size() == signatures.at(link.from()).getWordsDescriptors().rows)
+							if(!reportProgress(uFormat("Correspondences %d/%d", n, totalLinks)))
 							{
-								sFrom.setWordsDescriptors(signatures.at(link.from()).getWordsDescriptors());
+								abort = true;
+								canceled_ = true;
 							}
-							if(sTo.getWords().size() &&
-							   sTo.getWordsDescriptors().empty() &&
-							   (int)sTo.getWords().size() == signatures.at(link.to()).getWordsDescriptors().rows)
-							{
-								sTo.setWordsDescriptors(signatures.at(link.to()).getWordsDescriptors());
-							}
+							progressTimer.restart();
 						}
-
-						Transform pose = poses.at(sFrom.id());
-						UASSERT(!pose.isNull());
-						for(unsigned int i=0; i<info.inliersIDs.size(); ++i)
-						{
-							int indexFrom = sFrom.getWords().lower_bound(info.inliersIDs[i])->second;
-							cv::Point3f p = sFrom.getWords3()[indexFrom];
-							if(p.x > 0.0f) // make sure the point is valid
-							{
-								cv::KeyPoint ptFrom = sFrom.getWordsKpts()[indexFrom];
-								int indexTo = sTo.getWords().lower_bound(info.inliersIDs[i])->second;
-								cv::KeyPoint ptTo = sTo.getWordsKpts()[indexTo];
-
-								int wordId = -1;
-
-								// find if the word is already added
-								std::map<int, std::map<cv::KeyPoint, int, KeyPointCompare> >::iterator fromIter = frameToWordMap.find(sFrom.id());
-								std::map<int, std::map<cv::KeyPoint, int, KeyPointCompare> >::iterator toIter = frameToWordMap.find(sTo.id());
-								bool fromAlreadyAdded = false;
-								bool toAlreadyAdded = false;
-								if( fromIter != frameToWordMap.end() &&
-									fromIter->second.find(ptFrom) != fromIter->second.end())
-								{
-									wordId = fromIter->second.at(ptFrom);
-									fromAlreadyAdded = true;
-								}
-								if( toIter != frameToWordMap.end() &&
-									toIter->second.find(ptTo) != toIter->second.end())
-								{
-									wordId = toIter->second.at(ptTo);
-									toAlreadyAdded = true;
-								}
-
-								if(wordId == -1)
-								{
-									wordId = ++wordCount;
-									wordReferences.insert(std::make_pair(wordId, std::map<int, FeatureBA>()));
-
-									points3DMap.insert(std::make_pair(wordId, util3d::transformPoint(p, pose)));
-								}
-								else
-								{
-									UASSERT(wordReferences.find(wordId) != wordReferences.end());
-									UASSERT(points3DMap.find(wordId) != points3DMap.end());
-								}
-
-								if(!fromAlreadyAdded)
-								{
-									cv::Mat descriptorFrom;
-									if(!sFrom.getWordsDescriptors().empty())
-									{
-										UASSERT(indexFrom < sFrom.getWordsDescriptors().rows);
-										descriptorFrom = sFrom.getWordsDescriptors().row(indexFrom);
-									}
-									int cameraIndex = 0;
-									if(sFrom.sensorData().cameraModels().size()>1 || sFrom.sensorData().stereoCameraModels().size()>1)
-									{
-										float subImageWidth = sFrom.sensorData().cameraModels().size()>1?sFrom.sensorData().cameraModels()[0].imageWidth():sFrom.sensorData().stereoCameraModels()[0].left().imageWidth();
-										cameraIndex = int(ptFrom.pt.x / subImageWidth);
-										ptFrom.pt.x = ptFrom.pt.x - (subImageWidth*float(cameraIndex));
-									}
-									
-									float depth = 0.0f;
-									if(!sFrom.sensorData().cameraModels().empty())
-									{
-										depth = util3d::transformPoint(p, sFrom.sensorData().cameraModels()[cameraIndex].localTransform().inverse()).z;
-									}
-									else
-									{
-										UASSERT(!sFrom.sensorData().stereoCameraModels().empty());
-										depth = util3d::transformPoint(p, sFrom.sensorData().stereoCameraModels()[cameraIndex].localTransform().inverse()).z;
-									}
-
-
-									wordReferences.at(wordId).insert(std::make_pair(sFrom.id(), FeatureBA(ptFrom, depth, descriptorFrom, cameraIndex)));
-									frameToWordMap.insert(std::make_pair(sFrom.id(), std::map<cv::KeyPoint, int, KeyPointCompare>()));
-									frameToWordMap.at(sFrom.id()).insert(std::make_pair(ptFrom, wordId));
-								}
-
-								if(!toAlreadyAdded)
-								{
-									cv::Mat descriptorTo;
-									if(!sTo.getWordsDescriptors().empty())
-									{
-										UASSERT(indexTo < sTo.getWordsDescriptors().rows);
-										descriptorTo = sTo.getWordsDescriptors().row(indexTo);
-									}
-
-									int cameraIndex = 0;
-									if(sTo.sensorData().cameraModels().size()>1 || sTo.sensorData().stereoCameraModels().size()>1)
-									{
-										float subImageWidth = sTo.sensorData().cameraModels().size()>1?sTo.sensorData().cameraModels()[0].imageWidth():sTo.sensorData().stereoCameraModels()[0].left().imageWidth();
-										cameraIndex = int(ptTo.pt.x / subImageWidth);
-										ptTo.pt.x = ptTo.pt.x - (subImageWidth*float(cameraIndex));
-									}
-
-									float depth = 0.0f;
-									if(!sTo.getWords3().empty())
-									{
-										UASSERT(indexTo < (int)sTo.getWords3().size());
-										const cv::Point3f & pt = sTo.getWords3()[indexTo];
-										if(!sTo.sensorData().cameraModels().empty())
-										{
-											depth = util3d::transformPoint(pt, sTo.sensorData().cameraModels()[cameraIndex].localTransform().inverse()).z;
-										}
-										else
-										{
-											UASSERT(!sTo.sensorData().stereoCameraModels().empty());
-											depth = util3d::transformPoint(pt, sTo.sensorData().stereoCameraModels()[cameraIndex].localTransform().inverse()).z;
-										}
-									}
-
-									wordReferences.at(wordId).insert(std::make_pair(sTo.id(), FeatureBA(ptTo, depth, descriptorTo, cameraIndex)));
-									frameToWordMap.insert(std::make_pair(sTo.id(), std::map<cv::KeyPoint, int, KeyPointCompare>()));
-									frameToWordMap.at(sTo.id()).insert(std::make_pair(ptTo, wordId));
-								}
-							}
-						}
-						++edgeWithWordsAdded;
-					}
-					else
-					{
-						UWARN("Not enough inliers (%d) between %d and %d", (int)info.inliersIDs.size(), sFrom.id(), sTo.id());
 					}
 				}
 			}
 		}
+
+		if(abort.load() || isCanceled() || (progressState_ && progressState_->isCanceled()))
+		{
+			points3DMap.clear();
+			wordReferences.clear();
+			canceled_ = true;
+			return;
+		}
+		mergeBACorrMatches(matches, poses, points3DMap, wordReferences, frameToWordMap, wordCount, edgeWithWordsAdded);
 	}
-	UDEBUG("Added %d words (edges with words=%d/%d)", wordCount, edgeWithWordsAdded, (int)links.size());
+	UDEBUG("Added %d words (edges with words=%d/%d)", wordCount, edgeWithWordsAdded, totalLinks);
 	if(links.empty())
 	{
 		UERROR("No links found for BA?!");

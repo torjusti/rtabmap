@@ -34,6 +34,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rtabmap/core/util2d.h>
 #include <rtabmap/core/util3d_mapping.h>
 #include <rtabmap/core/optimizer/OptimizerG2O.h>
+#include <rtabmap/core/Colmap.h>
 #include <rtabmap/core/Graph.h>
 #include <rtabmap/core/Signature.h>
 #include <rtabmap/core/global_map/OccupancyGrid.h>
@@ -44,6 +45,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rtabmap/utilite/UTimer.h>
 #include <rtabmap/utilite/UFile.h>
 #include <rtabmap/utilite/UStl.h>
+#include <rtabmap/utilite/UConversion.h>
 #include <pcl/filters/filter.h>
 #include <pcl/io/ply_io.h>
 #include <pcl/io/obj_io.h>
@@ -52,6 +54,17 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <stdio.h>
 #include <algorithm>
 #include <fstream>
+#include <vector>
+#include <string>
+#ifdef _WIN32
+#include <io.h>
+#define RTABMAP_ISATTY _isatty
+#define RTABMAP_FILENO _fileno
+#else
+#include <unistd.h>
+#define RTABMAP_ISATTY isatty
+#define RTABMAP_FILENO fileno
+#endif
 
 #ifdef _OPENMP
 #include <omp.h>
@@ -83,6 +96,7 @@ void showUsage()
 			"                   --gps\n"
 			"                   --images\n"
 			"                   --images_id\n"
+			"                   --colmap\n"
 			"Options:\n"
 			"    --output \"\"           Output name (default: name of the database is used).\n"
 			"    --output_dir \"\"       Output directory (default: same directory than the database).\n"
@@ -145,6 +159,23 @@ void showUsage()
 			"                              map saved in database (if exists) is exported.\n"
 			"    --octomap             Export 3D OctoMap.\n"
 			"    --ba                  Do global bundle adjustment before assembling the clouds.\n"
+			"    --colmap              Export a COLMAP text model (cameras.txt, images.txt, points3D.txt)\n"
+			"                              to --output_dir/colmap. Replaces the former Bundler (*.out) export.\n"
+			"                              OPENCV camera model is the default so stored distortion is kept.\n"
+			"    --colmap_camera_model # 0=PINHOLE, 1=OPENCV (default), 2=SIMPLE_RADIAL.\n"
+			"    --colmap_no_points    Skip bundle adjustment / points3D.txt (cameras.txt and images.txt only).\n"
+			"    --colmap_no_images    Do not write images/*.jpg (poses and points are still exported).\n"
+			"    --colmap_indexed_keypoints  Write only keypoints that ended up with a 3D point, instead of\n"
+			"                              every detected keypoint.\n"
+			"    --colmap_sba_type #   Bundle adjustment back-end: 1=g2o (default), 2=GTSAM, 3=Ceres, 4=CVSBA.\n"
+			"    --colmap_sba_iterations # Bundle adjustment iterations (default 20; 0 builds correspondences\n"
+			"                              and triangulates points without solving).\n"
+			"    --colmap_sba_variance # Pixel variance for the solve (default 1.0).\n"
+			"    --colmap_no_rematch   Do not re-match descriptors between linked frames; rely on the word\n"
+			"                              ids assigned at mapping time. Rematching is on by default.\n"
+			"    --colmap_max_linear_speed  #  Exclude frames faster than this, m/s (default 0: disabled).\n"
+			"    --colmap_max_angular_speed # Exclude frames faster than this, rad/s (default 0: disabled).\n"
+			"    --colmap_blur #       Exclude frames blurrier than this Laplacian variance (default 0: disabled).\n"
 			"    --gain          #     Gain compensation value (default 1, set 0 to disable).\n"
 			"    --gain_gray           Do gain estimation compensation on gray channel only (default RGB channels).\n"
 			"    --no_blending         Disable blending when texturing.\n"
@@ -204,12 +235,122 @@ void showUsage()
 
 class ConsoleProgessState : public ProgressState
 {
+public:
+	ConsoleProgessState() :
+		tty_(RTABMAP_ISATTY(RTABMAP_FILENO(stdout))),
+		barActive_(false)
+	{}
+	~ConsoleProgessState()
+	{
+		finishBar();
+	}
 	virtual bool callback(const std::string & msg) const
 	{
+		std::string label;
+		int n = 0;
+		int m = 0;
+		if(parseCount(msg, label, n, m))
+		{
+			printBar(label, n, m);
+			return true;
+		}
+		finishBar();
 		if(!msg.empty())
+		{
 			printf("%s\n", msg.c_str());
+			fflush(stdout);
+		}
 		return true;
 	}
+private:
+	static bool parseCount(const std::string & msg, std::string & label, int & n, int & m)
+	{
+		const std::string::size_type slash = msg.rfind('/');
+		if(slash == std::string::npos || slash == 0)
+		{
+			return false;
+		}
+		std::string::size_type start = msg.rfind(' ', slash);
+		start = (start == std::string::npos) ? 0 : start + 1;
+		if(start >= slash)
+		{
+			return false;
+		}
+		char extra = 0;
+		if(sscanf(msg.c_str() + start, "%d/%d%c", &n, &m, &extra) < 2 || m < 0 || n < 0)
+		{
+			return false;
+		}
+		label = start == 0 ? std::string() : msg.substr(0, start - (msg[start - 1] == ' ' ? 1 : 0));
+		return true;
+	}
+	void printBar(const std::string & label, int n, int m) const
+	{
+		if(n > m)
+		{
+			n = m;
+		}
+		const double frac = m > 0 ? std::min(1.0, (double)n / (double)m) : 0.0;
+		if(label != lastLabel_)
+		{
+			finishBar();
+			lastLabel_ = label;
+			barTimer_.start();
+		}
+		if(!tty_)
+		{
+			printf("%s %d/%d (%.1f%%)\n", label.c_str(), n, m, frac * 100.0);
+			fflush(stdout);
+			return;
+		}
+		const int width = 28;
+		const int filled = std::min(width, (int)(frac * width + 0.5));
+		char bar[29];
+		for(int i = 0; i < width; ++i)
+		{
+			bar[i] = (i < filled) ? '=' : ' ';
+		}
+		if(filled < width)
+		{
+			bar[filled] = '>';
+		}
+		bar[width] = 0;
+		const double elapsed = barTimer_.getElapsedTime();
+		const double rate = (elapsed > 0.25 && n > 0) ? (double)n / elapsed : 0.0;
+		if(rate > 0.0)
+		{
+			printf("\r\033[K%s [%s] %d/%d %5.1f%%  %.0f/s",
+					label.c_str(), bar, n, m, frac * 100.0, rate);
+		}
+		else
+		{
+			printf("\r\033[K%s [%s] %d/%d %5.1f%%",
+					label.c_str(), bar, n, m, frac * 100.0);
+		}
+		fflush(stdout);
+		barActive_ = true;
+		if(n >= m)
+		{
+			printf("\n");
+			fflush(stdout);
+			barActive_ = false;
+			lastLabel_.clear();
+		}
+	}
+	void finishBar() const
+	{
+		if(barActive_)
+		{
+			printf("\n");
+			fflush(stdout);
+			barActive_ = false;
+		}
+		lastLabel_.clear();
+	}
+	bool tty_;
+	mutable bool barActive_;
+	mutable std::string lastLabel_;
+	mutable UTimer barTimer_;
 };
 
 void saveMap(
@@ -259,6 +400,8 @@ int main(int argc, char * argv[])
 	bool exportMesh = false;
 	bool texture = false;
 	bool ba = false;
+	bool exportColmapFlag = false;
+	ColmapExportOptions colmapOptions;
 	bool doGainCompensationRGB = true;
 	float gainValue = 1;
 	bool doBlending = true;
@@ -646,6 +789,117 @@ int main(int argc, char * argv[])
 		else if(std::strcmp(argv[i], "--ba") == 0)
 		{
 			ba = true;
+		}
+		else if(std::strcmp(argv[i], "--colmap") == 0)
+		{
+			exportColmapFlag = true;
+		}
+		else if(std::strcmp(argv[i], "--colmap_camera_model") == 0)
+		{
+			++i;
+			if(i < argc-1)
+			{
+				colmapOptions.cameraModel = atoi(argv[i]);
+			}
+			else
+			{
+				printf("missing colmap_camera_model value\n");
+				showUsage();
+			}
+		}
+		else if(std::strcmp(argv[i], "--colmap_no_points") == 0)
+		{
+			colmapOptions.exportPoints = false;
+		}
+		else if(std::strcmp(argv[i], "--colmap_no_images") == 0)
+		{
+			colmapOptions.exportImages = false;
+		}
+		else if(std::strcmp(argv[i], "--colmap_indexed_keypoints") == 0)
+		{
+			colmapOptions.allKeypoints = false;
+		}
+		else if(std::strcmp(argv[i], "--colmap_sba_type") == 0)
+		{
+			++i;
+			if(i < argc-1)
+			{
+				colmapOptions.sbaType = static_cast<Optimizer::Type>(atoi(argv[i]));
+			}
+			else
+			{
+				printf("missing colmap_sba_type value\n");
+				showUsage();
+			}
+		}
+		else if(std::strcmp(argv[i], "--colmap_sba_iterations") == 0)
+		{
+			++i;
+			if(i < argc-1)
+			{
+				colmapOptions.sbaIterations = atoi(argv[i]);
+			}
+			else
+			{
+				printf("missing colmap_sba_iterations value\n");
+				showUsage();
+			}
+		}
+		else if(std::strcmp(argv[i], "--colmap_sba_variance") == 0)
+		{
+			++i;
+			if(i < argc-1)
+			{
+				colmapOptions.sbaVariance = atof(argv[i]);
+			}
+			else
+			{
+				printf("missing colmap_sba_variance value\n");
+				showUsage();
+			}
+		}
+		else if(std::strcmp(argv[i], "--colmap_no_rematch") == 0)
+		{
+			colmapOptions.sbaRematchFeatures = false;
+		}
+		else if(std::strcmp(argv[i], "--colmap_max_linear_speed") == 0)
+		{
+			++i;
+			if(i < argc-1)
+			{
+				colmapOptions.maxLinearVelocity = atof(argv[i]);
+			}
+			else
+			{
+				printf("missing colmap_max_linear_speed value\n");
+				showUsage();
+			}
+		}
+		else if(std::strcmp(argv[i], "--colmap_max_angular_speed") == 0)
+		{
+			++i;
+			if(i < argc-1)
+			{
+				colmapOptions.maxAngularVelocity = atof(argv[i]);
+			}
+			else
+			{
+				printf("missing colmap_max_angular_speed value\n");
+				showUsage();
+			}
+		}
+		else if(std::strcmp(argv[i], "--colmap_blur") == 0)
+		{
+			++i;
+			if(i < argc-1)
+			{
+				colmapOptions.laplacianThr = atof(argv[i]);
+			}
+			else
+			{
+				printf("missing colmap_blur value\n");
+				showUsage();
+			}
 		}
 		else if(std::strcmp(argv[i], "--gain_gray") == 0)
 		{
@@ -1208,7 +1462,8 @@ int main(int argc, char * argv[])
 		 exportGps>=0 ||
 		 texture ||
 		 export2DMap ||
-		 exportOctomap))
+		 exportOctomap ||
+		 exportColmapFlag))
 	{
 		printf("Launching the tool without any required option(s) is deprecated. We will add --cloud to keep compatibilty with old behavior.\n");
 		exportCloud = true;
@@ -1275,7 +1530,7 @@ int main(int argc, char * argv[])
 	std::multimap<int, Link> links;
 	dbDriver->getAllOdomPoses(odomPoses, true);
 	dbDriver->getAllLinks(links, true, true);
-	if(optimizationApproach == 3 || !(exportCloud || exportMesh || exportPoses || exportPosesCamera || exportPosesScan || exportPosesLandmarks || export2DMap || exportOctomap))
+	if(optimizationApproach == 3 || !(exportCloud || exportMesh || exportPoses || exportPosesCamera || exportPosesScan || exportPosesLandmarks || export2DMap || exportOctomap || exportColmapFlag))
 	{
 		// Just use odometry poses when exporting only images
 		optimizedPoses = odomPoses;
@@ -1552,24 +1807,41 @@ int main(int argc, char * argv[])
 		if(ba)
 		{
 			printf("Global bundle adjustment...\n");
-			// TODO: these conversions could be simplified
+			fflush(stdout);
 			UASSERT(optimizedPoses.lower_bound(1) != optimizedPoses.end());
+			ConsoleProgessState baProgress;
 			OptimizerG2O g2o(parameters);
-			std::list<int> ids;
-			for(std::map<int, Transform>::iterator iter=optimizedPoses.lower_bound(1); iter!=optimizedPoses.end(); ++iter)
-			{
-				ids.push_back(iter->first);
-			}
-			std::list<Signature *> signatures;
-			dbDriver->loadSignatures(ids, signatures);
-			std::map<int, Signature> nodes;
-			for(std::list<Signature *>::iterator iter=signatures.begin(); iter!=signatures.end(); ++iter)
-			{
-				nodes.insert(std::make_pair((*iter)->id(), *(*iter)));
-			}
-			optimizedPoses = ((Optimizer*)&g2o)->optimizeBA(optimizedPoses.lower_bound(1)->first, optimizedPoses, links, nodes, true);
+			g2o.setProgressState(&baProgress);
+			baProgress.callback("Matching correspondences...");
+			optimizedPoses = ((Optimizer*)&g2o)->optimizeBA(
+					optimizedPoses.lower_bound(1)->first,
+					optimizedPoses,
+					links,
+					std::map<int, Signature>(),
+					true,
+					ParametersMap(),
+					dbDriver.get());
 			printf("Global bundle adjustment... done (%fs).\n", timer.ticks());
+			fflush(stdout);
 		}
+	}
+
+	if(exportColmapFlag)
+	{
+		const std::string colmapPath = outputDirectory + "/colmap";
+		printf("Exporting COLMAP model to \"%s\"...\n", colmapPath.c_str());
+		ConsoleProgessState colmapProgress;
+		ColmapExportResult colmapResult = exportColmap(
+				optimizedPoses, links, std::map<int, Signature>(), dbDriver.get(),
+				parameters, colmapOptions, colmapPath, &colmapProgress);
+		if(!colmapResult.ok)
+		{
+			printf("Colmap export failed: %s\n", colmapResult.error.c_str());
+			return -1;
+		}
+		printf("Exporting COLMAP model... done (%fs). %d cameras, %d points, %d dropped points, %d outlier observations removed.\n",
+				timer.ticks(), colmapResult.camerasExported, colmapResult.pointsExported,
+				colmapResult.droppedPoints, colmapResult.outliersRemoved);
 	}
 
 	// Construct the cloud

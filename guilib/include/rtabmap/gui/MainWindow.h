@@ -71,7 +71,7 @@ class StatsToolBox;
 class ProgressDialog;
 class TwistGridWidget;
 class ExportCloudsDialog;
-class ExportBundlerDialog;
+class ExportColmapDialog;
 class PostProcessingDialog;
 class DepthCalibrationDialog;
 class DataRecorder;
@@ -234,7 +234,7 @@ protected Q_SLOTS:
 	void setAspectRatioCustom();
 	void exportGridMap();
 	void exportClouds();
-	void exportBundlerFormat();
+	void exportColmapFormat();
 	void viewClouds();
 	void dataRecorder();
 	void dataRecorderDestroyed();
@@ -351,7 +351,7 @@ private:
 	PreferencesDialog * _preferencesDialog;
 	AboutDialog * _aboutDialog;
 	ExportCloudsDialog * _exportCloudsDialog;
-	ExportBundlerDialog * _exportBundlerDialog;
+	ExportColmapDialog * _exportColmapDialog;
 	PostProcessingDialog * _postProcessingDialog;
 	DepthCalibrationDialog * _depthCalibrationDialog;
 	DataRecorder * _dataRecorder;
