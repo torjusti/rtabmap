@@ -59,7 +59,7 @@ public:
 	int iterations() const;
 	bool intraSession() const;
 	bool interSession() const;
-	int minGraphDistance() const;
+	double minGraphDistance() const;
 	bool isRefineNeighborLinks() const;
 	bool isRefineLoopClosureLinks() const;
 	bool isSBA() const;
@@ -75,7 +75,7 @@ public:
 	void setIterations(int iterations);
 	void setIntraSession(bool enabled);
 	void setInterSession(bool enabled);
-	void setMinGraphDistance(int value);
+	void setMinGraphDistance(double value);
 	void setRefineNeighborLinks(bool on);
 	void setRefineLoopClosureLinks(bool on);
 	void setSBA(bool on);

@@ -3242,10 +3242,10 @@ TEST(RtabmapTest, DetectMoreLoopClosuresAddsLinksBetweenSpatialRevisits)
 	params[Parameters::kRGBDOptimizeMaxError()] = "0";
 	params[Parameters::kRtabmapLoopThr()] = "1"; // suppress online loop detection
 	params[Parameters::kMemBinDataKept()] = "true"; // keep feature data for post-hoc registration
-	// STMSize: small enough that the (N1,N5) id-diff (=4) passes the
-	// "too close nodes (id-diff < STMSize)" filter inside detectMoreLoopClosures,
-	// but >= 2 so all 5 nodes stay in the local optimized graph.
-	params[Parameters::kMemSTMSize()] = "2";
+	// All 5 nodes stay in the local optimized graph. Disable the metre
+	// graph-distance filter so the 4 m out-and-back between N1 and N5 is
+	// still accepted as a spatial revisit.
+	params[Parameters::kMemSTMSize()] = "5";
 	Rtabmap rtabmap;
 	rtabmap.init(params);
 	const cv::Mat cov = cv::Mat::eye(6, 6, CV_64FC1) * 0.01;
@@ -3269,7 +3269,13 @@ TEST(RtabmapTest, DetectMoreLoopClosuresAddsLinksBetweenSpatialRevisits)
 			/*clusterAngle=*/M_PI/6.0f,
 			/*iterations=*/1,
 			/*intraSession=*/true,
-			/*interSession=*/false);
+			/*interSession=*/false,
+			/*state=*/0,
+			/*clusterRadiusMin=*/0.0f,
+			/*toFromMapId=*/-1,
+			/*loopsInGraphDistance=*/true,
+			/*parallelRegistration=*/true,
+			/*minGraphDistance=*/0.0f);
 	EXPECT_GE(added, 1) << "expected at least one post-hoc loop closure between N1 and N5";
 
 	// A non-neighbor link between N1 and N5 must now exist in Memory (stored
