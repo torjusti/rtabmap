@@ -65,7 +65,6 @@ class QSpinBox;
 namespace rtabmap
 {
 class DBDriver;
-class LoopSelectionState;
 class ImageView;
 class SensorData;
 class CloudViewer;
@@ -164,9 +163,6 @@ private Q_SLOTS:
 	void view3DMapFromFile();
 	void generate3DMap();
 	void detectMoreLoopClosures();
-	void sparsifyLoopClosures();
-	void undoLoopSparsification();
-	void restoreSparsifiedLoops();
 	void mergeComponents();
 	void updateAllNeighborCovariances();
 	void updateAllLoopClosureCovariances();
@@ -261,16 +257,14 @@ private:
 			int from,
 			int to);
 	std::multimap<int, rtabmap::Link> updateLinksWithModifications(
-			const std::multimap<int, rtabmap::Link> & edgeConstraints, bool applySparsification = true);
-	void saveLoopSelection();
-	void refreshLoopSelection();
+			const std::multimap<int, rtabmap::Link> & edgeConstraints);
 	void updateNeighborsSlider(int from = 0, int to = 0);
 	void updateLoopClosuresSlider(int from, int to);
 	void updateLoopClosuresSlider();
 	void updateCovariances(const QList<Link> & links);
 	void refineLinks(const QList<Link> & links);
 	void refineConstraint(int from, int to, Registration * reg, RegistrationIcp * regIcp, bool silent);
-	bool addConstraint(int from, int to, Registration * reg, bool silent, bool silentlyUseOptimizedGraphAsGuess = false, Optimizer * optimizer = 0, const Link * verifiedLink = 0, Link * preparedLink = 0, double * quality = 0);
+	bool addConstraint(int from, int to, Registration * reg, bool silent, bool silentlyUseOptimizedGraphAsGuess = false, Optimizer * optimizer = 0);
 	// knownCrsXY: optional CRS coordinates of the point (e.g. read from the
 	// basemap) used to prefill the anchor dialog.
 	void addAnchorPoint(int nodeId, const Transform & tLocal, const double * knownCrsXY = 0);
@@ -331,7 +325,6 @@ private:
 	QList<rtabmap::Link> loopLinks_;
 	int lastSliderIndexBrowsed_;
 	rtabmap::DBDriver * dbDriver_;
-	std::shared_ptr<LoopSelectionState> loopSelection_;
 	QString pathDatabase_;
 	std::string databaseFileName_;
 	std::list<std::map<int, rtabmap::Transform> > graphes_;

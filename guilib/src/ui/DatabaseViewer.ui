@@ -2833,19 +2833,6 @@
            </property>
           </widget>
          </item>
-         <item row="8" column="0">
-          <widget class="QSpinBox" name="spinBox_minGraphDistance">
-           <property name="minimum">
-            <number>1</number>
-           </property>
-           <property name="maximum">
-            <number>9999</number>
-           </property>
-           <property name="value">
-            <number>10</number>
-           </property>
-          </widget>
-         </item>
          <item row="3" column="0">
           <widget class="QSpinBox" name="spinBox_detectMore_iterations">
            <property name="minimum">
@@ -2965,13 +2952,6 @@
            </property>
           </widget>
          </item>
-         <item row="8" column="1">
-          <widget class="QLabel" name="label_40">
-           <property name="text">
-            <string>Minimum graph distance</string>
-           </property>
-          </widget>
-         </item>
          <item row="2" column="1">
           <widget class="QLabel" name="label_30">
            <property name="text">
@@ -2994,22 +2974,34 @@
           </widget>
          </item>
          <item row="9" column="0">
-          <widget class="QCheckBox" name="checkBox_detectMore_loopsInDistance">
-           <property name="text">
-            <string/>
+          <widget class="QDoubleSpinBox" name="doubleSpinBox_detectMore_spacing">
+           <property name="suffix">
+            <string> m</string>
            </property>
-           <property name="checked">
-            <bool>true</bool>
+           <property name="decimals">
+            <number>1</number>
+           </property>
+           <property name="minimum">
+            <double>0.0</double>
+           </property>
+           <property name="maximum">
+            <double>1000.0</double>
+           </property>
+           <property name="singleStep">
+            <double>1.0</double>
+           </property>
+           <property name="value">
+            <double>5.0</double>
            </property>
           </widget>
          </item>
          <item row="9" column="1">
-          <widget class="QLabel" name="label_detectMore_loopsInDistance">
+          <widget class="QLabel" name="label_detectMore_spacing">
            <property name="text">
-            <string>Compute graph distance using loop closures (existing and accepted during detection)</string>
+            <string>Minimum graph distance</string>
            </property>
            <property name="toolTip">
-            <string>Pairs within the minimum graph distance are not tested, so new loop closures end up spaced by at least that distance, and a node can be part of several new loop closures per iteration. When unchecked, the distance only counts odometry links and at most one new loop closure is accepted per node per iteration.</string>
+            <string>Skip pairs already connected by less than this distance along the graph (metres). Distance includes odometry, existing loop closures, and loops accepted during detection. New loops therefore end up spaced by at least this amount, and a node can take part in several new loop closures per iteration. Set to 0 to disable.</string>
            </property>
            <property name="wordWrap">
             <bool>true</bool>
@@ -3029,56 +3021,20 @@
          <item row="10" column="1">
           <widget class="QLabel" name="label_detectMore_parallel">
            <property name="text">
-            <string>Parallel registration of the candidates (legacy mode requires RGBD/OptimizeMaxError=0)</string>
+            <string>Parallel registration of the candidates (requires RGBD/OptimizeMaxError=0)</string>
            </property>
            <property name="toolTip">
-            <string>When unchecked, candidates are registered sequentially.</string>
+            <string>When unchecked, or when OptimizeMaxError, ICP, or feature re-extraction is enabled, candidates are registered sequentially.</string>
            </property>
            <property name="wordWrap">
             <bool>true</bool>
            </property>
           </widget>
          </item>
-         <item row="14" column="0" colspan="2">
-          <widget class="QCheckBox" name="checkBox_detectMore_sparse">
-           <property name="text"><string>Select sparse loop closures</string></property>
-           <property name="checked"><bool>true</bool></property>
-           <property name="toolTip"><string>Budget registrations per pair of odometry intervals, compare successful links, then select strong links at the requested spacing. Existing loops count toward spacing. Same-chain candidates closer along odometry than the loop spacing are excluded. Pose grouping can be disabled independently.</string></property>
-          </widget>
-         </item>
-         <item row="15" column="0">
-          <widget class="QDoubleSpinBox" name="doubleSpinBox_detectMore_spacing">
-           <property name="suffix"><string> m</string></property>
-           <property name="minimum"><double>0.1</double></property>
-           <property name="maximum"><double>1000.0</double></property>
-           <property name="value"><double>5.0</double></property>
-          </widget>
-         </item>
-         <item row="15" column="1">
-          <widget class="QLabel" name="label_detectMore_spacing">
-           <property name="text"><string>Loop spacing along odometry</string></property>
-           <property name="toolTip"><string>Two links compete when both corresponding endpoints lie closer than this distance along the same respective odometry chains. Also excludes candidate links shorter than this along the same odometry chain, and defines the interval length for the candidate budget. Other route pairs remain independent.</string></property>
-           <property name="wordWrap"><bool>true</bool></property>
-          </widget>
-         </item>
-         <item row="16" column="0">
-          <widget class="QSpinBox" name="spinBox_detectMore_budget">
-           <property name="minimum"><number>1</number></property>
-           <property name="maximum"><number>1024</number></property>
-           <property name="value"><number>32</number></property>
-          </widget>
-         </item>
-         <item row="16" column="1">
-          <widget class="QLabel" name="label_detectMore_budget">
-           <property name="text"><string>Candidate attempts per interval pair / iteration</string></property>
-           <property name="toolTip"><string>Failures count toward this budget. Choose spatially diverse pairs from a bounded pool, starting with similar camera poses. Later iterations try fresh alternatives in uncovered overlaps.</string></property>
-           <property name="wordWrap"><bool>true</bool></property>
-          </widget>
-         </item>
          <item row="11" column="0" colspan="2">
           <widget class="QCheckBox" name="checkBox_detectMore_groupPoses">
            <property name="text"><string>Group repeated camera poses</string></property>
-           <property name="toolTip"><string>Search once per group of consecutive, similarly oriented camera poses. Use the middle, first and last frames as alternatives (up to nine pairs per group pair). Sparse selection compares alternatives within its candidate budget; without sparse selection, use the first successful alternative. Uses recorded odometry; separate sessions and revisits stay separate. Disable to search individual frames.</string></property>
+           <property name="toolTip"><string>Search once per group of consecutive, similarly oriented camera poses. Use the middle, first and last frames as alternatives (up to nine pairs per group pair). Uses recorded odometry; separate sessions and revisits stay separate. Disable to search individual frames.</string></property>
            <property name="checked"><bool>true</bool></property>
           </widget>
          </item>

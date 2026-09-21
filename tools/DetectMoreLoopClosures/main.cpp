@@ -59,8 +59,10 @@ void showUsage()
 			"    --intra       Add only intra-session loop closures.\n"
 			"    --inter       Add only inter-session loop closures.\n"
 			"    --session #   Add loop closures only from/to that map session ID (use -1 for last session).\n"
+			"    -d #          Minimum graph distance in metres (default 5). Pairs already\n"
+			"                  connected by a shorter path are not tested.\n"
 			"    --no_loops_in_distance\n"
-			"                  Compute the minimum graph distance (Mem/STMSize) over odometry links\n"
+			"                  Compute the minimum graph distance over odometry links\n"
 			"                  only (legacy behavior), instead of all links including loop closures\n"
 			"                  accepted during detection. At most one new loop closure is then\n"
 			"                  accepted per node per iteration.\n"
@@ -118,6 +120,7 @@ int main(int argc, char * argv[])
 	int fromToMapId = -2;
 	bool loopsInGraphDistance = true;
 	bool parallelRegistration = true;
+	float minGraphDistance = 5.0f;
 	for(int i=1; i<argc-1; ++i)
 	{
 		if(std::strcmp(argv[i], "--help") == 0)
@@ -208,6 +211,18 @@ int main(int argc, char * argv[])
 				showUsage();
 			}
 		}
+		else if(std::strcmp(argv[i], "-d") == 0)
+		{
+			++i;
+			if(i<argc-1)
+			{
+				minGraphDistance = uStr2Float(argv[i]);
+			}
+			else
+			{
+				showUsage();
+			}
+		}
 	}
 	ParametersMap inputParams = Parameters::parseArguments(argc,  argv);
 
@@ -225,6 +240,7 @@ int main(int argc, char * argv[])
 	printf("Cluster radius min = %f m\n", clusterRadiusMin);
 	printf("Cluster radius max = %f m\n", clusterRadiusMax);
 	printf("Cluster angle = %f deg\n", clusterAngle*180.0f/CV_PI);
+	printf("Minimum graph distance = %f m\n", minGraphDistance);
 	if(intraSession)
 	{
 		printf("Intra-session only\n");
@@ -293,7 +309,7 @@ int main(int argc, char * argv[])
 	}
 
 	printf("Detecting...\n");
-	int detected = rtabmap.detectMoreLoopClosures(clusterRadiusMax, clusterAngle, iterations, intraSession, interSession, &progress, clusterRadiusMin, fromToMapId, loopsInGraphDistance, parallelRegistration);
+	int detected = rtabmap.detectMoreLoopClosures(clusterRadiusMax, clusterAngle, iterations, intraSession, interSession, &progress, clusterRadiusMin, fromToMapId, loopsInGraphDistance, parallelRegistration, minGraphDistance);
 	if(detected < 0)
 	{
 		if(!g_loopForever)

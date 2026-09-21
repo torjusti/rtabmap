@@ -6644,7 +6644,7 @@ void MainWindow::postProcessing(
 		int iterations,
 		bool interSession,
 		bool intraSession,
-		int minGraphDistance,
+		double minGraphDistance,
 		bool sba,
 		int sbaIterations,
 		double sbaVariance,
@@ -6772,31 +6772,42 @@ void MainWindow::postProcessing(
 			_progressDialog->appendText(tr("Looking for more loop closures, clustering poses... found %1 clusters.").arg(clusters.size()));
 			QApplication::processEvents();
 
-			if(minGraphDistance > 1)
+			if(minGraphDistance > 0.0)
 			{
 				int clustersBefore = clusters.size();
 				for(std::multimap<int, int>::iterator iter=clusters.begin(); iter!=clusters.end();)
 				{
-					if(abs(iter->first - iter->second) < minGraphDistance)
+					// compute path length in metres along odometry links
+					std::list<int> path = graph::computePath(neigborLinks, iter->first, iter->second);
+					float length = 0.0f;
+					if(path.size() >= 2)
+					{
+						std::list<int>::iterator a = path.begin();
+						std::list<int>::iterator b = a;
+						for(++b; b!=path.end(); ++a, ++b)
+						{
+							std::multimap<int, Link>::iterator lter = graph::findLink(neigborLinks, *a, *b);
+							if(lter != neigborLinks.end() && !lter->second.transform().isNull())
+							{
+								length += lter->second.transform().getNorm();
+							}
+							else if(_currentPosesMap.count(*a) && _currentPosesMap.count(*b))
+							{
+								length += _currentPosesMap.at(*a).getDistance(_currentPosesMap.at(*b));
+							}
+						}
+					}
+					if(!path.empty() && length < minGraphDistance)
 					{
 						iter = clusters.erase(iter);
 					}
 					else
 					{
-						// compute path to know how far we are in terms of graph length
-						std::list<int> path = graph::computePath(neigborLinks, iter->first, iter->second);
-						if(!path.empty() && (int)path.size() <= minGraphDistance)
-						{
-							iter = clusters.erase(iter);
-						}
-						else
-						{
-							++iter;
-						}
+						++iter;
 					}
 				}
-				_progressDialog->appendText(tr("Filtered %1/%2 clusters for too close nodes (below minimum graph distance=%3).")
-					.arg(clustersBefore-clusters.size()).arg(clustersBefore).arg(minGraphDistance));
+				_progressDialog->appendText(tr("Filtered %1/%2 clusters for too close nodes (below minimum graph distance=%3 m).")
+					.arg(clustersBefore-clusters.size()).arg(clustersBefore).arg(minGraphDistance, 0, 'f', 1));
 				QApplication::processEvents();
 			}
 

@@ -643,10 +643,9 @@ public:
 	 *       @ref Parameters::kRegStrategy() (0=Vis, 1=Icp, 2=VisIcp), so the quality and
 	 *       sensor requirements of this pass mirror the live loop-closure pipeline.
 	 *
-	 * @note Candidate cluster pairs whose ids differ by less than
-	 *       @ref Parameters::kMemSTMSize(), or that are already reachable from each
-	 *       other within that many graph hops, are filtered out. This prevents trivial
-	 *       "loop closures" between temporally or topologically adjacent nodes.
+	 * @note Candidate cluster pairs already connected by a graph path shorter
+	 *       than @p minGraphDistance metres are filtered out. This prevents trivial
+	 *       "loop closures" between topologically adjacent nodes.
 	 *
 	 * @param clusterRadiusMax Maximum metric distance (m) between two candidate nodes.
 	 * @param clusterAngle Maximum angular distance (rad) between two candidate nodes.
@@ -657,6 +656,13 @@ public:
 	 * @param clusterRadiusMin Minimum metric distance (m); pairs closer than this are
 	 *        considered already linked through neighbor links.
 	 * @param toFromMapId If >=0, restrict candidate pairs to nodes belonging to this map id.
+	 * @param loopsInGraphDistance If true, loop closures (including those accepted
+	 *        during this call) count toward graph distance and a node may join several
+	 *        new closures per iteration. If false, only odometry links are used and at
+	 *        most one new closure is accepted per node per iteration.
+	 * @param parallelRegistration Register candidates in parallel when possible.
+	 * @param minGraphDistance Minimum graph path length (m) between candidate nodes.
+	 *        0 disables the filter. Default 5 m.
 	 * @return Number of loop closures added, or -1 on error
 	 *         (e.g. not in RGB-D mode, no optimizer iterations).
 	 */
@@ -670,7 +676,8 @@ public:
 			float clusterRadiusMin = 0.0f,
 			int toFromMapId = -1,
 			bool loopsInGraphDistance = true,
-			bool parallelRegistration = true);
+			bool parallelRegistration = true,
+			float minGraphDistance = 5.0f);
 	/**
 	 * @brief Runs a global bundle adjustment over the optimized graph.
 	 *

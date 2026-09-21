@@ -60,9 +60,6 @@ SET(SRC_FILES
 	./AboutDialog.cpp
 	./ConsoleWidget.cpp
 	./DatabaseViewer.cpp
-	./LoopSparseSelection.cpp
-	./LoopSelectionState.cpp
-	./LoopSparsificationDialog.cpp
 	./utilite/UPlot.cpp
 	./CloudViewer.cpp
 	./CloudViewerCellPicker.cpp
@@ -277,16 +274,4 @@ IF(BUILD_TESTING)
   ADD_EXECUTABLE(test_loop_pose_grouping ../test/test_loop_pose_grouping.cpp)
   TARGET_LINK_LIBRARIES(test_loop_pose_grouping rtabmap_core gtest_main)
   ADD_TEST(NAME test_loop_pose_grouping COMMAND test_loop_pose_grouping)
-ENDIF()
-
-IF(BUILD_TESTING)
-  ADD_EXECUTABLE(test_loop_sparse_selection ../test/test_loop_sparse_selection.cpp LoopSparseSelection.cpp)
-  TARGET_LINK_LIBRARIES(test_loop_sparse_selection rtabmap_core gtest_main)
-  ADD_TEST(NAME test_loop_sparse_selection COMMAND test_loop_sparse_selection)
-ENDIF()
-
-IF(BUILD_TESTING)
-  ADD_EXECUTABLE(test_loop_selection_state ../test/test_loop_selection_state.cpp LoopSelectionState.cpp LoopSparsificationDialog.cpp)
-  TARGET_LINK_LIBRARIES(test_loop_selection_state rtabmap_core gtest_main ${PUBLIC_LIBRARIES})
-  ADD_TEST(NAME test_loop_selection_state COMMAND test_loop_selection_state)
 ENDIF()
