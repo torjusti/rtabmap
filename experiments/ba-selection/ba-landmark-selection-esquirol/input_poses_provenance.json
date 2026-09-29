@@ -1,0 +1,21 @@
+{
+  "export_flags": [
+    "--opt",
+    "0",
+    "--Optimizer/PriorsIgnored",
+    "false",
+    "--Optimizer/Robust",
+    "false",
+    "--Optimizer/Iterations",
+    "50",
+    "--ba",
+    "--Optimizer/BAProgressive",
+    "false"
+  ],
+  "source": {
+    "merged.db": [
+      130911793152,
+      1789389237204819048
+    ]
+  }
+}

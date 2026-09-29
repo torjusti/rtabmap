@@ -1,0 +1,68 @@
+{
+  "mode": "pilot",
+  "rows": {
+    "0": {
+      "landmark_selection": 0,
+      "frames": 800,
+      "correspondence_seconds": 8.75424,
+      "solve_seconds": 9.54412,
+      "input_hash": "6706535034001072665",
+      "tracks": 72625,
+      "three_view_tracks": 36303,
+      "observations": 352513,
+      "covered_frames": 798,
+      "rejected_observations": 187234,
+      "pose_rms_shift_m": 0.0152268,
+      "pose_max_shift_m": 0.0368396,
+      "maximum_rss_gib": 1.6141242980957031,
+      "pipeline_seconds": 18.29836
+    },
+    "1": {
+      "landmark_selection": 1,
+      "frames": 800,
+      "correspondence_seconds": 8.9404,
+      "solve_seconds": 10.0686,
+      "input_hash": "6706535034001072665",
+      "tracks": 72625,
+      "three_view_tracks": 36303,
+      "observations": 352513,
+      "covered_frames": 798,
+      "rejected_observations": 182782,
+      "pose_rms_shift_m": 0.0183614,
+      "pose_max_shift_m": 0.0395109,
+      "maximum_rss_gib": 1.623046875,
+      "phases": {
+        "selected": 46789,
+        "omitted_processed": 25836,
+        "selection_seconds": 0.067349,
+        "joint_seconds": 9.14075,
+        "point_only_seconds": 0.844734
+      },
+      "selected_fraction": 0.6442547332185886,
+      "pipeline_seconds": 19.009
+    }
+  },
+  "solver_speedup": 0.9479093419144667,
+  "pipeline_speedup": 0.9626156031353569,
+  "pose_difference_m": {
+    "median": 0.004001986659716919,
+    "p95": 0.012171739707118934,
+    "maximum": 0.018080223217151827
+  },
+  "caveat": "Pose differences and track retention are not ground-truth accuracy measurements.",
+  "baseline_repeat_poses_identical": true,
+  "baseline_repeat": {
+    "landmark_selection": 0,
+    "frames": 800,
+    "correspondence_seconds": 9.09306,
+    "solve_seconds": 9.59838,
+    "input_hash": "6706535034001072665",
+    "tracks": 72625,
+    "three_view_tracks": 36303,
+    "observations": 352513,
+    "covered_frames": 798,
+    "rejected_observations": 187234,
+    "pose_rms_shift_m": 0.0152268,
+    "pose_max_shift_m": 0.0368396
+  }
+}

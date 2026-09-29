@@ -1,0 +1,9 @@
+{
+  "native_tests_passed": 23,
+  "native_tests_skipped": 20,
+  "python_tests_passed": 132,
+  "build": "passed",
+  "install": "passed",
+  "installed_parameters_verified": true,
+  "time": 1790705281.0558388
+}

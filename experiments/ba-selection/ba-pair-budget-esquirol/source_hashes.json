@@ -1,0 +1,7 @@
+{
+  "/home/torjusti/Projects/rtabmap/corelib/src/optimizer/OptimizerBA.cpp": "fe19201bda24c5bddc0e1e14c84ea6e51992270c83537a1e54ddeb1a3a92549e",
+  "/home/torjusti/Projects/rtabmap/corelib/include/rtabmap/core/BAPairSelection.h": "5f6d308bf518d36f010fc1268b2984dbbd6412f7abab47fef749776ad0b5a975",
+  "/home/torjusti/Projects/rtabmap/corelib/src/optimizer/OptimizerG2O.cpp": "457237b09bde116706dc2c1cfc99dd026a0e25e5989f5390a96c8d8b1023fa14",
+  "/home/torjusti/Projects/3d/rtab/commands/fast_cloud.py": "729e1e413f7a4607e7b024052307c3ff317d238148347a0f812297084db45ecb",
+  "/home/torjusti/Projects/Scani/analysis/ba-pair-budget-esquirol/benchmark.cpp": "47cb15b1d467a8c9dbb5a8adabe0e788d3d832716ecba25e27ce602c696bbb44"
+}

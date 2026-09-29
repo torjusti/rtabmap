@@ -1,0 +1,429 @@
+{
+  "source_db": "/media/torjusti/Files/Esquirol/merged.db",
+  "input_poses_sha256": "06f7deb34ff4593fe1c3771f9fdbd07b5b62beb6a72c29b344fea4f0fbb93a02",
+  "scope": "Incremental BA from the same frozen existing camera trajectory; graph optimization and meshing excluded from BA timings.",
+  "settings": {
+    "iterations": 50,
+    "threads": 8,
+    "BAProgressive": false,
+    "BADepth": 0,
+    "window_graph_depth": 2,
+    "match_cache": false
+  },
+  "runs": [
+    {
+      "budget": 0,
+      "frames": 800,
+      "correspondence_seconds": 7.92737,
+      "solve_seconds": 9.23649,
+      "tracks": 72625,
+      "three_view_tracks": 36303,
+      "observations": 352513,
+      "covered_frames": 798,
+      "rejected_observations": 178169,
+      "pose_rms_shift_m": 0.0152245,
+      "pose_max_shift_m": 0.0367259,
+      "name": "pilot_00",
+      "ba_seconds": 17.16386,
+      "mean_observations_per_track_before_rejection": 4.853879518072289,
+      "observations_after_rejection": 174344,
+      "rejected_observation_fraction": 0.5054253318317339,
+      "timing_valid": true,
+      "proposed_pairs": 7428,
+      "matched_pairs": 7428,
+      "fallback_pairs": 0,
+      "frames_with_three_view_tracks": 797,
+      "frames_with_20_tracks": 789,
+      "peak_rss_kib": 1702304,
+      "conflicting_tracks": 2808,
+      "matching_loop_seconds": 6.14,
+      "track_build_seconds": 0.72,
+      "shared_track_counts_before_ba": {
+        "odom": {
+          "links": 1572,
+          "links_with_tracks": 1564,
+          "shared_tracks_mean": 278.0,
+          "shared_tracks_median": 276.0,
+          "track_length_mean": 23.5,
+          "track_length_median": 22.74
+        },
+        "loop": {
+          "links": 1408,
+          "links_with_tracks": 1408,
+          "shared_tracks_mean": 111.3,
+          "shared_tracks_median": 89.0,
+          "track_length_mean": 57.29,
+          "track_length_median": 53.49
+        }
+      },
+      "solver_last_reported_iteration": 7,
+      "solver_configured_iteration_cap": 55,
+      "translation_difference_vs_unlimited_m": {
+        "median": 0.0,
+        "p95": 0.0,
+        "max": 0.0
+      },
+      "rotation_difference_vs_unlimited_deg": {
+        "median": 0.0,
+        "p95": 0.0,
+        "max": 0.0
+      }
+    },
+    {
+      "budget": 8,
+      "frames": 800,
+      "correspondence_seconds": 5.94325,
+      "solve_seconds": 14.3624,
+      "tracks": 81893,
+      "three_view_tracks": 40642,
+      "observations": 412646,
+      "covered_frames": 798,
+      "rejected_observations": 207196,
+      "pose_rms_shift_m": 0.016676,
+      "pose_max_shift_m": 0.0394098,
+      "name": "pilot_08",
+      "ba_seconds": 20.30565,
+      "mean_observations_per_track_before_rejection": 5.0388433687860985,
+      "observations_after_rejection": 205450,
+      "rejected_observation_fraction": 0.5021156148369305,
+      "timing_valid": true,
+      "proposed_pairs": 7428,
+      "matched_pairs": 3410,
+      "fallback_pairs": 16,
+      "frames_with_three_view_tracks": 797,
+      "frames_with_20_tracks": 789,
+      "peak_rss_kib": 1699488,
+      "conflicting_tracks": 1969,
+      "matching_loop_seconds": 3.96,
+      "track_build_seconds": 0.85,
+      "pair_selection_seconds": 0.032,
+      "fallback_seconds": 0.085,
+      "shared_track_counts_before_ba": {
+        "odom": {
+          "links": 1572,
+          "links_with_tracks": 1564,
+          "shared_tracks_mean": 339.7,
+          "shared_tracks_median": 346.0,
+          "track_length_mean": 25.62,
+          "track_length_median": 25.59
+        },
+        "loop": {
+          "links": 1408,
+          "links_with_tracks": 1408,
+          "shared_tracks_mean": 164.4,
+          "shared_tracks_median": 151.0,
+          "track_length_mean": 58.7,
+          "track_length_median": 55.24
+        }
+      },
+      "solver_last_reported_iteration": 7,
+      "solver_configured_iteration_cap": 55,
+      "translation_difference_vs_unlimited_m": {
+        "median": 0.0019468529666541359,
+        "p95": 0.0039668063480546335,
+        "max": 0.008671746097544028
+      },
+      "rotation_difference_vs_unlimited_deg": {
+        "median": 0.03687011173308394,
+        "p95": 0.08211773740131642,
+        "max": 0.12775995407414245
+      }
+    },
+    {
+      "budget": 16,
+      "frames": 800,
+      "correspondence_seconds": 6.97647,
+      "solve_seconds": 10.9059,
+      "tracks": 77299,
+      "three_view_tracks": 38657,
+      "observations": 387493,
+      "covered_frames": 798,
+      "rejected_observations": 196842,
+      "pose_rms_shift_m": 0.0158546,
+      "pose_max_shift_m": 0.0369583,
+      "name": "pilot_16",
+      "ba_seconds": 17.88237,
+      "mean_observations_per_track_before_rejection": 5.012910904410147,
+      "observations_after_rejection": 190651,
+      "rejected_observation_fraction": 0.5079885314057286,
+      "timing_valid": true,
+      "proposed_pairs": 7428,
+      "matched_pairs": 4796,
+      "fallback_pairs": 3,
+      "frames_with_three_view_tracks": 797,
+      "frames_with_20_tracks": 789,
+      "peak_rss_kib": 1704276,
+      "conflicting_tracks": 2498,
+      "matching_loop_seconds": 5.02,
+      "track_build_seconds": 0.8,
+      "pair_selection_seconds": 0.036,
+      "fallback_seconds": 0.09,
+      "shared_track_counts_before_ba": {
+        "odom": {
+          "links": 1572,
+          "links_with_tracks": 1564,
+          "shared_tracks_mean": 312.6,
+          "shared_tracks_median": 316.0,
+          "track_length_mean": 25.25,
+          "track_length_median": 24.47
+        },
+        "loop": {
+          "links": 1408,
+          "links_with_tracks": 1408,
+          "shared_tracks_mean": 144.0,
+          "shared_tracks_median": 130.0,
+          "track_length_mean": 59.09,
+          "track_length_median": 55.22
+        }
+      },
+      "solver_last_reported_iteration": 7,
+      "solver_configured_iteration_cap": 55,
+      "translation_difference_vs_unlimited_m": {
+        "median": 0.0010224402136132273,
+        "p95": 0.002257919982358548,
+        "max": 0.00443861870341031
+      },
+      "rotation_difference_vs_unlimited_deg": {
+        "median": 0.02554530091930994,
+        "p95": 0.061363848002244,
+        "max": 0.09351632902875504
+      }
+    },
+    {
+      "budget": 0,
+      "frames": 800,
+      "correspondence_seconds": 8.39738,
+      "solve_seconds": 9.36546,
+      "tracks": 72625,
+      "three_view_tracks": 36303,
+      "observations": 352513,
+      "covered_frames": 798,
+      "rejected_observations": 178169,
+      "pose_rms_shift_m": 0.0152245,
+      "pose_max_shift_m": 0.0367259,
+      "name": "pilot_00_repeat",
+      "ba_seconds": 17.76284,
+      "mean_observations_per_track_before_rejection": 4.853879518072289,
+      "observations_after_rejection": 174344,
+      "rejected_observation_fraction": 0.5054253318317339,
+      "timing_valid": true,
+      "proposed_pairs": 7428,
+      "matched_pairs": 7428,
+      "fallback_pairs": 0,
+      "frames_with_three_view_tracks": 797,
+      "frames_with_20_tracks": 789,
+      "peak_rss_kib": 1701452,
+      "conflicting_tracks": 2808,
+      "matching_loop_seconds": 6.61,
+      "track_build_seconds": 0.72,
+      "shared_track_counts_before_ba": {
+        "odom": {
+          "links": 1572,
+          "links_with_tracks": 1564,
+          "shared_tracks_mean": 278.0,
+          "shared_tracks_median": 276.0,
+          "track_length_mean": 23.5,
+          "track_length_median": 22.74
+        },
+        "loop": {
+          "links": 1408,
+          "links_with_tracks": 1408,
+          "shared_tracks_mean": 111.3,
+          "shared_tracks_median": 89.0,
+          "track_length_mean": 57.29,
+          "track_length_median": 53.49
+        }
+      },
+      "solver_last_reported_iteration": 7,
+      "solver_configured_iteration_cap": 55,
+      "translation_difference_vs_unlimited_m": {
+        "median": 0.0,
+        "p95": 0.0,
+        "max": 0.0
+      },
+      "rotation_difference_vs_unlimited_deg": {
+        "median": 0.0,
+        "p95": 0.0,
+        "max": 0.0
+      }
+    },
+    {
+      "budget": 0,
+      "frames": 43971,
+      "correspondence_seconds": 592.27,
+      "solve_seconds": 676.241,
+      "tracks": 5067653,
+      "three_view_tracks": 2226422,
+      "observations": 18831399,
+      "covered_frames": 43928,
+      "rejected_observations": 8263555,
+      "pose_rms_shift_m": 0.00612028,
+      "pose_max_shift_m": 0.0899545,
+      "name": "full_00",
+      "ba_seconds": 1268.511,
+      "mean_observations_per_track_before_rejection": 3.716000089193163,
+      "observations_after_rejection": 10567844,
+      "rejected_observation_fraction": 0.43881790195194736,
+      "timing_valid": true,
+      "proposed_pairs": 206751,
+      "matched_pairs": 206751,
+      "fallback_pairs": 0,
+      "frames_with_three_view_tracks": 43849,
+      "frames_with_20_tracks": 42815,
+      "peak_rss_kib": 29258812,
+      "conflicting_tracks": 104259,
+      "matching_loop_seconds": 374.25,
+      "track_build_seconds": 40.03,
+      "shared_track_counts_before_ba": {
+        "odom": {
+          "links": 87928,
+          "links_with_tracks": 87738,
+          "shared_tracks_mean": 264.2,
+          "shared_tracks_median": 256.0,
+          "track_length_mean": 11.55,
+          "track_length_median": 7.94
+        },
+        "loop": {
+          "links": 31576,
+          "links_with_tracks": 31568,
+          "shared_tracks_mean": 126.6,
+          "shared_tracks_median": 107.0,
+          "track_length_mean": 32.28,
+          "track_length_median": 25.77
+        }
+      },
+      "solver_last_reported_iteration": 11,
+      "solver_configured_iteration_cap": 55,
+      "translation_difference_vs_unlimited_m": {
+        "median": 0.0,
+        "p95": 0.0,
+        "max": 0.0
+      },
+      "rotation_difference_vs_unlimited_deg": {
+        "median": 0.0,
+        "p95": 0.0,
+        "max": 0.0
+      }
+    },
+    {
+      "budget": 8,
+      "frames": 43971,
+      "correspondence_seconds": 563.563,
+      "solve_seconds": 785.644,
+      "tracks": 5266906,
+      "three_view_tracks": 2309935,
+      "observations": 19841135,
+      "covered_frames": 43928,
+      "rejected_observations": 8693438,
+      "pose_rms_shift_m": 0.0066746,
+      "pose_max_shift_m": 0.115193,
+      "name": "full_08",
+      "ba_seconds": 1349.2069999999999,
+      "mean_observations_per_track_before_rejection": 3.7671329239595313,
+      "observations_after_rejection": 11147697,
+      "rejected_observation_fraction": 0.4381522528827106,
+      "timing_valid": true,
+      "proposed_pairs": 206751,
+      "matched_pairs": 128480,
+      "fallback_pairs": 151,
+      "frames_with_three_view_tracks": 43849,
+      "frames_with_20_tracks": 42816,
+      "peak_rss_kib": 30543900,
+      "conflicting_tracks": 76273,
+      "matching_loop_seconds": 335.29,
+      "track_build_seconds": 42.62,
+      "pair_selection_seconds": 1.224,
+      "fallback_seconds": 3.545,
+      "shared_track_counts_before_ba": {
+        "odom": {
+          "links": 87928,
+          "links_with_tracks": 87738,
+          "shared_tracks_mean": 282.9,
+          "shared_tracks_median": 281.0,
+          "track_length_mean": 11.92,
+          "track_length_median": 7.94
+        },
+        "loop": {
+          "links": 31576,
+          "links_with_tracks": 31576,
+          "shared_tracks_mean": 159.0,
+          "shared_tracks_median": 142.0,
+          "track_length_mean": 33.27,
+          "track_length_median": 26.23
+        }
+      },
+      "solver_last_reported_iteration": 13,
+      "solver_configured_iteration_cap": 55,
+      "translation_difference_vs_unlimited_m": {
+        "median": 0.0006905743437136536,
+        "p95": 0.002705924528938574,
+        "max": 0.029320986055946355
+      },
+      "rotation_difference_vs_unlimited_deg": {
+        "median": 0.01996746570133313,
+        "p95": 0.06991615842459725,
+        "max": 0.7972575720843124
+      }
+    },
+    {
+      "budget": 16,
+      "frames": 43971,
+      "correspondence_seconds": 586.158,
+      "solve_seconds": 763.124,
+      "tracks": 5136707,
+      "three_view_tracks": 2259234,
+      "observations": 19248368,
+      "covered_frames": 43928,
+      "rejected_observations": 8483790,
+      "pose_rms_shift_m": 0.00636902,
+      "pose_max_shift_m": 0.077373,
+      "name": "full_16",
+      "ba_seconds": 1349.2820000000002,
+      "mean_observations_per_track_before_rejection": 3.7472193761489607,
+      "observations_after_rejection": 10764578,
+      "rejected_observation_fraction": 0.440753730394182,
+      "timing_valid": true,
+      "proposed_pairs": 206751,
+      "matched_pairs": 170200,
+      "fallback_pairs": 56,
+      "frames_with_three_view_tracks": 43849,
+      "frames_with_20_tracks": 42816,
+      "peak_rss_kib": 29804180,
+      "conflicting_tracks": 98040,
+      "matching_loop_seconds": 361.6,
+      "track_build_seconds": 41.04,
+      "pair_selection_seconds": 1.445,
+      "fallback_seconds": 3.545,
+      "shared_track_counts_before_ba": {
+        "odom": {
+          "links": 87928,
+          "links_with_tracks": 87738,
+          "shared_tracks_mean": 271.2,
+          "shared_tracks_median": 265.0,
+          "track_length_mean": 11.8,
+          "track_length_median": 7.98
+        },
+        "loop": {
+          "links": 31576,
+          "links_with_tracks": 31576,
+          "shared_tracks_mean": 139.9,
+          "shared_tracks_median": 123.0,
+          "track_length_mean": 32.84,
+          "track_length_median": 26.17
+        }
+      },
+      "solver_last_reported_iteration": 13,
+      "solver_configured_iteration_cap": 55,
+      "translation_difference_vs_unlimited_m": {
+        "median": 0.0003456038864302031,
+        "p95": 0.0015490119116289198,
+        "max": 0.019256263618069005
+      },
+      "rotation_difference_vs_unlimited_deg": {
+        "median": 0.009247946300726657,
+        "p95": 0.0412564736071853,
+        "max": 0.16223512449555613
+      }
+    }
+  ]
+}

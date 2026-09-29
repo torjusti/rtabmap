@@ -33,9 +33,11 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rtabmap/utilite/UTimer.h>
 #include <locale.h>
 #include <set>
+#include <unordered_map>
 
 #include <rtabmap/core/Version.h>
 #include <rtabmap/core/optimizer/OptimizerG2O.h>
+#include <rtabmap/core/BALandmarkSelection.h>
 #include <rtabmap/core/util3d_transforms.h>
 #include <rtabmap/core/util3d_motion_estimation.h>
 #include <rtabmap/core/util3d.h>
@@ -44,6 +46,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #if defined(RTABMAP_G2O) || defined(RTABMAP_ORB_SLAM)
 #include "g2o/core/sparse_optimizer.h"
 #include "g2o/core/hyper_graph_action.h"
+#include "g2o/core/batch_stats.h"
 #include "g2o/core/block_solver.h"
 #include "g2o/core/factory.h"
 #include "g2o/core/optimization_algorithm_factory.h"
@@ -165,7 +168,12 @@ OptimizerG2O::OptimizerG2O(const ParametersMap & parameters) :
 		pixelVariance_(Parameters::defaultOptimizerPixelVariance()),
 		disparityVariance_(Parameters::defaultOptimizerDisparityVariance()),
 		robustKernelDelta_(Parameters::defaultOptimizerRobustKernelDelta()),
-		baseline_(Parameters::defaultOptimizerBaseline())
+		baseline_(Parameters::defaultOptimizerBaseline()),
+		baProgressive_(Parameters::defaultOptimizerBAProgressive()),
+		baMinActiveObservations_(Parameters::defaultOptimizerBAMinActiveObservations()),
+		baDiagnostics_(Parameters::defaultOptimizerBADiagnostics()),
+		baLandmarkSelection_(Parameters::defaultOptimizerBALandmarkSelection()),
+		baLandmarkMinCoverageGain_(Parameters::defaultOptimizerBALandmarkMinCoverageGain())
 {
 #ifdef RTABMAP_G2O
 	// Issue on android, have to explicitly register this type when using fixed root prior below
@@ -191,6 +199,13 @@ void OptimizerG2O::parseParameters(const ParametersMap & parameters)
 	Parameters::parse(parameters, Parameters::kOptimizerDisparityVariance(), disparityVariance_);
 	Parameters::parse(parameters, Parameters::kOptimizerRobustKernelDelta(), robustKernelDelta_);
 	Parameters::parse(parameters, Parameters::kOptimizerBaseline(), baseline_);
+	Parameters::parse(parameters, Parameters::kOptimizerBAProgressive(), baProgressive_);
+	Parameters::parse(parameters, Parameters::kOptimizerBAMinActiveObservations(), baMinActiveObservations_);
+	UASSERT(baMinActiveObservations_ == 0 || baMinActiveObservations_ >= 2);
+	Parameters::parse(parameters, Parameters::kOptimizerBADiagnostics(), baDiagnostics_);
+	Parameters::parse(parameters, Parameters::kOptimizerBALandmarkSelection(), baLandmarkSelection_);
+	Parameters::parse(parameters, Parameters::kOptimizerBALandmarkMinCoverageGain(), baLandmarkMinCoverageGain_);
+	UASSERT(uIsFinite(baLandmarkMinCoverageGain_) && baLandmarkMinCoverageGain_ > 0.0);
 	UASSERT(pixelVariance_ > 0.0);
 	UASSERT(disparityVariance_ > 0.0);
 	UASSERT(baseline_ >= 0.0);
@@ -1444,6 +1459,163 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 		const std::map<int, std::map<int, FeatureBA> > & wordReferences,
 		BAOutliers * outliers)
 {
+	// Small/local BA keeps its existing behavior. In particular, preserve the
+	// public API's refusal of an all-fixed-camera joint solve.
+	if(!baLandmarkSelection_ || poses.size()<10 || iterations()<=0 ||
+		(rootId<0 && poses.find(-rootId)==poses.end()) || !available())
+		return optimizeBAImpl(rootId, poses, links, models, points3DMap, wordReferences, outliers, false);
+	if(outliers) outliers->clear();
+	if(!reportProgress("Selecting BA landmarks by image coverage...")) return {};
+	UTimer selectionTimer;
+	std::set<int> selected;
+	{
+		// Separate grids for every physical camera (not just every rig pose).
+		std::map<std::pair<int, int>, size_t> imageBins;
+		for(const auto & pose : poses)
+		{
+			if(pose.first<=0) continue;
+			auto model = models.find(pose.first);
+			if(model==models.end() || model->second.empty())
+				return optimizeBAImpl(rootId, poses, links, models, points3DMap, wordReferences, outliers, false);
+			for(size_t camera=0; camera<model->second.size(); ++camera)
+			{
+				if(model->second[camera].imageWidth()<=0 || model->second[camera].imageHeight()<=0)
+				{
+					UWARN("BA landmark selection needs image dimensions; using all landmarks.");
+					return optimizeBAImpl(rootId, poses, links, models, points3DMap, wordReferences, outliers, false);
+				}
+				const size_t offset = imageBins.size()*64;
+				imageBins[std::make_pair(pose.first, int(camera))] = offset;
+			}
+		}
+		std::vector<ba::CoverageTrack> candidates;
+		candidates.reserve(wordReferences.size());
+		size_t visited = 0;
+		for(const auto & track : wordReferences)
+		{
+			if(++visited%65536==0 && !reportProgress("Preparing BA landmark coverage...")) return {};
+			auto point = points3DMap.find(track.first);
+			if(point==points3DMap.end() || !uIsFinite(point->second.x) ||
+				!uIsFinite(point->second.y) || !uIsFinite(point->second.z)) continue;
+			ba::CoverageTrack candidate{track.first, {}};
+			candidate.bins.reserve(track.second.size());
+			for(const auto & observation : track.second)
+			{
+				const int camera = observation.second.cameraIndex;
+				auto bin = imageBins.find(std::make_pair(observation.first, camera));
+				if(bin==imageBins.end()) continue;
+				const cv::Point2f & uv = observation.second.kpt.pt;
+				if(!uIsFinite(uv.x) || !uIsFinite(uv.y)) continue;
+				const CameraModel & model = models.at(observation.first)[camera];
+				const int x = int(std::max(0.0, std::min(7.0, double(uv.x)/model.imageWidth()*8)));
+				const int y = int(std::max(0.0, std::min(7.0, double(uv.y)/model.imageHeight()*8)));
+				candidate.bins.push_back(bin->second+y*8+x);
+			}
+			if(candidate.bins.size()>=size_t(std::max(1, baMinActiveObservations_)))
+				candidates.push_back(std::move(candidate));
+		}
+		bool canceled = false;
+		const std::vector<int> ids = ba::selectCoverageTracks(candidates, imageBins.size()*64,
+			baLandmarkMinCoverageGain_, [this, &canceled]() {
+				canceled = !reportProgress("Selecting BA landmarks by image coverage...");
+				return !canceled;
+			});
+		if(canceled) return {};
+		selected.insert(ids.begin(), ids.end());
+	}
+	const double selectionSeconds = selectionTimer.ticks();
+	if(selected.empty() || selected.size()==wordReferences.size())
+	{
+		UINFO("BA landmark selection selected=%d/%d; using the full solve (empty selection or no reduction).",
+			int(selected.size()), int(wordReferences.size()));
+		return optimizeBAImpl(rootId, poses, links, models, points3DMap, wordReferences, outliers, false);
+	}
+	const std::string selectionMessage = uFormat(
+		"BA landmark selection selected=%d/%d min_coverage_gain=%.9g selection_s=%.6f",
+		int(selected.size()), int(wordReferences.size()), baLandmarkMinCoverageGain_, selectionSeconds);
+	UINFO("%s", selectionMessage.c_str());
+	if(!reportProgress(selectionMessage)) return {};
+	// Stage all updates: cancellation or failure must not publish half a solve.
+	std::map<int, cv::Point3f> stagedPoints;
+	BAOutliers stagedOutliers;
+	std::map<int, Transform> optimizedPoses;
+	UTimer jointTimer;
+	{
+		std::map<int, std::map<int, FeatureBA> > selectedReferences;
+		for(int id : selected)
+		{
+			stagedPoints[id] = points3DMap.at(id);
+			selectedReferences[id] = wordReferences.at(id);
+		}
+		optimizedPoses = optimizeBAImpl(rootId, poses, links, models, stagedPoints,
+			selectedReferences, &stagedOutliers, false);
+		if(optimizedPoses.empty()) return {};
+	}
+	const double jointSeconds = jointTimer.ticks();
+	if(!reportProgress(uFormat("BA selected-landmark joint solve complete in %.3f s; refining omitted points with cameras fixed...", jointSeconds))) return {};
+	UTimer pointTimer;
+	// Independent point problems can be batched without changing their camera
+	// estimates. Dynamic blocks + non-marginalized points avoid an empty Schur
+	// camera block. The ordinary rejection gate is identical to joint BA; the
+	// optional progressive P80 warmup gate is evaluated within each batch.
+	const size_t batchSize = 16384;
+	size_t refined = 0, batch = 0;
+	auto next = wordReferences.begin();
+	while(next!=wordReferences.end())
+	{
+		std::map<int, std::map<int, FeatureBA> > references;
+		std::map<int, cv::Point3f> points;
+		std::map<int, Transform> fixedPoses;
+		std::map<int, std::vector<CameraModel> > fixedModels;
+		for(; next!=wordReferences.end() && points.size()<batchSize; ++next)
+		{
+			if(selected.count(next->first)) continue;
+			auto point = points3DMap.find(next->first);
+			if(point==points3DMap.end() || !uIsFinite(point->second.x) ||
+				!uIsFinite(point->second.y) || !uIsFinite(point->second.z)) continue;
+			for(const auto & observation : next->second)
+			{
+				auto pose = optimizedPoses.find(observation.first);
+				auto model = models.find(observation.first);
+				if(pose==optimizedPoses.end() || model==models.end() ||
+					observation.second.cameraIndex<0 ||
+					size_t(observation.second.cameraIndex)>=model->second.size()) continue;
+				references[next->first].insert(observation);
+				fixedPoses.insert(*pose);
+				fixedModels.insert(*model);
+			}
+			if(references.count(next->first)) points.insert(*point);
+		}
+		if(points.empty()) continue;
+		if(!reportProgress(uFormat("BA fixed-camera points batch %d (%d landmarks refined)", int(++batch), int(refined)))) return {};
+		BAOutliers pointOutliers;
+		if(optimizeBAImpl(rootId, fixedPoses, {}, fixedModels, points, references,
+			&pointOutliers, true).empty()) return {};
+		refined += points.size();
+		stagedPoints.insert(points.begin(), points.end());
+		stagedOutliers.insert(pointOutliers.begin(), pointOutliers.end());
+	}
+	const double pointSeconds = pointTimer.ticks();
+	const std::string summary = uFormat(
+		"BA landmark selection complete selected=%d omitted_processed=%d selection_s=%.6f joint_s=%.6f point_only_s=%.6f",
+		int(selected.size()), int(refined), selectionSeconds, jointSeconds, pointSeconds);
+	UINFO("%s", summary.c_str());
+	if(!reportProgress(summary)) return {};
+	for(const auto & point : stagedPoints) points3DMap.at(point.first) = point.second;
+	if(outliers) outliers->swap(stagedOutliers);
+	return optimizedPoses;
+}
+
+
+std::map<int, Transform> OptimizerG2O::optimizeBAImpl(
+		int rootId,
+		const std::map<int, Transform> & poses,
+		const std::multimap<int, Link> & links,
+		const std::map<int, std::vector<CameraModel> > & models,
+		std::map<int, cv::Point3f> & points3DMap,
+		const std::map<int, std::map<int, FeatureBA> > & wordReferences,
+		BAOutliers * outliers, bool fixedCameras)
+{
 	std::map<int, Transform> optimizedPoses;
 	if(outliers)
 	{
@@ -1453,10 +1625,25 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 	UDEBUG("Optimizing graph...");
 
 	optimizedPoses.clear();
-	if(poses.size()>=2 && iterations() > 0 && (models.size() == poses.size() || poses.begin()->first < 0))
+	if((poses.size()>=2 || (fixedCameras && !poses.empty())) && iterations() > 0 && (models.size() == poses.size() || poses.begin()->first < 0))
 	{
 		g2o::SparseOptimizer optimizer;
 		//optimizer.setVerbose(ULogger::level()==ULogger::kDebug);
+		if(fixedCameras)
+		{
+			// All variables are independent 3D points. Do not marginalize them
+			// into the empty camera block of the joint 6/3 Schur solver.
+#if defined(RTABMAP_G2O_CPP11) && !defined(RTABMAP_ORB_SLAM)
+			optimizer.setAlgorithm(new g2o::OptimizationAlgorithmLevenberg(
+				std::make_unique<SlamBlockSolver>(std::make_unique<SlamLinearEigenSolver>())));
+#else
+			optimizer.setAlgorithm(new g2o::OptimizationAlgorithmLevenberg(
+				new SlamBlockSolver(new SlamLinearEigenSolver())));
+#endif
+		}
+		else
+		{
+
 #if defined(RTABMAP_G2O_CPP11) && !defined(RTABMAP_ORB_SLAM)
 		std::unique_ptr<g2o::BlockSolver_6_3::LinearSolverType> linearSolver;
 #else
@@ -1535,6 +1722,8 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 #endif
 		}
 
+		} // joint solver
+
 		// detect if there are gravity constraints
 		bool hasGravityConstraints = false;
 		if(!isSlam2d() && gravitySigma() > 0)
@@ -1588,7 +1777,7 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 					vCam->setId(iter->first*MULTICAM_OFFSET + i);
 
 					// negative root means that all other poses should be fixed instead of the root
-					bool fixNode = (rootId >= 0 && iter->first == rootId) || (rootId < 0 && iter->first != -rootId);
+					bool fixNode = fixedCameras || (rootId >= 0 && iter->first == rootId) || (rootId < 0 && iter->first != -rootId);
 
 					UASSERT_MSG(optimizer.addVertex(vCam), uFormat("cannot insert cam vertex %d (pose=%d)!?", vCam->id(), iter->first).c_str());
 				
@@ -1617,7 +1806,7 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 					}
 					else if(fixNode)
 					{
-						if(rootId < 0 || !hasGravityConstraints)
+						if(fixedCameras || rootId < 0 || !hasGravityConstraints)
 						{
 							UDEBUG("Set node %d fixed", iter->first);
 							vCam->setFixed(true);
@@ -1671,7 +1860,7 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 		// Every camera fixed leaves BlockSolver_6_3's pose block empty and g2o
 		// dereferences it unconditionally (fillCSparse -> SIGSEGV). Reachable via
 		// a negative rootId whose -rootId isn't in poses, so refuse instead.
-		if(freeCamVertices == 0)
+		if(!fixedCameras && freeCamVertices == 0)
 		{
 			UERROR("BA has no free camera vertex (rootId=%d, poses=%d): every pose "
 				   "is fixed, there is nothing for g2o to solve. Not optimizing.",
@@ -1775,7 +1964,7 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 		}
 
 		UDEBUG("fill hard edges between camera 0 and other cameras (multicam)...");
-		for(std::map<int, std::vector<CameraModel> >::const_iterator iter=models.begin(); iter!=models.end(); ++iter)
+		for(std::map<int, std::vector<CameraModel> >::const_iterator iter=models.begin(); !fixedCameras && iter!=models.end(); ++iter)
 		{
 			int id = iter->first;
 			if(uContains(poses, id))
@@ -1864,7 +2053,7 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 					vpt3d->setId(stepVertexId + id);
 				}
 				UASSERT(vpt3d->id() > 0);
-				vpt3d->setMarginalized(true);
+				vpt3d->setMarginalized(!fixedCameras);
 				optimizer.addVertex(vpt3d);
 
 				//UDEBUG("Added 3D point %d (%f,%f,%f)", vpt3d->id()-stepVertexId, pt3d.x, pt3d.y, pt3d.z);
@@ -1986,6 +2175,31 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 			}
 		}
 
+		// Only projection observations participate in this experimental filter.
+		// Cameras retain their metric pose-graph/gravity constraints even when
+		// all of their visual tracks disappear. Do not prune pose vertices.
+		const bool progressive = baProgressive_ && robustKernelDelta_ > 0.0;
+		if(baProgressive_ && !progressive)
+		{
+			UWARN("BAProgressive requires a positive robust kernel delta; using ordinary BA.");
+		}
+		auto pruneWeakTracks = [&edges, &points3DMap, this]() {
+			if(baMinActiveObservations_ == 0) return 0;
+			std::unordered_map<int, int> support;
+			support.reserve(points3DMap.size());
+			for(const EdgeReference & ref : edges)
+				if(ref.edge->level() == 0) ++support[ref.wordId];
+			int removed = 0;
+			for(const EdgeReference & ref : edges)
+				if(ref.edge->level() == 0 && support[ref.wordId] < baMinActiveObservations_)
+				{
+					ref.edge->setLevel(1);
+					++removed;
+				}
+			// initializeOptimization(0) excludes the now-isolated point vertices.
+			return removed;
+		};
+		const int initiallyPruned = pruneWeakTracks();
 		UDEBUG("Initial optimization...");
 		if(!reportProgress("Initializing bundle adjustment solver..."))
 		{
@@ -1999,13 +2213,14 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 
 		int it = 0;
 		UTimer timer;
-		int outliersCount = 0;
+		int outliersCount = initiallyPruned;
 		int outliersCountFar = 0;
 
 		bool stop = false;
 		int iterOffset = 0;
 		const int pass1Iters = robustKernelDelta_>0.0 ? std::min(5, iterations()) : 0;
-		const int totalIters = pass1Iters + iterations();
+		const int totalIters = (progressive ? 2 : 1)*pass1Iters + iterations();
+		const int passes = progressive ? 3 : (robustKernelDelta_>0.0 ? 2 : 1);
 		struct BAProgressAction : public g2o::HyperGraphAction
 		{
 			OptimizerG2O * self;
@@ -2026,6 +2241,52 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 				return this;
 			}
 		};
+
+		// Statistics are opt-in: g2o evaluates residuals once more per outer
+		// iteration. Never compare objectives across different rejection masks.
+		struct BADiagnosticsAction : public g2o::HyperGraphAction
+		{
+			OptimizerG2O * self;
+			g2o::SparseOptimizer * graph;
+			bool * stopFlag;
+			int pass = 0, completed = 0, decreasing = 0, unchanged = 0, trials = 0;
+			double previous = 0.0, initial = 0.0, linearSeconds = 0.0;
+			void begin(int p, double cost)
+			{
+				pass=p; completed=decreasing=unchanged=trials=0;
+				previous=initial=cost; linearSeconds=0.0;
+			}
+			virtual HyperGraphAction * operator()(const g2o::HyperGraph *, Parameters * parameters)
+			{
+				ParametersIteration * p = dynamic_cast<ParametersIteration *>(parameters);
+				if(!p || p->iteration < 0 || (size_t)p->iteration >= graph->batchStatistics().size()) return this;
+				const g2o::G2OBatchStatistics & s = graph->batchStatistics()[p->iteration];
+				const double reduction = previous-s.chi2;
+				++completed;
+				if(reduction>0.0) ++decreasing;
+				if(reduction==0.0) ++unchanged;
+				trials += s.levenbergIterations;
+				linearSeconds += s.timeLinearSolution;
+				const std::string message = uFormat(
+					"BA diagnostics pass=%d iteration=%d cost_before=%.12g cost_after=%.12g reduction=%.9g relative_reduction=%.9g cost_step=%s lm_trials=%d linear_s=%.6f iteration_s=%.6f active_edges=%d active_vertices=%d",
+					pass, completed, previous, s.chi2, reduction, reduction/std::max(1e-30,std::abs(previous)),
+					reduction>0.0?"decreased":(reduction==0.0?"unchanged":"increased"),
+					s.levenbergIterations, s.timeLinearSolution, s.timeIteration, s.numEdges, s.numVertices);
+				UINFO("%s", message.c_str());
+				if(!self->reportProgress(message)) *stopFlag=true;
+				previous=s.chi2;
+				return this;
+			}
+		};
+		BADiagnosticsAction diagnostics;
+		diagnostics.self=this;
+		diagnostics.graph=&optimizer;
+		diagnostics.stopFlag=&stop;
+		if(baDiagnostics_ && !fixedCameras)
+		{
+			optimizer.setComputeBatchStatistics(true);
+			optimizer.addPostIterationAction(&diagnostics);
+		}
 		BAProgressAction progressAction;
 		progressAction.self = this;
 		progressAction.stopFlag = &stop;
@@ -2034,13 +2295,30 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 		optimizer.addPreIterationAction(&progressAction);
 		optimizer.setForceStopFlag(&stop);
 
-		for(int i=0; i<(robustKernelDelta_>0.0?2:1); ++i)
+		for(int i=0; i<passes; ++i)
 		{
-			// Pass 1 only needs to expose the bad residuals; pass 2 gets the full
-			// budget. std::min so a caller asking for fewer than 5 gets that.
-			const int passIters = i==0&&robustKernelDelta_>0.0?std::min(5, iterations()):iterations();
-			it += optimizer.optimize(passIters);
+			// Short warmup(s), then the full requested iteration budget.
+			const int passIters = i+1 < passes ? std::min(5, iterations()) : iterations();
+			if(baDiagnostics_ && !fixedCameras)
+			{
+				optimizer.computeActiveErrors();
+				diagnostics.begin(i+1, optimizer.activeRobustChi2());
+			}
+			const int solverIterations = optimizer.optimize(passIters);
+			it += solverIterations;
 			iterOffset += passIters;
+			if(baDiagnostics_ && !fixedCameras)
+			{
+				// The backend can terminate because LM exhausted trials, found no
+				// decrease, or failed. Do not label any early exit "converged".
+				const std::string message = uFormat(
+					"BA diagnostics summary pass=%d requested=%d completed=%d solver_return=%d stop=%s initial_cost=%.12g final_cost=%.12g decreasing_steps=%d unchanged_steps=%d lm_trials=%d linear_s=%.6f",
+					i+1, passIters, diagnostics.completed, solverIterations,
+					stop?"canceled":(solverIterations<=0?"backend_failure_or_empty":(solverIterations<passIters?"backend_early_stop":"iteration_budget")),
+					diagnostics.initial, diagnostics.previous, diagnostics.decreasing, diagnostics.unchanged, diagnostics.trials, diagnostics.linearSeconds);
+				UINFO("%s",message.c_str());
+				if(!reportProgress(message)) stop=true;
+			}
 			if(stop)
 			{
 				UWARN("g2o bundle adjustment canceled after %d iteration(s).", it);
@@ -2068,9 +2346,24 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 
 			if(robustKernelDelta_>0.0)
 			{
+				double gateChi2 = robustKernelDelta_;
+				if(progressive && i == 0)
+				{
+					std::vector<double> errors;
+					for(const EdgeReference & ref : edges)
+						if(ref.edge->level() == 0 && uIsFinite(ref.edge->chi2()))
+							errors.push_back(ref.edge->chi2());
+					if(!errors.empty())
+					{
+						const size_t p80 = (errors.size()-1)*4/5;
+						std::nth_element(errors.begin(), errors.begin()+p80, errors.end());
+						gateChi2 = std::max(gateChi2, errors[p80]);
+					}
+				}
 				for(std::list<EdgeReference>::iterator iter=edges.begin(); iter!=edges.end();++iter)
 				{
-					if(iter->edge->level() == 0 && iter->edge->chi2() > iter->edge->robustKernel()->delta())
+					if(iter->edge->level() == 0 &&
+					   (iter->edge->chi2() > gateChi2 || (progressive && !uIsFinite(iter->edge->chi2()))))
 					{
 						iter->edge->setLevel(1);
 						++outliersCount;
@@ -2093,11 +2386,19 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 					}
 					//(*iter)->setRobustKernel(0);
 				}
-				if(i==0)
+				if(progressive || baMinActiveObservations_ > 0)
+				{
+					const int weak = pruneWeakTracks();
+					outliersCount += weak;
+					UINFO("BA rejection pass %d/%d: progressive=%d min_support=%d chi2 gate=%g, active observations=%d/%d, weak-track observations removed=%d (initial=%d)",
+							i+1, passes, progressive?1:0, baMinActiveObservations_, gateChi2, (int)edges.size()-outliersCount, (int)edges.size(), weak, initiallyPruned);
+				}
+				if(i+1 < passes)
 					optimizer.initializeOptimization(0);
 				UDEBUG("outliers=%d outliersCountFar=%d", outliersCount, outliersCountFar);
 			}
 		}
+		if(baDiagnostics_ && !fixedCameras) optimizer.removePostIterationAction(&diagnostics);
 		optimizer.removePreIterationAction(&progressAction);
 		optimizer.setForceStopFlag(0);
 
@@ -2139,7 +2440,8 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 		}
 
 		// update poses
-		for(std::map<int, Transform>::const_iterator iter = poses.begin(); iter!=poses.end(); ++iter)
+		if(fixedCameras) optimizedPoses = poses;
+		for(std::map<int, Transform>::const_iterator iter = poses.begin(); !fixedCameras && iter!=poses.end(); ++iter)
 		{
 			if(iter->first > 0)
 			{

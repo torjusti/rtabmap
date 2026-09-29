@@ -537,6 +537,7 @@ private:
 	int baLoopScope_;
 	int baLoopScopeMinTracks_;
 	int baWindowGraphDepth_;
+	int baExtraPairBudget_;
 	bool baLoopLinkAsEdge_;
 	int baLoopLinkMinObservations_;
 	int baDepth_;

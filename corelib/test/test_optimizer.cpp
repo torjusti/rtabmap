@@ -15,6 +15,7 @@
 #include <gtest/gtest.h>
 #include <rtabmap/core/Version.h>
 #include <rtabmap/core/Optimizer.h>
+#include <rtabmap/core/ProgressState.h>
 #include <rtabmap/core/Link.h>
 #include <rtabmap/core/Parameters.h>
 #include <rtabmap/core/Transform.h>
@@ -3738,4 +3739,348 @@ TEST(BACorrespondenceStrategyTest, TrackStrategyMergesLandmarksAcrossLinks)
 			EXPECT_TRUE(frameIds.insert(jter->first).second);
 		}
 	}
+}
+// Rejection scheduling and surviving observation support are independent.
+TEST_P(BAOutlierRejectionTest, ProgressivePrunesShortTracksAndPreservesMetricOnlyPose)
+{
+    if(GetParam() != Optimizer::kTypeG2O) GTEST_SKIP() << "g2o-only experiment";
+    buildScene(false);
+    ParametersMap parameters;
+    parameters[Parameters::kOptimizerBAProgressive()] = "true";
+    parameters[Parameters::kOptimizerBAMinActiveObservations()] = "3";
+    opt_->parseParameters(parameters);
+    BAOutliers outliers;
+    const auto optimized = runBA(outliers);
+    ASSERT_EQ(optimized.size(), poses_.size());
+    expectPointNear(partialWordId_, partialTruth_, 0.01f);
+    expectPointNear(rejectedWordId_, rejectedInitial_, 0.00001f);
+    EXPECT_EQ(outliersFor(outliers, rejectedWordId_), allObservations_.at(rejectedWordId_));
+    EXPECT_TRUE(outliersFor(outliers, partialWordId_).empty());
+    EXPECT_NEAR((optimized.at(4).inverse()*optimized.at(10)).getNorm(), 0.0, 0.00001);
+}
+
+TEST_P(BAOutlierRejectionTest, ProgressivePrunesTrackAfterRejection)
+{
+    if(GetParam() != Optimizer::kTypeG2O) GTEST_SKIP() << "g2o-only experiment";
+    buildScene(true);
+    // Two compatible observations plus one grossly incompatible observation.
+    wordReferences_[rejectedWordId_].clear();
+    for(int id : {1, 5, 9})
+        wordReferences_[rejectedWordId_].insert({id, baObservation(
+            rejectedTruth_, poses_.at(id), model_, 0.0f, id == 5 ? 150.0f : 0.0f)});
+    ParametersMap parameters;
+    parameters[Parameters::kOptimizerBAProgressive()] = "true";
+    parameters[Parameters::kOptimizerBAMinActiveObservations()] = "3";
+    opt_->parseParameters(parameters);
+    BAOutliers outliers;
+    ASSERT_EQ(runBA(outliers).size(), poses_.size());
+    EXPECT_EQ(outliersFor(outliers, rejectedWordId_), (std::set<int>{1, 5, 9}));
+    expectPointNear(rejectedWordId_, rejectedInitial_, 0.00001f);
+    expectPointNear(partialWordId_, partialTruth_, 0.01f);
+    EXPECT_EQ(outliersFor(outliers, partialWordId_), corrupted_.at(partialWordId_));
+}
+
+TEST_P(BAOutlierRejectionTest, ProgressiveWithNoVisualSupportKeepsMetricGraph)
+{
+    if(GetParam() != Optimizer::kTypeG2O) GTEST_SKIP() << "g2o-only experiment";
+    buildScene(false);
+    wordReferences_.erase(partialWordId_);
+    ParametersMap parameters;
+    parameters[Parameters::kOptimizerBAProgressive()] = "true";
+    parameters[Parameters::kOptimizerBAMinActiveObservations()] = "3";
+    opt_->parseParameters(parameters);
+    BAOutliers outliers;
+    ASSERT_EQ(runBA(outliers).size(), poses_.size());
+    expectPointNear(rejectedWordId_, rejectedInitial_, 0.00001f);
+    EXPECT_EQ(outliersFor(outliers, rejectedWordId_), allObservations_.at(rejectedWordId_));
+}
+
+#include <rtabmap/core/BAPairSelection.h>
+
+TEST(BAPairBudgetTest, UnlimitedPreservesAllAndBudgetAppliesToBothEnds)
+{
+    const std::vector<ba::ExtraPair> extras={{1,2,1},{1,3,0.9},{2,3,0.8},{3,4,0.7}};
+    EXPECT_EQ(ba::selectExtraPairs(extras,{}, {},0),std::vector<bool>(4,true));
+    const auto selected=ba::selectExtraPairs(extras,{}, {},1);
+    EXPECT_EQ(selected,(std::vector<bool>{true,false,false,true}));
+    std::map<int,int> degree;
+    for(size_t i=0;i<selected.size();++i) if(selected[i])
+    {
+        EXPECT_LE(++degree[extras[i].from],1);
+        EXPECT_LE(++degree[extras[i].to],1);
+    }
+}
+
+TEST(BAPairBudgetTest, PrefersNewViewpointOverDuplicateOfProtectedPair)
+{
+    const std::vector<ba::ExtraPair> extras={{1,3,1},{1,4,0.8}};
+    const std::map<int,ba::PairGeometry> geometry={
+        {1,{{0,0,0},10}}, {2,{{1,0,0},10}},
+        {3,{{1.001,0,0},10}}, {4,{{-1,0,0},10}}};
+    EXPECT_EQ(ba::selectExtraPairs(extras,{{1,2}},geometry,1),(std::vector<bool>{false,true}));
+}
+
+TEST(BAPairBudgetTest, ExtraPairBudgetRetainsSharedTracks)
+{
+    const TrackScenario s=buildTrackScenario();
+    auto links=s.links;
+    links.erase(1);
+    links.insert({1,Link(1,4,Link::kGlobalClosure,s.poses.at(1).inverse()*s.poses.at(4))});
+    for(int budget : {0,1,8,16})
+    {
+        SCOPED_TRACE(budget);
+        ParametersMap parameters;
+        parameters[Parameters::kOptimizerBAGuidedMatching()]="false";
+        parameters[Parameters::kOptimizerBAExtraPairBudget()]=uNumber2Str(budget);
+        std::unique_ptr<Optimizer> optimizer(Optimizer::create(Optimizer::kTypeG2O,parameters));
+        std::map<int,cv::Point3f> points;
+        std::map<int,std::map<int,FeatureBA> > refs;
+        optimizer->computeBACorrespondences(s.poses,links,s.signatures,points,refs,false);
+        EXPECT_EQ(refs.size(),s.worldPoints.size());
+        for(const auto & track : refs) EXPECT_EQ(track.second.size(),4u);
+    }
+}
+
+TEST_P(BAOutlierRejectionTest, ActiveSupportIndependentOfScheduleAndRobustKernel)
+{
+    if(GetParam() != Optimizer::kTypeG2O) GTEST_SKIP() << "g2o support policy";
+    for(bool progressive : {false,true})
+    for(int support : {0,2,3})
+    for(double robust : {0.0,2.0})
+    {
+        SCOPED_TRACE(::testing::Message() << "progressive=" << progressive << " support=" << support << " robust=" << robust);
+        poses_.clear(); models_.clear(); links_.clear(); points3DMap_.clear();
+        wordReferences_.clear(); allObservations_.clear(); corrupted_.clear();
+        buildScene(false);
+        ParametersMap p;
+        p[Parameters::kOptimizerBAProgressive()]=progressive?"true":"false";
+        p[Parameters::kOptimizerBAMinActiveObservations()]=uNumber2Str(support);
+        p[Parameters::kOptimizerRobustKernelDelta()]=uNumber2Str(robust);
+        opt_->parseParameters(p);
+        BAOutliers outliers;
+        ASSERT_EQ(runBA(outliers).size(),poses_.size());
+        if(support==3)
+        {
+            EXPECT_EQ(outliersFor(outliers,rejectedWordId_),allObservations_.at(rejectedWordId_));
+            expectPointNear(rejectedWordId_,rejectedInitial_,0.00001f);
+        }
+        else
+        {
+            EXPECT_TRUE(outliersFor(outliers,rejectedWordId_).empty());
+            expectPointNear(rejectedWordId_,rejectedTruth_,0.01f);
+        }
+        expectPointNear(partialWordId_,partialTruth_,0.01f);
+    }
+}
+
+TEST_P(BAOutlierRejectionTest, OrdinarySchedulePrunesSupportAfterRejection)
+{
+    if(GetParam() != Optimizer::kTypeG2O) GTEST_SKIP() << "g2o support policy";
+    buildScene(true);
+    wordReferences_[rejectedWordId_].clear();
+    for(int id : {1,5,9})
+        wordReferences_[rejectedWordId_].insert({id,baObservation(
+            rejectedTruth_,poses_.at(id),model_,0.0f,id==5?150.0f:0.0f)});
+    ParametersMap p;
+    p[Parameters::kOptimizerBAProgressive()]="false";
+    p[Parameters::kOptimizerBAMinActiveObservations()]="3";
+    opt_->parseParameters(p);
+    BAOutliers outliers;
+    ASSERT_EQ(runBA(outliers).size(),poses_.size());
+    EXPECT_EQ(outliersFor(outliers,rejectedWordId_),(std::set<int>{1,5,9}));
+    expectPointNear(rejectedWordId_,rejectedInitial_,0.00001f);
+}
+
+
+TEST_P(BAOutlierRejectionTest, DiagnosticsPreserveSolutionAndReportActualWork)
+{
+    if(GetParam() != Optimizer::kTypeG2O) GTEST_SKIP() << "g2o diagnostics";
+    buildScene(true);
+    const auto initialPoints = points3DMap_;
+    BAOutliers baselineOutliers;
+    const auto baselinePoses = runBA(baselineOutliers);
+    const auto baselinePoints = points3DMap_;
+    ASSERT_FALSE(baselinePoses.empty());
+    points3DMap_ = initialPoints;
+    struct Capture : public ProgressState
+    {
+        mutable std::vector<std::string> messages;
+        bool cancel = false;
+        virtual bool callback(const std::string & msg) const
+        {
+            messages.push_back(msg);
+            return !(cancel && msg.find("BA diagnostics pass=")==0);
+        }
+    } capture;
+    ParametersMap p;
+    p[Parameters::kOptimizerBADiagnostics()]="true";
+    opt_->parseParameters(p);
+    opt_->setProgressState(&capture);
+    BAOutliers diagnosticOutliers;
+    const auto diagnosticPoses = runBA(diagnosticOutliers);
+    opt_->setProgressState(nullptr);
+    EXPECT_EQ(baselineOutliers, diagnosticOutliers);
+    ASSERT_EQ(baselinePoses.size(), diagnosticPoses.size());
+    for(const auto & pose : baselinePoses)
+        for(int element=0; element<12; ++element)
+            EXPECT_NEAR(pose.second.data()[element], diagnosticPoses.at(pose.first).data()[element], 1e-6);
+    for(const auto & point : baselinePoints)
+        EXPECT_LT(cv::norm(point.second-points3DMap_.at(point.first)), 1e-6);
+    int summaries=0, iterations=0;
+    for(const auto & msg : capture.messages)
+    {
+        if(msg.find("BA diagnostics pass=")==0)
+        {
+            ++iterations;
+            EXPECT_NE(msg.find("cost_before="), std::string::npos);
+            EXPECT_NE(msg.find("cost_after="), std::string::npos);
+            EXPECT_NE(msg.find("lm_trials="), std::string::npos);
+            EXPECT_NE(msg.find("linear_s="), std::string::npos);
+            EXPECT_EQ(msg.find("linear_s=-"), std::string::npos);
+        }
+        if(msg.find("BA diagnostics summary")==0)
+        {
+            ++summaries;
+            EXPECT_NE(msg.find("completed="), std::string::npos);
+            EXPECT_NE(msg.find("stop="), std::string::npos);
+            EXPECT_EQ(msg.find("converged"), std::string::npos);
+        }
+    }
+    EXPECT_GT(iterations,0);
+    EXPECT_EQ(summaries,2);
+    points3DMap_=initialPoints;
+    capture.cancel=true;
+    opt_->setProgressState(&capture);
+    BAOutliers canceledOutliers;
+    EXPECT_TRUE(runBA(canceledOutliers).empty());
+    opt_->setProgressState(nullptr);
+}
+
+#include <rtabmap/core/BALandmarkSelection.h>
+
+TEST(BALandmarkSelectionTest, LazySelectionMatchesExhaustiveGreedy)
+{
+    std::vector<ba::CoverageTrack> tracks;
+    for(int id=-50; id<150; ++id)
+    {
+        ba::CoverageTrack track{id,{}};
+        // Distinct image bins, with overlap and variable track lengths.
+        for(int image=0; image<2+(id+50)%8; ++image)
+            track.bins.push_back(image*64+(id+50)%13);
+        tracks.push_back(track);
+    }
+    for(double cutoff : {0.0001,0.05,0.3,1.0,100.0})
+    {
+        std::vector<size_t> counts(640,0);
+        std::set<int> used;
+        std::vector<int> expected;
+        while(true)
+        {
+            const ba::CoverageTrack * best=nullptr;
+            double bestGain=-1;
+            for(const auto & track : tracks)
+            {
+                if(used.count(track.id)) continue;
+                double gain=0;
+                for(size_t bin : track.bins)
+                    gain+=1/std::sqrt(double(counts[bin])+1)-1/std::sqrt(double(counts[bin])+2);
+                if(gain>bestGain || (gain==bestGain && (!best || track.id>best->id)))
+                { best=&track; bestGain=gain; }
+            }
+            if(!best || bestGain<=cutoff) break;
+            expected.push_back(best->id); used.insert(best->id);
+            for(size_t bin : best->bins) ++counts[bin];
+        }
+        EXPECT_EQ(ba::selectCoverageTracks(tracks,640,cutoff),expected);
+        std::reverse(tracks.begin(),tracks.end());
+        EXPECT_EQ(ba::selectCoverageTracks(tracks,640,cutoff),expected);
+    }
+}
+
+TEST(BALandmarkSelectionTest, CoversNewImageRegionsAndHonorsStrictThreshold)
+{
+    const double initial=1-1/std::sqrt(2.0);
+    std::vector<ba::CoverageTrack> tracks={{-3,{0,64}}, {2,{0,64}}, {1,{1,65}}};
+    EXPECT_EQ(ba::selectCoverageTracks(tracks,128,initial), (std::vector<int>{2,1}));
+    EXPECT_TRUE(ba::selectCoverageTracks(tracks,128,2*initial).empty());
+}
+
+TEST_P(BAOutlierRejectionTest, LandmarkSelectionRefinesOmittedPointsWithExactlyFixedCameras)
+{
+    if(GetParam()!=Optimizer::kTypeG2O) GTEST_SKIP() << "g2o landmark selection";
+    buildScene(true);
+    // Identical long, clean tracks: only the largest-ID one passes gain 2.
+    for(int id=100; id<120; ++id)
+    {
+        points3DMap_[id]=partialInitial_;
+        for(int pose=1; pose<=9; ++pose)
+            wordReferences_[id].insert({pose,baObservation(partialTruth_,poses_.at(pose),model_)});
+    }
+    ParametersMap p;
+    p[Parameters::kOptimizerBALandmarkSelection()]="true";
+    p[Parameters::kOptimizerBALandmarkMinCoverageGain()]="2";
+    p[Parameters::kOptimizerBAMinActiveObservations()]="2";
+    opt_->parseParameters(p);
+    const auto originalPoints=points3DMap_;
+    BAOutliers outliers;
+    const auto selectedPoses=runBA(outliers);
+    ASSERT_EQ(selectedPoses.size(),poses_.size());
+    expectPointNear(partialWordId_,partialTruth_,0.01f);
+    expectPointNear(rejectedWordId_,rejectedInitial_,0.00001f);
+    EXPECT_EQ(outliersFor(outliers,partialWordId_), (std::set<int>{4}));
+    EXPECT_EQ(outliersFor(outliers,rejectedWordId_), (std::set<int>{1,9}));
+    for(int id=100; id<120; ++id) expectPointNear(id,partialTruth_,0.01f);
+
+    // Compare to just the one selected point: the omitted-point phase must
+    // preserve every camera matrix bit-for-bit, including metric-only pose 10.
+    p[Parameters::kOptimizerBALandmarkSelection()]="false";
+    opt_->parseParameters(p);
+    std::map<int,cv::Point3f> onePoint{{119,originalPoints.at(119)}};
+    std::map<int,std::map<int,FeatureBA> > oneTrack{{119,wordReferences_.at(119)}};
+    const auto jointPoses=opt_->optimizeBA(-10,poses_,links_,models_,onePoint,oneTrack);
+    ASSERT_EQ(jointPoses.size(),selectedPoses.size());
+    for(const auto & pose : jointPoses)
+        for(int element=0; element<12; ++element)
+            EXPECT_EQ(pose.second.data()[element],selectedPoses.at(pose.first).data()[element]);
+
+    struct Cancel : ProgressState
+    {
+        bool callback(const std::string & msg) const override
+        { return msg.find("BA fixed-camera points batch")!=0; }
+    } cancel;
+    p[Parameters::kOptimizerBALandmarkSelection()]="true";
+    opt_->parseParameters(p); opt_->setProgressState(&cancel);
+    points3DMap_=originalPoints;
+    EXPECT_TRUE(runBA(outliers).empty());
+    opt_->setProgressState(nullptr);
+    EXPECT_EQ(points3DMap_,originalPoints);
+    EXPECT_TRUE(outliers.empty());
+}
+
+TEST_P(BAOutlierRejectionTest, LandmarkSelectionSupportAndStereoPointRefinement)
+{
+    if(GetParam()!=Optimizer::kTypeG2O) GTEST_SKIP() << "g2o landmark selection";
+    buildScene(false);
+    // Nine-view point is selected, two-view point is omitted. A real stereo
+    // baseline exercises the existing three-component projection residual.
+    for(auto & entry : models_)
+        entry.second[0]=CameraModel(100.0,100.0,320.0,240.0,
+            CameraModel::opticalRotation(),-10.0,cv::Size(640,480));
+    for(auto & track : wordReferences_)
+        for(auto & observation : track.second) observation.second.depth=5.0f;
+    ParametersMap p;
+    p[Parameters::kOptimizerBALandmarkSelection()]="true";
+    p[Parameters::kOptimizerBALandmarkMinCoverageGain()]="2";
+    p[Parameters::kOptimizerBAMinActiveObservations()]="2";
+    opt_->parseParameters(p);
+    BAOutliers outliers;
+    ASSERT_EQ(runBA(outliers).size(),poses_.size());
+    expectPointNear(rejectedWordId_,rejectedTruth_,0.01f);
+    EXPECT_TRUE(outliers.empty());
+    points3DMap_[rejectedWordId_]=rejectedInitial_;
+    p[Parameters::kOptimizerBAMinActiveObservations()]="3";
+    opt_->parseParameters(p);
+    ASSERT_EQ(runBA(outliers).size(),poses_.size());
+    EXPECT_EQ(outliersFor(outliers,rejectedWordId_), (std::set<int>{1,9}));
+    expectPointNear(rejectedWordId_,rejectedInitial_,0.00001f);
 }

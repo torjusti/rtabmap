@@ -79,12 +79,24 @@ public:
 		const std::multimap<int, Link> & edgeConstraints);
 
 private:
+	std::map<int, Transform> optimizeBAImpl(
+			int rootId, const std::map<int, Transform> & poses,
+			const std::multimap<int, Link> & links,
+			const std::map<int, std::vector<CameraModel> > & models,
+			std::map<int, cv::Point3f> & points3DMap,
+			const std::map<int, std::map<int, FeatureBA> > & wordReferences,
+			BAOutliers * outliers, bool fixedCameras);
 	int solver_;
 	int optimizer_;
 	double pixelVariance_;
 	double disparityVariance_;
 	double robustKernelDelta_;
 	double baseline_;
+	bool baProgressive_;
+	int baMinActiveObservations_;
+	bool baDiagnostics_;
+	bool baLandmarkSelection_;
+	double baLandmarkMinCoverageGain_;
 };
 
 } /* namespace rtabmap */

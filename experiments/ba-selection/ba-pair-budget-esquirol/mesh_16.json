@@ -1,0 +1,82 @@
+{
+  "budget": 16,
+  "mesh_seconds": 177.2775816419744,
+  "obj": "/home/torjusti/Projects/Scani/analysis/ba-pair-budget-esquirol/objs/16_extra_pairs_full.obj",
+  "ply": "/home/torjusti/Projects/Scani/analysis/ba-pair-budget-esquirol/mesh_work/budget_16/merged_cloud-poisson_id3afef7cc1e2397af_v0.02_ds4_pd12_pw2.ply",
+  "vertices": 761442,
+  "triangles": 1522248,
+  "bounds": [
+    [
+      3757.6103515625,
+      -4366.86376953125,
+      -1.9638671875
+    ],
+    [
+      4087.9091796875,
+      -4225.43798828125,
+      25.749313354492188
+    ]
+  ],
+  "parameters": {
+    "camera_poses": {
+      "export_flags": [
+        "--opt",
+        "0",
+        "--Optimizer/PriorsIgnored",
+        "false",
+        "--Optimizer/Robust",
+        "false",
+        "--Optimizer/Iterations",
+        "50",
+        "--ba",
+        "--Optimizer/BAMinActiveObservations",
+        "0",
+        "--Optimizer/BAProgressive",
+        "false",
+        "--Optimizer/BAExtraPairBudget",
+        "16"
+      ],
+      "path": ".rtab/merged/exports/merged_camera_poses.txt",
+      "sha256": "e8cfeadc1ac34518de1d653a1611e9974dbe54362073c0a7ac60006110838358"
+    },
+    "decimation": 0.5,
+    "density_quantile": 0.02,
+    "density_threshold": null,
+    "depth_preprocessing_version": 2,
+    "downsample": 4,
+    "incidence_weighting": true,
+    "incidence_weighting_version": 1,
+    "keep_largest": true,
+    "load_color": false,
+    "max_depth": 5.0,
+    "min_confidence": "medium",
+    "min_depth": 0.0,
+    "normal_device": "CPU:0",
+    "normal_max_nn": 50,
+    "normal_preprocessing_version": 2,
+    "normal_radius": 0.0,
+    "outlier_nb_neighbors": 20,
+    "outlier_nb_points": 16,
+    "outlier_radius": 0.05,
+    "outlier_removal": "statistical",
+    "outlier_std_ratio": 2.0,
+    "point_weight": 2.0,
+    "poisson_bin": "auto",
+    "poisson_confidence": true,
+    "poisson_depth": 12,
+    "samples_per_node": 1.5,
+    "stride": 1,
+    "target_polygon_size": 0.08,
+    "voxel": 0.02,
+    "weight_high": 1.0,
+    "weight_low": 0.01,
+    "weight_medium": 0.1
+  },
+  "obj_sha256": "ed06c49e863f4c4f54551d017f8b0530dc2685f084144fcd77648b379c1f2bd1",
+  "obj_bytes": 161600327,
+  "obj_coordinate_significant_digits": 17,
+  "obj_exact_oriented_geometry": true,
+  "obj_text_vertices_faces_exact": true,
+  "obj_importer_float32_geometry_verified": true,
+  "obj_importer_max_coordinate_rounding_m": 0.000244140625
+}

@@ -390,6 +390,7 @@ Optimizer::Optimizer(int iterations, bool slam2d, bool covarianceIgnored, double
 		baLoopScope_(Parameters::defaultOptimizerBALoopScope()),
 		baLoopScopeMinTracks_(Parameters::defaultOptimizerBALoopScopeMinTracks()),
 		baWindowGraphDepth_(Parameters::defaultOptimizerBAWindowGraphDepth()),
+		baExtraPairBudget_(Parameters::defaultOptimizerBAExtraPairBudget()),
 		baLoopLinkAsEdge_(Parameters::defaultOptimizerBALoopLinkAsEdge()),
 		baLoopLinkMinObservations_(Parameters::defaultOptimizerBALoopLinkMinObservations()),
 		baDepth_(Parameters::defaultOptimizerBADepth())
@@ -435,6 +436,7 @@ Optimizer::Optimizer(const ParametersMap & parameters) :
 		baLoopScope_(Parameters::defaultOptimizerBALoopScope()),
 		baLoopScopeMinTracks_(Parameters::defaultOptimizerBALoopScopeMinTracks()),
 		baWindowGraphDepth_(Parameters::defaultOptimizerBAWindowGraphDepth()),
+		baExtraPairBudget_(Parameters::defaultOptimizerBAExtraPairBudget()),
 		baLoopLinkAsEdge_(Parameters::defaultOptimizerBALoopLinkAsEdge()),
 		baLoopLinkMinObservations_(Parameters::defaultOptimizerBALoopLinkMinObservations()),
 		baDepth_(Parameters::defaultOptimizerBADepth())
@@ -484,6 +486,8 @@ void Optimizer::parseParameters(const ParametersMap & parameters)
 	Parameters::parse(parameters, Parameters::kOptimizerBALoopScope(), baLoopScope_);
 	Parameters::parse(parameters, Parameters::kOptimizerBALoopScopeMinTracks(), baLoopScopeMinTracks_);
 	Parameters::parse(parameters, Parameters::kOptimizerBAWindowGraphDepth(), baWindowGraphDepth_);
+	Parameters::parse(parameters, Parameters::kOptimizerBAExtraPairBudget(), baExtraPairBudget_);
+	UASSERT(baExtraPairBudget_ >= 0);
 	Parameters::parse(parameters, Parameters::kOptimizerBALoopLinkAsEdge(), baLoopLinkAsEdge_);
 	Parameters::parse(parameters, Parameters::kOptimizerBALoopLinkMinObservations(), baLoopLinkMinObservations_);
 	Parameters::parse(parameters, Parameters::kOptimizerBADepth(), baDepth_);

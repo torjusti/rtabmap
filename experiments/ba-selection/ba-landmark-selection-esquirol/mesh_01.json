@@ -1,0 +1,79 @@
+{
+  "landmark_selection": true,
+  "mesh_seconds": 172.9321574740461,
+  "obj": "/home/torjusti/Projects/Scani/analysis/ba-landmark-selection-esquirol/objs/01_colmap_selection_full.obj",
+  "ply": "/home/torjusti/Projects/Scani/analysis/ba-landmark-selection-esquirol/mesh_work/selection_01/merged_cloud-poisson_idb73c3e1e0cfcbd7b_v0.02_ds4_pd12_pw2.ply",
+  "vertices": 760760,
+  "triangles": 1520898,
+  "bounds": [
+    [
+      3757.605224609375,
+      -4366.85009765625,
+      -1.97344970703125
+    ],
+    [
+      4087.8369140625,
+      -4225.435546875,
+      25.749114990234375
+    ]
+  ],
+  "parameters": {
+    "camera_poses": {
+      "export_flags": [
+        "--opt",
+        "0",
+        "--Optimizer/PriorsIgnored",
+        "false",
+        "--Optimizer/Robust",
+        "false",
+        "--Optimizer/Iterations",
+        "50",
+        "--ba",
+        "--Optimizer/BAMinActiveObservations",
+        "2",
+        "--Optimizer/BAProgressive",
+        "false",
+        "--Optimizer/BAExtraPairBudget",
+        "0",
+        "--Optimizer/BALandmarkSelection",
+        "true",
+        "--Optimizer/BALandmarkMinCoverageGain",
+        "0.05"
+      ],
+      "path": ".rtab/merged/exports/merged_camera_poses.txt",
+      "sha256": "d3548f478983e83300b3892ff056cc8cd067190a1e4517899a1ed671f51f6dc1"
+    },
+    "decimation": 0.5,
+    "density_quantile": 0.02,
+    "density_threshold": null,
+    "depth_preprocessing_version": 2,
+    "downsample": 4,
+    "incidence_weighting": true,
+    "incidence_weighting_version": 1,
+    "keep_largest": true,
+    "load_color": false,
+    "max_depth": 5.0,
+    "min_confidence": "medium",
+    "min_depth": 0.0,
+    "normal_device": "CPU:0",
+    "normal_max_nn": 50,
+    "normal_preprocessing_version": 2,
+    "normal_radius": 0.0,
+    "outlier_nb_neighbors": 20,
+    "outlier_nb_points": 16,
+    "outlier_radius": 0.05,
+    "outlier_removal": "statistical",
+    "outlier_std_ratio": 2.0,
+    "point_weight": 2.0,
+    "poisson_bin": "auto",
+    "poisson_confidence": true,
+    "poisson_depth": 12,
+    "samples_per_node": 1.5,
+    "stride": 1,
+    "target_polygon_size": 0.08,
+    "voxel": 0.02,
+    "weight_high": 1.0,
+    "weight_low": 0.01,
+    "weight_medium": 0.1
+  }
+}

@@ -1,0 +1,120 @@
+{
+  "mode": "full",
+  "rows": {
+    "0": {
+      "landmark_selection": 0,
+      "frames": 43971,
+      "correspondence_seconds": 631.853,
+      "solve_seconds": 613.456,
+      "input_hash": "3837273520926908863",
+      "tracks": 5067653,
+      "three_view_tracks": 2226422,
+      "observations": 18831399,
+      "covered_frames": 43928,
+      "rejected_observations": 8878161,
+      "pose_rms_shift_m": 0.00613014,
+      "pose_max_shift_m": 0.0567481,
+      "maximum_rss_gib": 27.902240753173828,
+      "pipeline_seconds": 1245.309
+    },
+    "1": {
+      "landmark_selection": 1,
+      "frames": 43971,
+      "correspondence_seconds": 452.937,
+      "solve_seconds": 698.674,
+      "input_hash": "3837273520926908863",
+      "tracks": 5067653,
+      "three_view_tracks": 2226422,
+      "observations": 18831399,
+      "covered_frames": 43928,
+      "rejected_observations": 8753491,
+      "pose_rms_shift_m": 0.00672557,
+      "pose_max_shift_m": 0.056876,
+      "maximum_rss_gib": 26.79721450805664,
+      "phases": {
+        "selected": 3325807,
+        "omitted_processed": 1741846,
+        "selection_seconds": 10.086403,
+        "joint_seconds": 579.999152,
+        "point_only_seconds": 107.359164
+      },
+      "selected_fraction": 0.6562815173019937,
+      "pipeline_seconds": 1151.6109999999999
+    }
+  },
+  "solver_speedup": 0.878028951986191,
+  "pipeline_speedup": 1.0813625434282932,
+  "pose_difference_m": {
+    "median": 0.0006972650960016589,
+    "p95": 0.002006063282464972,
+    "maximum": 0.007821709251775845
+  },
+  "caveat": "Pose differences and track retention are not ground-truth accuracy measurements.",
+  "geometry_summary": {
+    "nearby": {
+      "input": {
+        "pairs": 123,
+        "samples": 175211,
+        "pair_mean_abs_m": 0.033766745584384465,
+        "median_pair_mean_abs_m": 0.031179032648308635,
+        "mean_change_vs_all_landmarks_m": -0.000204574445197192,
+        "median_change_vs_all_landmarks_m": -3.379739326218878e-05,
+        "fraction_pairs_better_than_all_landmarks": 0.5365853658536586
+      },
+      "all_landmarks": {
+        "pairs": 123,
+        "samples": 175211,
+        "pair_mean_abs_m": 0.03397132002958166,
+        "median_pair_mean_abs_m": 0.030752269436167944,
+        "mean_change_vs_all_landmarks_m": 0.0,
+        "median_change_vs_all_landmarks_m": 0.0,
+        "fraction_pairs_better_than_all_landmarks": 0.0
+      },
+      "selected_landmarks": {
+        "pairs": 123,
+        "samples": 175211,
+        "pair_mean_abs_m": 0.03398125331634008,
+        "median_pair_mean_abs_m": 0.031008090195981778,
+        "mean_change_vs_all_landmarks_m": 9.933286758417679e-06,
+        "median_change_vs_all_landmarks_m": 3.876776688092193e-06,
+        "fraction_pairs_better_than_all_landmarks": 0.4878048780487805
+      }
+    },
+    "revisit": {
+      "input": {
+        "pairs": 91,
+        "samples": 131959,
+        "pair_mean_abs_m": 0.03644551239173141,
+        "median_pair_mean_abs_m": 0.03389044043520766,
+        "mean_change_vs_all_landmarks_m": 0.00012615492515315196,
+        "median_change_vs_all_landmarks_m": 7.433567466259491e-05,
+        "fraction_pairs_better_than_all_landmarks": 0.4835164835164835
+      },
+      "all_landmarks": {
+        "pairs": 91,
+        "samples": 131959,
+        "pair_mean_abs_m": 0.03631935746657827,
+        "median_pair_mean_abs_m": 0.03301711983948635,
+        "mean_change_vs_all_landmarks_m": 0.0,
+        "median_change_vs_all_landmarks_m": 0.0,
+        "fraction_pairs_better_than_all_landmarks": 0.0
+      },
+      "selected_landmarks": {
+        "pairs": 91,
+        "samples": 131959,
+        "pair_mean_abs_m": 0.036319530489254175,
+        "median_pair_mean_abs_m": 0.033240875586534976,
+        "mean_change_vs_all_landmarks_m": 1.730226759102224e-07,
+        "median_change_vs_all_landmarks_m": -5.605697112439495e-06,
+        "fraction_pairs_better_than_all_landmarks": 0.5054945054945055
+      }
+    }
+  },
+  "geometry_limitations": [
+    "Local consistency, not ground-truth trajectory accuracy.",
+    "Depth informed upstream matching and metric links; it is not held-out ground truth.",
+    "Frozen input correspondence gate excludes gross initial misalignments.",
+    "Planar surfaces do not constrain tangential displacement.",
+    "Pair samples are correlated; win fractions are descriptive, not significance tests."
+  ]
+}
