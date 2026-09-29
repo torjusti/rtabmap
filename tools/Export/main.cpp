@@ -1810,6 +1810,7 @@ int main(int argc, char * argv[])
 			fflush(stdout);
 			UASSERT(optimizedPoses.lower_bound(1) != optimizedPoses.end());
 			ConsoleProgessState baProgress;
+			Optimizer::applyBundleAdjustmentKernel(parameters);
 			OptimizerG2O g2o(parameters);
 			g2o.setProgressState(&baProgress);
 			baProgress.callback("Matching correspondences...");

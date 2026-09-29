@@ -64,6 +64,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <gtsam/navigation/AttitudeFactor.h>
 #include <optimizer/gtsam/XYFactor.h>
 #include <optimizer/gtsam/XYZFactor.h>
+#include <optimizer/gtsam/BodyPointFactor.h>
 #include <optimizer/gtsam/PlanarBodyZFactor.h>
 #include <gtsam/nonlinear/ISAM2.h>
 
@@ -74,6 +75,72 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #endif // end RTABMAP_GTSAM
 
 namespace rtabmap {
+
+#ifdef RTABMAP_GTSAM
+namespace {
+
+// Anchor observations are written with the same variance on x, y and z.
+// Marker detections that ignore orientation are not: X/Y carry the bearing
+// variance and Z the range, and those must stay on BearingRangeFactor.
+bool linearInfoIsCartesian(const Eigen::Matrix<double, 3, 3> & information)
+{
+	const double x = information(0, 0);
+	const double y = information(1, 1);
+	const double z = information(2, 2);
+	if(!(x > 0.0 && y > 0.0 && z > 0.0))
+	{
+		return false;
+	}
+	double hi = x;
+	double lo = x;
+	if(y > hi) hi = y;
+	if(z > hi) hi = z;
+	if(y < lo) lo = y;
+	if(z < lo) lo = z;
+	return lo / hi > 0.99;
+}
+
+// A prior saved with a large sigma used to leave the camera welded to the
+// landmark at 10 cm. Widen the cartesian observation up to that sigma.
+// An axis at variance >= 9999 is unconstrained (free elevation) and is left
+// on the observation so the picked point does not lose that coordinate.
+void loosenCartesianToPositionPrior(
+		Eigen::Matrix<double, 3, 3> & information,
+		const std::multimap<int, Link> & edges,
+		int landmarkId)
+{
+	std::multimap<int, Link>::const_iterator it = edges.find(landmarkId);
+	for(; it != edges.end() && it->first == landmarkId; ++it)
+	{
+		const Link & prior = it->second;
+		if(prior.type() != Link::kPosePrior || prior.from() != landmarkId || prior.to() != landmarkId)
+		{
+			continue;
+		}
+		for(int i = 0; i < 3; ++i)
+		{
+			const double priorInfo = prior.infMatrix().at<double>(i, i);
+			const double obsInfo = information(i, i);
+			if(!(priorInfo > 0.0) || !(obsInfo > 0.0))
+			{
+				continue;
+			}
+			const double priorVar = 1.0 / priorInfo;
+			if(priorVar >= 9999.0)
+			{
+				continue;
+			}
+			if(priorVar > 1.0 / obsInfo)
+			{
+				information(i, i) = priorInfo;
+			}
+		}
+		return;
+	}
+}
+
+}
+#endif
 
 OptimizerGTSAM::OptimizerGTSAM(const ParametersMap & parameters) :
 	Optimizer(parameters),
@@ -159,6 +226,23 @@ void OptimizerGTSAM::parseParameters(const ParametersMap & parameters)
 #endif
 }
 
+void OptimizerGTSAM::resetIncremental()
+{
+#ifdef RTABMAP_GTSAM
+	if(isam2_)
+	{
+		gtsam::ISAM2Params params = isam2_->params();
+		delete isam2_;
+		isam2_ = new gtsam::ISAM2(params);
+		addedPoses_.clear();
+		lastAddedConstraints_.clear();
+		addedConstraints_.clear();
+		lastRootFactorIndex_.first = 0;
+		lastSwitchId_ = 1000000000;
+	}
+#endif
+}
+
 std::map<int, Transform> OptimizerGTSAM::optimize(
 		int rootId,
 		const std::map<int, Transform> & poses,
@@ -172,7 +256,8 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 	std::map<int, Transform> optimizedPoses;
 	resetCancel();
 #ifdef RTABMAP_GTSAM
-	std::multimap<int, Link> edgeConstraints = downweightRedundantLoopClosures(poses, edgeConstraintsIn);
+	std::multimap<int, Link> edgeConstraints = downweightRedundantLoopClosures(
+			poses, adjustLinkCovariances(edgeConstraintsIn));
 
 #ifndef RTABMAP_VERTIGO
 	if(this->isRobust())
@@ -191,6 +276,7 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 		bool hasGPSPrior = false;
 		bool hasZPrior = false;
 		bool hasGravityConstraints = false;
+		int gpsPriorCount = 0;
 		if(!priorsIgnored() || (!isSlam2d() && gravitySigma() > 0))
 		{
 			for(std::multimap<int, Link>::const_iterator iter=edgeConstraints.begin(); iter!=edgeConstraints.end(); ++iter)
@@ -200,6 +286,7 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 					if(!priorsIgnored() && iter->second.type() == Link::kPosePrior)
 					{
 						hasGPSPrior = true;
+						++gpsPriorCount;
 						if(iter->second.infMatrix().at<double>(2,2) > 0.0 &&
 						   1 / static_cast<double>(iter->second.infMatrix().at<double>(2,2)) < 9999.0)
 						{
@@ -214,6 +301,7 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 							// orientation is set, don't set root prior (it is no GPS)
 							rootId = 0;
 							hasGPSPrior = false;
+							gpsPriorCount = 0;
 							break;
 						}
 					}
@@ -238,19 +326,21 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 			UDEBUG("Setting prior for rootId=%d", rootId);
 			UASSERT(uContains(poses, rootId));
 			const Transform & initialPose = poses.at(rootId);
-			UDEBUG("hasGPSPrior=%s", hasGPSPrior?"true":"false");
+			UDEBUG("hasGPSPrior=%s gpsPriorCount=%d", hasGPSPrior?"true":"false", gpsPriorCount);
 			// When global position priors exist (GPS, landmark/anchor priors), the root
-			// prior is only needed to fix the rotation gauge (position-only priors with
-			// gravity leave global yaw undetermined). Its position part must then be
-			// essentially free: pinning the root position (previously variance=2) at its
-			// initial pose fights the global priors by the accumulated drift correction,
-			// bending the graph instead of translating it. Exception: if no prior
-			// constrains the elevation (e.g. anchor points with unknown Z), the global
-			// Z is a free gauge direction and must stay pinned at the root, otherwise
-			// the whole map can drift vertically by thousands of meters at no cost.
+			// prior is only needed to fix the rotation gauge. Its position part must be
+			// essentially free: pinning the root position fights the priors and bends
+			// the graph instead of translating it. A single position prior does not
+			// determine heading, so yaw stays pinned. Two or more do, and holding yaw
+			// then forces the chain to shear instead of rotating as a whole.
+			// Exception: if no prior constrains the elevation (e.g. anchor points with
+			// unknown Z), the global Z is a free gauge direction and must stay pinned
+			// at the root, otherwise the whole map can drift vertically by thousands
+			// of meters at no cost.
+			const double rootYawVariance = (hasGPSPrior && gpsPriorCount >= 2) ? 1e7 : (hasGPSPrior ? 1e-2 : 1e-9);
 			if(isSlam2d())
 			{
-				gtsam::noiseModel::Diagonal::shared_ptr priorNoise = gtsam::noiseModel::Diagonal::Variances(gtsam::Vector3(hasGPSPrior?1e7:0.01, hasGPSPrior?1e7:0.01, hasGPSPrior?1e-2:1e-9));
+				gtsam::noiseModel::Diagonal::shared_ptr priorNoise = gtsam::noiseModel::Diagonal::Variances(gtsam::Vector3(hasGPSPrior?1e7:0.01, hasGPSPrior?1e7:0.01, rootYawVariance));
 				graph.add(gtsam::PriorFactor<gtsam::Pose2>(rootId, gtsam::Pose2(initialPose.x(), initialPose.y(), initialPose.theta()), priorNoise));
 				addedPrior.push_back(ConstraintToFactor(rootId, rootId, -1));
 			}
@@ -258,7 +348,7 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 			{
 				gtsam::noiseModel::Diagonal::shared_ptr priorNoise = gtsam::noiseModel::Diagonal::Variances(
 						(gtsam::Vector(6) <<
-								(hasGravityConstraints?2:1e-2), (hasGravityConstraints?2:1e-2), (hasGPSPrior?1e-2:1e-9), // roll, pitch, fixed yaw if there are no priors
+								(hasGravityConstraints?2:1e-2), (hasGravityConstraints?2:1e-2), rootYawVariance, // roll, pitch, yaw
 								(hasGPSPrior?1e7:1e-2), hasGPSPrior?1e7:1e-2, (hasGPSPrior?1e7:1e-2) // xyz
 								).finished());
 				graph.add(gtsam::PriorFactor<gtsam::Pose3>(rootId, gtsam::Pose3(initialPose.toEigen4d()), priorNoise));
@@ -713,11 +803,25 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 								memcpy(information.data(), linearCov.data, linearCov.total()*sizeof(double));
 							}
 
+							// Equal x/y/z information is an anchor pick: a point in the node
+							// frame, in metres. Marker links use a different variance on
+							// Z and stay on the bearing/range factor below.
+							const bool cartesian = linearInfoIsCartesian(information);
+							if(cartesian)
+							{
+								loosenCartesianToPositionPrior(information, newEdgeConstraints, id2);
+							}
 							gtsam::SharedNoiseModel model = gtsam::noiseModel::Gaussian::Information(information);
-
-							gtsam::Point3 landmark(t.x(), t.y(), t.z());
-							gtsam::Pose3 p;
-							graph.add(gtsam::BearingRangeFactor<gtsam::Pose3, gtsam::Point3>(id1, id2, p.bearing(landmark), p.range(landmark), model));
+							if(cartesian)
+							{
+								graph.add(BodyPointFactor(id1, id2, gtsam::Point3(t.x(), t.y(), t.z()), model));
+							}
+							else
+							{
+								gtsam::Point3 landmark(t.x(), t.y(), t.z());
+								gtsam::Pose3 p;
+								graph.add(gtsam::BearingRangeFactor<gtsam::Pose3, gtsam::Point3>(id1, id2, p.bearing(landmark), p.range(landmark), model));
+							}
 							lastAddedConstraints_.push_back(ConstraintToFactor(id1, id2, -1));
 						}
 						else
@@ -1024,7 +1128,23 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 			}
 
 			// early stop condition
-			UINFO("iteration %d error =%f", i+1, error);
+			if(!isam2_ && internalOptimizerType_ == 2)
+			{
+				// Dogleg's trust region starts at 1 and only the portion of the
+				// Gauss-Newton step inside it is applied. The radius is the
+				// Euclidean norm of every pose tangent stacked together, so a
+				// correction of a few metres across a long trajectory does not
+				// fit until delta has grown. While it does not, the step is
+				// steepest descent.
+				const gtsam::DoglegOptimizer * dogleg =
+						dynamic_cast<const gtsam::DoglegOptimizer *>(optimizer);
+				UINFO("iteration %d error =%f doglegDelta=%f", i+1, error,
+						dogleg ? dogleg->getDelta() : -1.0);
+			}
+			else
+			{
+				UINFO("iteration %d error =%f", i+1, error);
+			}
 			double errorDelta = lastError - error;
 			// Abort only if the error is both huge and worse than where we
 			// started: with strong priors (e.g. anchor points) far from the
@@ -1148,6 +1268,7 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 		}
 
 		// compute marginals
+		if(isCovarianceRequested())
 		try {
 			UDEBUG("Computing marginals for node %d...", poses.rbegin()->first);
 			UTimer t;

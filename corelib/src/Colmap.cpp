@@ -375,6 +375,7 @@ ColmapExportResult exportColmap(
 		ParametersMap parametersSBA = parameters;
 		uInsert(parametersSBA, ParametersPair(Parameters::kOptimizerIterations(), uNumber2Str(options.sbaIterations)));
 		uInsert(parametersSBA, ParametersPair(Parameters::kOptimizerPixelVariance(), uNumber2Str(options.sbaVariance)));
+		Optimizer::applyBundleAdjustmentKernel(parametersSBA);
 
 		std::shared_ptr<Optimizer> sba(Optimizer::create(options.sbaType, parametersSBA));
 		sba->setProgressState(progressState);

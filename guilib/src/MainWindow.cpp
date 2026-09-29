@@ -6954,7 +6954,7 @@ void MainWindow::postProcessing(
 												{
 													graph::MaxGraphErrors maxGraphErrors = graph::computeMaxGraphErrors(
 															poses,
-															links);
+															optimizer->adjustLinkCovariances(links));
 													if(maxGraphErrors.linearLink.isValid())
 													{
 														UINFO("Max optimization linear error = %f m (link %d->%d)", maxGraphErrors.linear, maxGraphErrors.linearLink.from(), maxGraphErrors.linearLink.to());

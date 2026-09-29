@@ -44,6 +44,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <pcl/surface/poisson.h>
 #include <stdio.h>
 #include <signal.h>
+#include <cstdlib>
 
 using namespace rtabmap;
 
@@ -321,7 +322,7 @@ int main(int argc, char * argv[])
 			printf("Loop closure detection failed!\n");
 		}
 	}
-	else if(detected > 0 && haveOptimizedMap)
+	else if(detected > 0 && haveOptimizedMap && std::getenv("RTABMAP_DETECT_MORE_DRY_RUN") == 0)
 	{
 		printf("The database has a global occupancy grid, regenerating one with new optimized graph!\n");
 		LocalGridCache cache;
@@ -349,7 +350,7 @@ int main(int argc, char * argv[])
 	// Restore original parameters before saving back the database
 	rtabmap.parseParameters(originalParameters);
 
-	rtabmap.close(detected>0);
+	rtabmap.close(detected>0 && std::getenv("RTABMAP_DETECT_MORE_DRY_RUN") == 0);
 
 	// Only a negative count is a failure (detection failed or was interrupted).
 	// Finding zero new loop closures is a valid outcome, so exit 0.

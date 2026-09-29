@@ -140,9 +140,17 @@ void ProgressDialog::setValue(int value)
 		}
 	}
 }
+int ProgressDialog::value() const
+{
+	return _progressBar->value();
+}
 int ProgressDialog::maximumSteps() const
 {
 	return _progressBar->maximum();
+}
+void ProgressDialog::setStatus(const QString & text)
+{
+	_text->setText(text);
 }
 void ProgressDialog::setMaximumSteps(int steps)
 {

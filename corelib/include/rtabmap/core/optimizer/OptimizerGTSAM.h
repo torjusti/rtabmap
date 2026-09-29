@@ -48,6 +48,8 @@ public:
 	virtual Type type() const {return kTypeGTSAM;}
 
 	virtual void parseParameters(const ParametersMap & parameters);
+	virtual bool isIncremental() const {return isam2_ != 0;}
+	virtual void resetIncremental();
 
 	virtual std::map<int, Transform> optimize(
 			int rootId,
