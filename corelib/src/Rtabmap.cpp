@@ -30,6 +30,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "rtabmap/core/Features2d.h"
 #include "rtabmap/core/Optimizer.h"
 #include "rtabmap/core/Graph.h"
+#include "rtabmap/core/OdometryArcLength.h"
 #include "rtabmap/core/Signature.h"
 
 #include "rtabmap/core/EpipolarGeometry.h"
@@ -70,6 +71,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <pcl/TextureMesh.h>
 
 #include <stdlib.h>
+#include <algorithm>
+#include <atomic>
 #include <set>
 #include <queue>
 #include <functional>
@@ -3456,7 +3459,7 @@ bool Rtabmap::process(
 					UINFO("Compute max graph errors...");
 					maxGraphErrors = graph::computeMaxGraphErrors(
 							optPoses,
-							edgeConstraintsOut,
+							_graphOptimizer->adjustLinkCovariances(edgeConstraintsOut),
 							_graphOptimizer->isSlam2d());
 					if(!maxGraphErrors.linearLink.isValid() && !maxGraphErrors.angularLink.isValid())
 					{
@@ -3654,7 +3657,7 @@ bool Rtabmap::process(
 							UINFO("Compute max graph errors...");
 							maxGraphErrors = graph::computeMaxGraphErrors(
 									optPoses,
-									edgeConstraintsOut,
+									_graphOptimizer->adjustLinkCovariances(edgeConstraintsOut),
 									_graphOptimizer->isSlam2d());
 							if(!maxGraphErrors.linearLink.isValid() && !maxGraphErrors.angularLink.isValid())
 							{
@@ -4094,7 +4097,7 @@ bool Rtabmap::process(
 				UINFO("Compute max graph errors...");
 				maxGraphErrors = graph::computeMaxGraphErrors(
 						poses,
-						constraints);
+						_graphOptimizer->adjustLinkCovariances(constraints));
 				if(!maxGraphErrors.linearLink.isValid() && !maxGraphErrors.angularLink.isValid())
 				{
 					UWARN("Could not compute graph errors! Wrong loop closures could be accepted!");
@@ -5902,7 +5905,7 @@ std::list<std::pair<int, int> > Rtabmap::repairGraph(
 		{
 			subMaxGraphErrors = graph::computeMaxGraphErrors(
 					subPoses,
-					subConstraintsOut);
+					_graphOptimizer->adjustLinkCovariances(subConstraintsOut));
 		}
 		if(subPoses.empty() ||
 		   subMaxGraphErrors.linearRatio > _optimizationMaxError ||
@@ -5931,7 +5934,7 @@ std::list<std::pair<int, int> > Rtabmap::repairGraph(
 			{
 				graph::MaxGraphErrors propagatedMaxGraphErrors = graph::computeMaxGraphErrors(
 						propagatedOptimizedPoses,
-						subConstraintsOut);
+						_graphOptimizer->adjustLinkCovariances(subConstraintsOut));
 				if(propagatedMaxGraphErrors.linearLink.isValid() &&
 				   (subPoses.empty() ||
 				    std::max(propagatedMaxGraphErrors.linearRatio, propagatedMaxGraphErrors.angularRatio) <
@@ -6431,8 +6434,78 @@ int Rtabmap::detectMoreLoopClosures(
 			}
 		}
 	}
-	// Dijkstra with early exit: only "is `to` reachable from `from` by a path
-	// shorter than minimumGraphDistance metres?" is needed.
+	// Odometry arc length is an upper bound on graph distance: a loop closure
+	// can only shorten the path. Pairs already this close along one odometry
+	// chain are inside the limit with no search. Neighbor links do not change
+	// when a loop closure is accepted, so this is built once.
+	const odometryGraph::Trajectory odomArc = minimumGraphDistance > 0.0f
+			? odometryGraph::trajectory(poses, links, mapIds)
+			: odometryGraph::Trajectory();
+	// Nodes reachable from each node by less than minimumGraphDistance, built
+	// once per iteration. Accepted links only add shortcuts, so a hit stays a
+	// hit; a miss is searched again after the index goes stale.
+	struct Reachability
+	{
+		std::map<int, int> index;
+		std::vector<std::vector<int> > reached;
+		bool valid;
+		bool stale;
+		Reachability() : valid(false), stale(false) {}
+	} reach;
+	auto collectReached = [&](int from) -> std::vector<int>
+	{
+		std::vector<int> hit;
+		std::map<int, float> best;
+		std::priority_queue<std::pair<float, int>, std::vector<std::pair<float, int> >, std::greater<std::pair<float, int> > > q;
+		best.insert(std::make_pair(from, 0.0f));
+		q.push(std::make_pair(0.0f, from));
+		while(!q.empty())
+		{
+			std::pair<float, int> cur = q.top();
+			q.pop();
+			std::map<int, float>::iterator bter = best.find(cur.second);
+			if(bter == best.end() || cur.first > bter->second + 1e-6f)
+			{
+				continue;
+			}
+			if(cur.second != from)
+			{
+				hit.push_back(cur.second);
+			}
+			for(std::multimap<int, std::pair<int, float> >::iterator ater=graphAdjacency.lower_bound(cur.second);
+				ater!=graphAdjacency.end() && ater->first==cur.second;
+				++ater)
+			{
+				float nextDist = cur.first + ater->second.second;
+				if(nextDist >= minimumGraphDistance)
+				{
+					continue;
+				}
+				int nid = ater->second.first;
+				std::map<int, float>::iterator nter = best.find(nid);
+				if(nter == best.end() || nextDist < nter->second)
+				{
+					best[nid] = nextDist;
+					q.push(std::make_pair(nextDist, nid));
+				}
+			}
+		}
+		std::sort(hit.begin(), hit.end());
+		hit.erase(std::unique(hit.begin(), hit.end()), hit.end());
+		return hit;
+	};
+	auto inReachBall = [&](int from, int to) -> bool
+	{
+		std::map<int, int>::const_iterator ia = reach.index.find(from);
+		if(ia == reach.index.end())
+		{
+			return false;
+		}
+		const std::vector<int> & row = reach.reached[ia->second];
+		return std::binary_search(row.begin(), row.end(), to);
+	};
+	// Same check as DatabaseViewer: arc-length reject, then the per-node
+	// index, then a live Dijkstra only for a miss after a link was accepted.
 	auto linkedWithinGraphDistance = [&](int from, int to) -> bool
 	{
 		if(minimumGraphDistance <= 0.0f)
@@ -6442,6 +6515,32 @@ int Rtabmap::detectMoreLoopClosures(
 		if(from == to)
 		{
 			return true;
+		}
+		odometryGraph::Trajectory::const_iterator fromArc = odomArc.find(from);
+		odometryGraph::Trajectory::const_iterator toArc = odomArc.find(to);
+		if(fromArc != odomArc.end() && toArc != odomArc.end() &&
+		   fromArc->second.chain == toArc->second.chain)
+		{
+			double gap = fromArc->second.metres - toArc->second.metres;
+			if(gap < 0.0)
+			{
+				gap = -gap;
+			}
+			if(gap < (double)minimumGraphDistance)
+			{
+				return true;
+			}
+		}
+		if(reach.valid)
+		{
+			if(inReachBall(from, to))
+			{
+				return true;
+			}
+			if(!reach.stale)
+			{
+				return false;
+			}
 		}
 		std::map<int, float> best;
 		std::priority_queue<std::pair<float, int>, std::vector<std::pair<float, int> >, std::greater<std::pair<float, int> > > q;
@@ -6488,6 +6587,71 @@ int Rtabmap::detectMoreLoopClosures(
 		}
 		graphAdjacency.insert(std::make_pair(from, std::make_pair(to, metres)));
 		graphAdjacency.insert(std::make_pair(to, std::make_pair(from, metres)));
+		reach.stale = true;
+	};
+	// One Dijkstra per node, in parallel. Returns false when canceled.
+	auto rebuildReachability = [&]() -> bool
+	{
+		reach.index.clear();
+		reach.reached.clear();
+		reach.valid = false;
+		reach.stale = false;
+		if(minimumGraphDistance <= 0.0f || graphAdjacency.empty())
+		{
+			return true;
+		}
+		std::vector<int> nodes;
+		nodes.reserve(graphAdjacency.size());
+		for(std::multimap<int, std::pair<int, float> >::const_iterator iter=graphAdjacency.begin();
+			iter!=graphAdjacency.end();
+			++iter)
+		{
+			if(nodes.empty() || nodes.back() != iter->first)
+			{
+				nodes.push_back(iter->first);
+			}
+		}
+		if(nodes.empty())
+		{
+			return true;
+		}
+		reach.reached.resize(nodes.size());
+		int threads = 1;
+#ifdef _OPENMP
+		threads = omp_get_max_threads();
+#endif
+		std::atomic<bool> stop(false);
+		UTimer indexTimer;
+#ifdef _OPENMP
+		#pragma omp parallel for schedule(dynamic) num_threads(threads) if(threads > 1)
+#endif
+		for(int i=0; i<(int)nodes.size(); ++i)
+		{
+			if(stop.load())
+			{
+				continue;
+			}
+			if(processState && processState->isCanceled())
+			{
+				stop.store(true);
+				continue;
+			}
+			reach.reached[i] = collectReached(nodes[i]);
+		}
+		if(stop.load())
+		{
+			reach.reached.clear();
+			return false;
+		}
+		for(size_t i=0; i<nodes.size(); ++i)
+		{
+			reach.index.insert(std::make_pair(nodes[i], (int)i));
+		}
+		reach.valid = true;
+		printf("STAGE graph-distance index: %d nodes in %.2fs on %d threads\n",
+				(int)nodes.size(), indexTimer.ticks(), threads);
+		fflush(stdout);
+		return true;
 	};
 
 	// Signature cache for the parallel registration path below: a node
@@ -6547,13 +6711,21 @@ int Rtabmap::detectMoreLoopClosures(
 
 	for(int n=0; n<iterations; ++n)
 	{
+		printf("STAGE poses=%d links=%d candidates_pool=%d min_graph=%.1f parallel=%d max_error=%g\n",
+				(int)poses.size(), (int)links.size(), (int)posesToCheckLoopClosures.size(),
+				minimumGraphDistance, parallelRegistration?1:0, _optimizationMaxError);
+		fflush(stdout);
 		UINFO("Looking for more loop closures, clustering poses... (iteration=%d/%d, radius=%f m angle=%f rad)",
 				n+1, iterations, clusterRadiusMax, clusterAngle);
 
+		UTimer stageTimer;
 		std::multimap<int, int> clusters = graph::radiusPosesClustering(
 				posesToCheckLoopClosures,
 				clusterRadiusMax,
 				clusterAngle);
+		printf("STAGE iteration %d/%d clustered %d pairs in %.2fs\n",
+				n+1, iterations, (int)clusters.size(), stageTimer.ticks());
+		fflush(stdout);
 
 		UINFO("Looking for more loop closures: clustering poses... found %ld clusters.", clusters.size());
 
@@ -6582,6 +6754,11 @@ int Rtabmap::detectMoreLoopClosures(
 		// No upfront graph-distance filtering here: the check is done per
 		// candidate against the live adjacency (which includes the loop
 		// closures accepted so far), in both the parallel and serial paths.
+		// The index makes that check a binary search until a link is accepted.
+		if(minimumGraphDistance > 0.0f && !clusters.empty() && !rebuildReachability())
+		{
+			return -1;
+		}
 
 		int i=0;
 		std::set<int> addedLinks;
@@ -6607,8 +6784,16 @@ int Rtabmap::detectMoreLoopClosures(
 			};
 			// Collect all candidates of this iteration.
 			std::vector<std::pair<int, int> > candidates;
+			stageTimer.ticks();
+			int filterScanned = 0;
 			for(std::multimap<int, int>::iterator iter=clusters.begin(); iter!= clusters.end(); ++iter)
 			{
+				if((++filterScanned % 250000) == 0)
+				{
+					printf("STAGE iteration %d/%d filtering %d/%d (%.0fs)\n",
+							n+1, iterations, filterScanned, (int)clusters.size(), stageTimer.elapsed());
+					fflush(stdout);
+				}
 				int from = iter->first;
 				int to = iter->second;
 				if(from > to)
@@ -6657,6 +6842,9 @@ int Rtabmap::detectMoreLoopClosures(
 			}
 			// Deterministic order (and better locality for signature loads).
 			std::sort(candidates.begin(), candidates.end());
+			printf("STAGE iteration %d/%d filter %.2fs kept %d of %d (registration threads=%d)\n",
+					n+1, iterations, stageTimer.ticks(), (int)candidates.size(), (int)clusters.size(), regThreads);
+			fflush(stdout);
 			UINFO("Iteration %d/%d: %ld candidates to register (%ld clusters)",
 					n+1, iterations, candidates.size(), clusters.size());
 
@@ -6668,6 +6856,7 @@ int Rtabmap::detectMoreLoopClosures(
 					return -1;
 				}
 				size_t c1 = std::min(c0+chunkSize, candidates.size());
+				UTimer chunkTimer;
 				std::vector<CandidateRegistration> chunk;
 				chunk.reserve(c1-c0);
 				for(size_t k=c0; k<c1; ++k)
@@ -6691,6 +6880,7 @@ int Rtabmap::detectMoreLoopClosures(
 						candidate.guess = poses.at(candidate.from).inverse() * poses.at(candidate.to);
 					}
 				}
+				double loadSec = chunkTimer.ticks();
 
 #ifdef _OPENMP
 				#pragma omp parallel for schedule(dynamic) num_threads(regThreads) if(regThreads > 1)
@@ -6700,6 +6890,8 @@ int Rtabmap::detectMoreLoopClosures(
 					// use signatures instead of IDs because some signatures may not be in WM
 					chunk[b].t = _memory->computeTransform(chunk[b].fromS, chunk[b].toS, chunk[b].guess, &chunk[b].info);
 				}
+				double regSec = chunkTimer.ticks();
+				int newLinks = 0;
 
 				for(size_t b=0; b<chunk.size(); ++b)
 				{
@@ -6722,6 +6914,7 @@ int Rtabmap::detectMoreLoopClosures(
 					cv::Mat inf = getInformation(chunk[b].info.covariance);
 					links.insert(std::make_pair(from, Link(from, to, Link::kUserClosure, chunk[b].t, inf)));
 					loopClosuresAdded.push_back(Link(from, to, Link::kUserClosure, chunk[b].t, inf));
+					++newLinks;
 					std::string msg = uFormat("Iteration %d/%d: Added loop closure %d->%d! (chunk %d/%d)", n+1, iterations, from, to, (int)(c0/chunkSize)+1, (int)((candidates.size()+chunkSize-1)/chunkSize));
 					UINFO(msg.c_str());
 					if(processState)
@@ -6732,6 +6925,15 @@ int Rtabmap::detectMoreLoopClosures(
 						}
 					}
 				}
+				printf("STAGE chunk %d/%d pairs=%d load=%.2fs registration=%.2fs accept=%.2fs new=%d\n",
+						(int)(c0/chunkSize)+1,
+						(int)((candidates.size()+chunkSize-1)/chunkSize),
+						(int)chunk.size(),
+						loadSec,
+						regSec,
+						chunkTimer.ticks(),
+						newLinks);
+				fflush(stdout);
 			}
 		}
 		else
@@ -6846,7 +7048,7 @@ int Rtabmap::detectMoreLoopClosures(
 									{
 										maxGraphErrors = graph::computeMaxGraphErrors(
 												optimizedPoses,
-												linksOut);
+												_graphOptimizer->adjustLinkCovariances(linksOut));
 										if(maxGraphErrors.linearLink.isValid())
 										{
 											UINFO("Max optimization linear error = %f m (link %d->%d)", maxGraphErrors.linear, maxGraphErrors.linearLink.from(), maxGraphErrors.linearLink.to());
@@ -6965,9 +7167,10 @@ int Rtabmap::detectMoreLoopClosures(
 
 	if(loopClosuresAdded.size())
 	{
+		const bool dryRun = std::getenv("RTABMAP_DETECT_MORE_DRY_RUN") != 0;
 		for(std::list<Link>::iterator iter=loopClosuresAdded.begin(); iter!=loopClosuresAdded.end(); ++iter)
 		{
-			_memory->addLink(*iter, true);
+			_memory->addLink(*iter, !dryRun);
 		}
 		// Update optimized poses
 		for(std::map<int, Transform>::iterator iter=_optimizedPoses.begin(); iter!=_optimizedPoses.end(); ++iter)
@@ -6982,7 +7185,10 @@ int Rtabmap::detectMoreLoopClosures(
 		// Update also the links if some have been added in WM
 		_memory->getMetricConstraints(uKeysSet(_optimizedPoses), tmp, _constraints, false);
 		// This will force rtabmap_ros to regenerate the global occupancy grid if there was one
-		_memory->save2DMap(cv::Mat(), 0, 0, 0);
+		if(!dryRun)
+		{
+			_memory->save2DMap(cv::Mat(), 0, 0, 0);
+		}
 	}
 	return (int)loopClosuresAdded.size();
 }
@@ -7190,7 +7396,7 @@ bool Rtabmap::addLink(const Link & link)
 
 			maxGraphErrors = graph::computeMaxGraphErrors(
 					poses,
-					links);
+					_graphOptimizer->adjustLinkCovariances(links));
 			if(maxGraphErrors.linearLink.isValid())
 			{
 				UINFO("Max optimization linear error = %f m (link %d->%d)", maxGraphErrors.linear, maxGraphErrors.linearLink.from(), maxGraphErrors.linearLink.to());
@@ -7364,7 +7570,7 @@ bool Rtabmap::addLink(const Link & link)
 			UINFO("Compute max graph errors...");
 			graph::MaxGraphErrors maxGraphErrors = graph::computeMaxGraphErrors(
 					optPoses,
-					edgeConstraintsOut,
+					_graphOptimizer->adjustLinkCovariances(edgeConstraintsOut),
 					_graphOptimizer->isSlam2d());
 			if(!maxGraphErrors.linearLink.isValid() && !maxGraphErrors.angularLink.isValid())
 			{

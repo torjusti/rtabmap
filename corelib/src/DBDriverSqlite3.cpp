@@ -2402,16 +2402,17 @@ void DBDriverSqlite3::getLocalFeaturesQuery(
 	std::multimap<int, int> & words,
 	std::vector<cv::KeyPoint> & keypoints,
 	std::vector<cv::Point3f> & points,
-	cv::Mat & descriptors) const
+	cv::Mat & descriptors,
+	bool withDescriptors) const
 {
 	Signature s(signatureId);
 	std::list<Signature *> ids;
 	ids.push_back(&s);
-	this->loadWordsQuery(ids);
+	this->loadWordsQuery(ids, withDescriptors);
 	words = ids.front()->getWords();
 	keypoints = ids.front()->getWordsKpts();
 	points = ids.front()->getWords3();
-	descriptors = ids.front()->getWordsDescriptors().clone();
+	descriptors = withDescriptors ? ids.front()->getWordsDescriptors().clone() : cv::Mat();
 }
 
 void DBDriverSqlite3::getLastNodeIdsQuery(std::set<int> & ids) const
@@ -3862,7 +3863,7 @@ void DBDriverSqlite3::loadWordIdsQuery(std::list<Signature *> & signatures) cons
 	}
 }
 
-void DBDriverSqlite3::loadWordsQuery(std::list<Signature *> & signatures) const
+void DBDriverSqlite3::loadWordsQuery(std::list<Signature *> & signatures, bool withDescriptors) const
 {
 	if(_ppDb)
 	{
@@ -3870,33 +3871,23 @@ void DBDriverSqlite3::loadWordsQuery(std::list<Signature *> & signatures) const
 		sqlite3_stmt * ppStmt = 0;
 		std::stringstream query;
 
-		if(uStrNumCmp(_version, "0.13.0") >= 0)
-		{
-			query << "SELECT word_id, pos_x, pos_y, size, dir, response, octave, depth_x, depth_y, depth_z, descriptor_size, descriptor "
-					 "FROM Feature "
-					 "WHERE node_id = ? ";
-		}
-		else if(uStrNumCmp(_version, "0.12.0") >= 0)
-		{
-			query << "SELECT word_id, pos_x, pos_y, size, dir, response, octave, depth_x, depth_y, depth_z, descriptor_size, descriptor "
-					 "FROM Map_Node_Word "
-					 "WHERE node_id = ? ";
-		}
-		else if(uStrNumCmp(_version, "0.11.2") >= 0)
-		{
-			query << "SELECT word_id, pos_x, pos_y, size, dir, response, depth_x, depth_y, depth_z, descriptor_size, descriptor "
-					 "FROM Map_Node_Word "
-					 "WHERE node_id = ? ";
-		}
-		else
-		{
-			query << "SELECT word_id, pos_x, pos_y, size, dir, response, depth_x, depth_y, depth_z "
-					 "FROM Map_Node_Word "
-					 "WHERE node_id = ? ";
-		}
+		const bool hasOctave = uStrNumCmp(_version, "0.12.0") >= 0;
+		const bool hasDescriptorColumns = uStrNumCmp(_version, "0.11.2") >= 0;
+		const bool readDescriptors = withDescriptors && hasDescriptorColumns;
+		const char * table = uStrNumCmp(_version, "0.13.0") >= 0 ? "Feature" : "Map_Node_Word";
 
-		query << " ORDER BY word_id"; // Needed for fast insertion below
-		query << ";";
+		query << "SELECT word_id, pos_x, pos_y, size, dir, response";
+		if(hasOctave)
+		{
+			query << ", octave";
+		}
+		query << ", depth_x, depth_y, depth_z";
+		if(readDescriptors)
+		{
+			query << ", descriptor_size, descriptor";
+		}
+		query << " FROM " << table
+			  << " WHERE node_id = ? ORDER BY word_id;"; // ORDER BY needed for fast insertion below
 
 		rc = sqlite3_prepare_v2(_ppDb, query.str().c_str(), -1, &ppStmt, 0);
 		UASSERT_MSG(rc == SQLITE_OK, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
@@ -3933,7 +3924,7 @@ void DBDriverSqlite3::loadWordsQuery(std::list<Signature *> & signatures) const
 				kpt.size = sqlite3_column_int(ppStmt, index++);
 				kpt.angle = sqlite3_column_double(ppStmt, index++);
 				kpt.response = sqlite3_column_double(ppStmt, index++);
-				if(uStrNumCmp(_version, "0.12.0") >= 0)
+				if(hasOctave)
 				{
 					kpt.octave = sqlite3_column_int(ppStmt, index++);
 				}
@@ -3977,7 +3968,7 @@ void DBDriverSqlite3::loadWordsQuery(std::list<Signature *> & signatures) const
 					allWords3NaN = false;
 				}
 
-				if(uStrNumCmp(_version, "0.11.2") >= 0)
+				if(readDescriptors)
 				{
 					descriptorSize = sqlite3_column_int(ppStmt, index++); // VisualWord descriptor size
 					descriptor = sqlite3_column_blob(ppStmt, index); 	// VisualWord descriptor array

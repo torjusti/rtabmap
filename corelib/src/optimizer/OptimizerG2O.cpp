@@ -233,7 +233,8 @@ std::map<int, Transform> OptimizerG2O::optimize(
 	outputCovariance = cv::Mat::eye(6,6,CV_64FC1);
 	std::map<int, Transform> optimizedPoses;
 #ifdef RTABMAP_G2O
-	std::multimap<int, Link> edgeConstraints = downweightRedundantLoopClosures(poses, edgeConstraintsIn);
+	std::multimap<int, Link> edgeConstraints = downweightRedundantLoopClosures(
+			poses, adjustLinkCovariances(edgeConstraintsIn));
 	UDEBUG("Optimizing graph... (rootId=%d)", rootId);
 
 #ifndef RTABMAP_VERTIGO

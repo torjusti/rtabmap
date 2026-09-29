@@ -21,6 +21,7 @@
 #include <rtabmap/core/CameraModel.h>
 #include <rtabmap/core/util3d_transforms.h>
 #include <rtabmap/utilite/UConversion.h>
+#include <rtabmap/utilite/UStl.h>
 #include <rtabmap/utilite/UTimer.h>
 #include <memory>
 #include <random>
@@ -3399,5 +3400,342 @@ TEST(OptimizerRedundancy, CountsMatchIndependentBruteForceOnMultipleChains)
 		for(const auto & p : pairs)
 			if((near(a,p.first) && near(b,p.second)) || (near(a,p.second) && near(b,p.first))) ++count;
 		EXPECT_DOUBLE_EQ(loopInformation(out,a,b),12.0/count);
+	}
+}
+
+double linkInformation(const std::multimap<int, Link> & links, int a, int b, int axis)
+{
+	for(const auto & e : links)
+		if(e.second.from()==a && e.second.to()==b) return e.second.infMatrix().at<double>(axis, axis);
+	ADD_FAILURE() << "Missing link " << a << " -> " << b;
+	return -1;
+}
+
+TEST(OptimizerNeighborNoise, AddsStepNoiseInQuadrature)
+{
+	RedundancyGraph g;
+	g.node(1);
+	g.node(2);
+	g.node(3);
+	g.edge(1, 2, Link::kNeighbor, 2.0f);
+	g.edge(2, 3, Link::kGlobalClosure, 1.0f);
+
+	std::unique_ptr<Optimizer> optimizer(Optimizer::create(ParametersMap()));
+	optimizer->setNeighborLinearStdPerMeter(0.1);
+	optimizer->setNeighborYawStdPerMeter(0.05);
+	auto out = optimizer->adjustLinkCovariances(g.links);
+
+	const double addedLin = 0.1 * 0.1 * 2.0 * 2.0;
+	const double addedYaw = 0.05 * 0.05 * 2.0 * 2.0;
+	EXPECT_NEAR(linkInformation(out, 1, 2, 0), 1.0 / (1.0/12.0 + addedLin), 1e-9);
+	EXPECT_NEAR(linkInformation(out, 1, 2, 1), 1.0 / (1.0/12.0 + addedLin), 1e-9);
+	EXPECT_NEAR(linkInformation(out, 1, 2, 2), 1.0 / (1.0/12.0 + addedLin), 1e-9);
+	EXPECT_DOUBLE_EQ(linkInformation(out, 1, 2, 3), 12.0);
+	EXPECT_DOUBLE_EQ(linkInformation(out, 1, 2, 4), 12.0);
+	EXPECT_NEAR(linkInformation(out, 1, 2, 5), 1.0 / (1.0/12.0 + addedYaw), 1e-9);
+	EXPECT_DOUBLE_EQ(linkInformation(out, 2, 3, 0), 12.0);
+	EXPECT_DOUBLE_EQ(linkInformation(g.links, 1, 2, 0), 12.0);
+}
+
+TEST(OptimizerNeighborNoise, DisabledAndSentinelAxesStayPut)
+{
+	RedundancyGraph g;
+	g.node(1);
+	g.node(2);
+	g.edge(1, 2, Link::kNeighbor, 1.0f);
+	std::unique_ptr<Optimizer> optimizer(Optimizer::create(ParametersMap()));
+	auto out = optimizer->adjustLinkCovariances(g.links);
+	EXPECT_DOUBLE_EQ(linkInformation(out, 1, 2, 0), 12.0);
+
+	cv::Mat inf = cv::Mat::eye(6, 6, CV_64FC1) * 12.0;
+	inf.at<double>(0, 0) = 1.0 / 9999.0;
+	g.links.clear();
+	g.links.emplace(1, Link(1, 2, Link::kNeighbor, Transform(1, 0, 0, 0, 0, 0), inf));
+	optimizer->setNeighborLinearStdPerMeter(0.2);
+	out = optimizer->adjustLinkCovariances(g.links);
+	EXPECT_NEAR(linkInformation(out, 1, 2, 0), 1.0 / 9999.0, 1e-12);
+	EXPECT_NEAR(linkInformation(out, 1, 2, 1), 1.0 / (1.0/12.0 + 0.04), 1e-9);
+}
+
+TEST(OptimizerLoopFloor, RaisesOnlyOverconfidentLoopAxes)
+{
+	cv::Mat tight = cv::Mat::eye(6, 6, CV_64FC1) * 1e6; // 1 mm, 0.06 deg
+	tight.at<double>(3, 3) = 1.0 / 9999.0;              // ignored axis
+	cv::Mat loose = cv::Mat::eye(6, 6, CV_64FC1) * 12.0;
+	std::multimap<int, Link> links;
+	const Transform t(1, 0, 0, 0, 0, 0);
+	links.emplace(1, Link(1, 2, Link::kNeighbor, t, tight));
+	links.emplace(1, Link(1, 3, Link::kGlobalClosure, t, tight));
+	links.emplace(1, Link(1, 4, Link::kUserClosure, t, tight));
+	links.emplace(1, Link(1, 5, Link::kLocalSpaceClosure, t, loose));
+	links.emplace(1, Link(1, -1, Link::kLandmark, t, tight));
+	links.emplace(1, Link(1, 1, Link::kPosePrior, t, tight));
+
+	std::unique_ptr<Optimizer> optimizer(Optimizer::create(ParametersMap()));
+	optimizer->setLoopLinearStdMin(0.02);
+	optimizer->setLoopAngularStdMin(0.01);
+	auto out = optimizer->adjustLinkCovariances(links);
+
+	for(int to : {3, 4})
+	{
+		for(int axis : {0, 1, 2})
+		{
+			EXPECT_NEAR(linkInformation(out, 1, to, axis), 1.0 / (0.02*0.02), 1e-6);
+		}
+		EXPECT_NEAR(linkInformation(out, 1, to, 3), 1.0 / 9999.0, 1e-12);
+		EXPECT_NEAR(linkInformation(out, 1, to, 4), 1.0 / (0.01*0.01), 1e-6);
+		EXPECT_NEAR(linkInformation(out, 1, to, 5), 1.0 / (0.01*0.01), 1e-6);
+	}
+	EXPECT_DOUBLE_EQ(linkInformation(out, 1, 5, 0), 12.0);
+	EXPECT_DOUBLE_EQ(linkInformation(out, 1, 2, 0), 1e6);
+	EXPECT_DOUBLE_EQ(linkInformation(out, 1, -1, 0), 1e6);
+	EXPECT_DOUBLE_EQ(linkInformation(out, 1, 1, 0), 1e6);
+	EXPECT_DOUBLE_EQ(linkInformation(links, 1, 3, 0), 1e6);
+
+	optimizer->setLoopLinearStdMin(0.0);
+	optimizer->setLoopAngularStdMin(0.0);
+	out = optimizer->adjustLinkCovariances(links);
+	EXPECT_DOUBLE_EQ(linkInformation(out, 1, 3, 0), 1e6);
+}
+
+TEST(OptimizerLoopFloor, FloorsDiagonalOfFullCovariance)
+{
+	cv::Mat cov = cv::Mat::eye(6, 6, CV_64FC1) * 1e-6;
+	cov.at<double>(0, 1) = cov.at<double>(1, 0) = 5e-7;
+	std::multimap<int, Link> links;
+	links.emplace(1, Link(1, 2, Link::kGlobalClosure, Transform(1, 0, 0, 0, 0, 0), cov.inv()));
+
+	std::unique_ptr<Optimizer> optimizer(Optimizer::create(ParametersMap()));
+	optimizer->setLoopLinearStdMin(0.02);
+	optimizer->setLoopAngularStdMin(0.0);
+	auto out = optimizer->adjustLinkCovariances(links);
+
+	cv::Mat outCov = out.begin()->second.infMatrix().inv();
+	EXPECT_NEAR(outCov.at<double>(0, 0), 0.02*0.02, 1e-9);
+	EXPECT_NEAR(outCov.at<double>(1, 1), 0.02*0.02, 1e-9);
+	EXPECT_NEAR(outCov.at<double>(2, 2), 0.02*0.02, 1e-9);
+	EXPECT_NEAR(outCov.at<double>(0, 1), 5e-7, 1e-12);
+	EXPECT_NEAR(outCov.at<double>(5, 5), 1e-6, 1e-12);
+}
+
+// BA correspondence strategies: pairwise links (legacy) vs tracks (union-find)
+// ---------------------------------------------------------------------------
+//
+// The legacy builder merges a correspondence into an existing word only when
+// exactly one of its two endpoints is already known. When a link joins two
+// keypoints that *both* already belong to words, and those words differ, the
+// two are silently left unmerged: one physical landmark stays split across two
+// 3D points with disjoint observation sets.
+//
+// The scenario below is built so link iteration order (ascending "from" id)
+// forces exactly that case:
+//
+//     link 1-4  visited first  -> creates words over frames {1,4}
+//     link 2-3  visited second -> creates *separate* words over frames {2,3}
+//     link 3-4  visited last   -> both endpoints already known, different
+//                                 words -> legacy cannot merge them
+//
+// All four frames observe the same landmarks, so the correct answer is one
+// track per landmark with four observations each.
+
+namespace {
+
+constexpr int   kTrkNumPoints   = 12;
+constexpr float kTrkFx          = 500.0f;
+constexpr float kTrkFy          = 500.0f;
+constexpr float kTrkCx          = 320.0f;
+constexpr float kTrkCy          = 240.0f;
+constexpr int   kTrkImageWidth  = 640;
+constexpr int   kTrkImageHeight = 480;
+
+struct TrackScenario
+{
+	std::map<int, Transform>   poses;
+	std::multimap<int, Link>   links;
+	std::map<int, Signature>   signatures;
+	std::map<int, cv::Point3f> worldPoints;   // <wordId, world position>
+};
+
+// Four cameras spread along Y at x=-3, all looking down +X (body frame) at a
+// cloud of points near the origin. Every camera sees every point, and every
+// signature uses the same word ids, so with rematchFeatures=false the
+// registration falls back to word-id equality and every frame corresponds.
+//
+// @param baselineStep  spacing (m) between consecutive cameras. Small values
+//                      collapse the parallax and should trip the angle gate.
+// @param depthScale    multiplies the *stored* words3 without touching the
+//                      keypoints, so the sensor "measures" a depth that
+//                      disagrees with what the images imply.
+// @param depthNoiseStd per-point relative noise on the stored words3 only.
+TrackScenario buildTrackScenario(
+		float baselineStep = 0.4f,
+		float depthScale = 1.0f,
+		float depthNoiseStd = 0.0f)
+{
+	TrackScenario s;
+	std::mt19937 depthRng(23);
+	std::normal_distribution<float> depthNoise(0.0f, depthNoiseStd > 0.0f ? depthNoiseStd : 1.0f);
+
+	const CameraModel model(kTrkFx, kTrkFy, kTrkCx, kTrkCy,
+			CameraModel::opticalRotation(),
+			/*Tx=*/0.0,
+			cv::Size(kTrkImageWidth, kTrkImageHeight));
+
+	const int frameIds[4] = {1, 2, 3, 4};
+	for(int i = 0; i < 4; ++i)
+	{
+		s.poses[frameIds[i]] = Transform(-3.0f,
+				-1.5f * baselineStep + baselineStep * static_cast<float>(i),
+				0.0f, 0.0f, 0.0f, 0.0f);
+	}
+
+	{
+		std::mt19937 rng(11);
+		std::uniform_real_distribution<float> dist(-0.5f, 0.5f);
+		for(int p = 1; p <= kTrkNumPoints; ++p)
+		{
+			const float px = dist(rng);
+			const float py = dist(rng);
+			const float pz = dist(rng);
+			s.worldPoints[p] = cv::Point3f(px, py, pz);
+		}
+	}
+
+	for(int i = 0; i < 4; ++i)
+	{
+		const int id = frameIds[i];
+		const Transform & pose = s.poses.at(id);
+		const Transform baseToOptical = model.localTransform().inverse();
+
+		std::multimap<int, int>    words;
+		std::vector<cv::KeyPoint>  kpts;
+		std::vector<cv::Point3f>   words3;
+
+		int index = 0;
+		for(std::map<int, cv::Point3f>::const_iterator iter = s.worldPoints.begin();
+			iter != s.worldPoints.end(); ++iter, ++index)
+		{
+			// words3 are expressed in the frame's base link, as rtabmap stores them.
+			const cv::Point3f pBase = util3d::transformPoint(iter->second, pose.inverse());
+			const cv::Point3f pOpt  = util3d::transformPoint(pBase, baseToOptical);
+			EXPECT_GT(pOpt.z, 0.0f) << "point " << iter->first << " behind camera " << id;
+
+			words.insert(std::make_pair(iter->first, index));
+			// Keypoints always come from the true geometry.
+			kpts.push_back(cv::KeyPoint(
+					kTrkFx * pOpt.x / pOpt.z + kTrkCx,
+					kTrkFy * pOpt.y / pOpt.z + kTrkCy,
+					1.0f));
+			// The stored 3D word is what the depth sensor claims, which the
+			// scale/noise knobs can pull away from the truth.
+			float scale = depthScale;
+			if(depthNoiseStd > 0.0f)
+			{
+				scale *= 1.0f + depthNoise(depthRng);
+			}
+			words3.push_back(cv::Point3f(pBase.x * scale, pBase.y * scale, pBase.z * scale));
+		}
+
+		// Distinct descriptor rows: the no-rematch path re-attaches descriptors
+		// for the output and asserts their count matches the word count.
+		cv::Mat descriptors = cv::Mat::zeros(kTrkNumPoints, 32, CV_8UC1);
+		for(int r = 0; r < descriptors.rows; ++r)
+		{
+			descriptors.at<unsigned char>(r, r % descriptors.cols) = 255;
+		}
+
+		SensorData data(cv::Mat(), id);
+		data.setCameraModel(model);
+
+		Signature sig(id, 0, 1, 0.0, "", Transform(), Transform(), data);
+		sig.setWords(words, kpts, words3, descriptors);
+		s.signatures.insert(std::make_pair(id, sig));
+	}
+
+	// Order matters: keyed by "from" id, so these are visited 1-4, 2-3, 3-4.
+	s.links.insert(std::make_pair(1, Link(1, 4, Link::kNeighbor, s.poses.at(1).inverse() * s.poses.at(4))));
+	s.links.insert(std::make_pair(2, Link(2, 3, Link::kNeighbor, s.poses.at(2).inverse() * s.poses.at(3))));
+	s.links.insert(std::make_pair(3, Link(3, 4, Link::kNeighbor, s.poses.at(3).inverse() * s.poses.at(4))));
+
+	return s;
+}
+
+// Longest observation list over all produced landmarks.
+int maxTrackLength(const std::map<int, std::map<int, FeatureBA> > & wordReferences)
+{
+	int longest = 0;
+	for(std::map<int, std::map<int, FeatureBA> >::const_iterator iter = wordReferences.begin();
+		iter != wordReferences.end(); ++iter)
+	{
+		longest = std::max(longest, (int)iter->second.size());
+	}
+	return longest;
+}
+
+}  // namespace
+
+// The legacy builder is expected to fragment here. This pins the current
+// behaviour so the track builder's improvement is measured against something.
+TEST(BACorrespondenceStrategyTest, PairwiseStrategyFragmentsSharedLandmarks)
+{
+	const TrackScenario s = buildTrackScenario();
+
+	ParametersMap parameters;
+	uInsert(parameters, ParametersPair(Parameters::kOptimizerBAStrategy(), "0"));
+	uInsert(parameters, ParametersPair(Parameters::kOptimizerBAGuidedMatching(), "false"));
+
+	std::unique_ptr<Optimizer> optimizer(Optimizer::create(Optimizer::kTypeG2O, parameters));
+	ASSERT_TRUE(optimizer.get() != 0);
+
+	std::map<int, cv::Point3f> points3DMap;
+	std::map<int, std::map<int, FeatureBA> > wordReferences;
+	optimizer->computeBACorrespondences(
+			s.poses, s.links, s.signatures, points3DMap, wordReferences,
+			/*rematchFeatures=*/false);
+
+	ASSERT_FALSE(wordReferences.empty()) << "legacy builder produced no correspondences";
+
+	// Two disjoint word sets survive instead of one merged set per landmark.
+	EXPECT_GT((int)wordReferences.size(), kTrkNumPoints)
+			<< "expected the legacy builder to split landmarks across separate words";
+	EXPECT_EQ(maxTrackLength(wordReferences), 2)
+			<< "legacy builder is not expected to produce tracks longer than a link";
+	EXPECT_EQ(points3DMap.size(), wordReferences.size());
+}
+
+TEST(BACorrespondenceStrategyTest, TrackStrategyMergesLandmarksAcrossLinks)
+{
+	const TrackScenario s = buildTrackScenario();
+
+	ParametersMap parameters;
+	uInsert(parameters, ParametersPair(Parameters::kOptimizerBAStrategy(), "1"));
+	uInsert(parameters, ParametersPair(Parameters::kOptimizerBAGuidedMatching(), "false"));
+
+	std::unique_ptr<Optimizer> optimizer(Optimizer::create(Optimizer::kTypeG2O, parameters));
+	ASSERT_TRUE(optimizer.get() != 0);
+
+	std::map<int, cv::Point3f> points3DMap;
+	std::map<int, std::map<int, FeatureBA> > wordReferences;
+	optimizer->computeBACorrespondences(
+			s.poses, s.links, s.signatures, points3DMap, wordReferences,
+			/*rematchFeatures=*/false);
+
+	ASSERT_FALSE(wordReferences.empty()) << "track builder produced no correspondences";
+
+	// One track per landmark, each observed by all four frames.
+	EXPECT_EQ((int)wordReferences.size(), kTrkNumPoints);
+	EXPECT_EQ(points3DMap.size(), wordReferences.size());
+	for(std::map<int, std::map<int, FeatureBA> >::const_iterator iter = wordReferences.begin();
+		iter != wordReferences.end(); ++iter)
+	{
+		EXPECT_EQ((int)iter->second.size(), 4)
+				<< "track " << iter->first << " should be observed by all four frames";
+		// A track must never observe the same frame twice.
+		std::set<int> frameIds;
+		for(std::map<int, FeatureBA>::const_iterator jter = iter->second.begin();
+			jter != iter->second.end(); ++jter)
+		{
+			EXPECT_TRUE(frameIds.insert(jter->first).second);
+		}
 	}
 }

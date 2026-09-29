@@ -50,8 +50,10 @@ public:
 
 	void setEndMessage(const QString & message) {_endMessage = message;} // Message shown when the progress is finished
 	void setValue(int value);
+	int value() const;
 	int maximumSteps() const;
 	void setMaximumSteps(int steps);
+	void setStatus(const QString & text);
 	void setAutoClose(bool on, int delayedClosingTimeSec = -1);
 	void setCancelButtonVisible(bool visible);
 	bool isCanceled() const {return _canceled;}

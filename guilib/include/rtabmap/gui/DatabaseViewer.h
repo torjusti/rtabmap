@@ -275,6 +275,9 @@ private:
 			double & worldX, double & worldY, double & worldZ,
 			double & sigmaXY, double & sigmaZ);
 	static cv::Mat makeAnchorPriorInfMatrix(double sigmaXY, double sigmaZ);
+	// Camera-to-point uncertainty. Same horizontal sigma as the world prior,
+	// isotropic so GTSAM treats it as metres rather than a bearing/range pair.
+	static cv::Mat makeAnchorObservationInfMatrix(double sigmaXY);
 	void loadAnchorFrameOffset(const ParametersMap & parameters);
 	void saveAnchorFrameOffset();
 	void mergeAnchorFrameOffset(ParametersMap & parameters) const;

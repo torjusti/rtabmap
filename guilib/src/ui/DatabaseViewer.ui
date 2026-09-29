@@ -3031,44 +3031,6 @@
            </property>
           </widget>
          </item>
-         <item row="11" column="0" colspan="2">
-          <widget class="QCheckBox" name="checkBox_detectMore_groupPoses">
-           <property name="text"><string>Group repeated camera poses</string></property>
-           <property name="toolTip"><string>Search once per group of consecutive, similarly oriented camera poses. Use the middle, first and last frames as alternatives (up to nine pairs per group pair). Uses recorded odometry; separate sessions and revisits stay separate. Disable to search individual frames.</string></property>
-           <property name="checked"><bool>true</bool></property>
-          </widget>
-         </item>
-         <item row="12" column="0">
-          <widget class="QDoubleSpinBox" name="doubleSpinBox_detectMore_groupDistance">
-           <property name="suffix"><string> m</string></property>
-           <property name="decimals"><number>3</number></property>
-           <property name="minimum"><double>0.001</double></property>
-           <property name="maximum"><double>10.0</double></property>
-           <property name="singleStep"><double>0.01</double></property>
-           <property name="value"><double>0.1</double></property>
-          </widget>
-         </item>
-         <item row="12" column="1">
-          <widget class="QLabel" name="label_detectMore_groupDistance">
-           <property name="text"><string>Pose group translation limit</string></property>
-           <property name="toolTip"><string>Maximum displacement from the first pose of the group, rather than from the previous frame.</string></property>
-          </widget>
-         </item>
-         <item row="13" column="0">
-          <widget class="QDoubleSpinBox" name="doubleSpinBox_detectMore_groupAngle">
-           <property name="suffix"><string> deg</string></property>
-           <property name="minimum"><double>0.1</double></property>
-           <property name="maximum"><double>180.0</double></property>
-           <property name="singleStep"><double>1.0</double></property>
-           <property name="value"><double>5.0</double></property>
-          </widget>
-         </item>
-         <item row="13" column="1">
-          <widget class="QLabel" name="label_detectMore_groupAngle">
-           <property name="text"><string>Pose group rotation limit</string></property>
-           <property name="toolTip"><string>Maximum full rotation from the first pose, including roll.</string></property>
-          </widget>
-         </item>
         </layout>
        </widget>
        <widget class="QWidget" name="page_2">

@@ -270,8 +270,3 @@ install(EXPORT rtabmap_guiTargets
     devel
 )
 
-IF(BUILD_TESTING)
-  ADD_EXECUTABLE(test_loop_pose_grouping ../test/test_loop_pose_grouping.cpp)
-  TARGET_LINK_LIBRARIES(test_loop_pose_grouping rtabmap_core gtest_main)
-  ADD_TEST(NAME test_loop_pose_grouping COMMAND test_loop_pose_grouping)
-ENDIF()

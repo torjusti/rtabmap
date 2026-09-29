@@ -78,6 +78,8 @@ SET(SRC_FILES
     
     MatcherMetrics.cpp
     Optimizer.cpp
+    LoopPruning.cpp
+    optimizer/OptimizerBA.cpp
     Colmap.cpp
     optimizer/OptimizerTORO.cpp
     optimizer/OptimizerG2O.cpp

@@ -34,6 +34,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <list>
 #include <set>
 #include <string>
+#include <vector>
+#include <utility>
 #include <atomic>
 #include <rtabmap/core/Link.h>
 #include <rtabmap/core/Parameters.h>
@@ -43,6 +45,7 @@ namespace rtabmap {
 
 class ProgressState;
 class DBDriver;
+class BAFrameSource;
 
 /**
  * @class FeatureBA
@@ -163,6 +166,10 @@ public:
 	bool landmarksIgnored() const {return landmarksIgnored_;}///< If true, landmark/marker observations are dropped.
 	float gravitySigma() const {return gravitySigma_;}       ///< Std-dev (rad) of the gravity prior on roll/pitch; 0 disables it.
 	double loopRedundancyRadius() const {return loopRedundancyRadius_;} ///< Trajectory arc-length radius (m) for loop redundancy down-weighting; 0 disables.
+	double neighborLinearStdPerMeter() const {return neighborLinearStdPerMeter_;} ///< Extra translation std-dev per meter of neighbor-link length; 0 disables.
+	double neighborYawStdPerMeter() const {return neighborYawStdPerMeter_;} ///< Extra yaw std-dev (rad) per meter of neighbor-link length; 0 disables.
+	double loopLinearStdMin() const {return loopLinearStdMin_;}   ///< Minimum translation std-dev (m) of loop closure links; 0 disables.
+	double loopAngularStdMin() const {return loopAngularStdMin_;} ///< Minimum rotation std-dev (rad) of loop closure links; 0 disables.
 	/// @}
 
 	/// @name Setters mirroring the corresponding getters.
@@ -176,6 +183,10 @@ public:
 	void setLandmarksIgnored(bool enabled) {landmarksIgnored_ = enabled;}
 	void setGravitySigma(float value) {gravitySigma_ = value;}
 	void setLoopRedundancyRadius(double radius) {loopRedundancyRadius_ = radius;}
+	void setNeighborLinearStdPerMeter(double stdPerMeter) {neighborLinearStdPerMeter_ = stdPerMeter;}
+	void setNeighborYawStdPerMeter(double stdPerMeter) {neighborYawStdPerMeter_ = stdPerMeter;}
+	void setLoopLinearStdMin(double std) {loopLinearStdMin_ = std;}
+	void setLoopAngularStdMin(double std) {loopAngularStdMin_ = std;}
 	/// @}
 
 	// Density-based down-weighting of redundant loop closures before
@@ -186,6 +197,30 @@ public:
 	std::multimap<int, Link> downweightRedundantLoopClosures(
 			const std::map<int, Transform> & poses,
 			const std::multimap<int, Link> & links) const;
+
+	/**
+	 * @brief Apply the link uncertainty model before optimization and max-error checks.
+	 *
+	 * For each @ref Link::kNeighbor and @ref Link::kNeighborMerged edge, adds
+	 * @c (NeighborLinearStdPerMeter * d)^2 to the x, y and z variances and
+	 * @c (NeighborYawStdPerMeter * d)^2 to the yaw variance, where @c d is the
+	 * translation length of the link; roll and pitch are left alone.
+	 *
+	 * For each loop closure (global, local space, local time and user), raises
+	 * the x, y and z variances to at least @c LoopLinearStdMin^2 and the roll,
+	 * pitch and yaw variances to at least @c LoopAngularStdMin^2.
+	 *
+	 * Variances already at the 9999 sentinel (an ignored axis) are left alone.
+	 * The stored database links are not modified; callers receive a copy.
+	 * No-op when all parameters are 0 or covariance is ignored.
+	 */
+	std::multimap<int, Link> adjustLinkCovariances(
+			const std::multimap<int, Link> & links) const;
+
+	/** @brief True if optimize() updates a solution kept from the previous call (e.g. GTSAM iSAM2). */
+	virtual bool isIncremental() const {return false;}
+	/** @brief Drops the state kept by an incremental optimizer, so the next optimize() solves from scratch. */
+	virtual void resetIncremental() {}
 
 	/**
 	 * @brief Reads shared knobs from @p parameters and applies them to this instance.
@@ -281,6 +316,16 @@ public:
 	 * @return false if the caller asked to stop.
 	 */
 	bool reportProgress(const std::string & msg) const;
+
+	/**
+	 * Point @ref Parameters::kOptimizerRobustKernelDelta() at
+	 * @ref Parameters::kOptimizerBARobustKernelDelta() for offline BA.
+	 * No-op when the latter is negative.
+	 */
+	static void applyBundleAdjustmentKernel(ParametersMap & parameters);
+
+	bool loopLinkAsEdge() const {return baLoopLinkAsEdge_;}
+	int loopLinkMinObservations() const {return baLoopLinkMinObservations_;}
 
 	/**
 	 * @brief Bundle adjustment: jointly refine poses and 3D points (back-end-level entry point).
@@ -405,8 +450,54 @@ protected:
 
 	bool isCanceled() const { return canceled_; }
 	void resetCancel() { canceled_ = false; }
+	// False while the optimize() overload without covariance output runs, so
+	// back-ends can skip computing it.
+	bool isCovarianceRequested() const { return covarianceRequested_; }
 
 private:
+	void computeBACorrespondencesFrom(
+			const std::map<int, Transform> & poses,
+			const std::multimap<int, Link> & links,
+			BAFrameSource & frames,
+			std::map<int, cv::Point3f> & points3DMap,
+			std::map<int, std::map<int, FeatureBA > > & wordReferences,
+			bool rematchFeatures,
+			bool useLinkTransformAsGuess,
+			const ParametersMap & registrationParameters);
+	void computeBACorrespondencesPairwise(
+			const std::map<int, Transform> & poses,
+			const std::multimap<int, Link> & links,
+			BAFrameSource & frames,
+			std::map<int, cv::Point3f> & points3DMap,
+			std::map<int, std::map<int, FeatureBA > > & wordReferences,
+			bool rematchFeatures,
+			bool useLinkTransformAsGuess,
+			ParametersMap registrationParameters);
+	void computeBACorrespondencesTracks(
+			const std::map<int, Transform> & poses,
+			const std::multimap<int, Link> & links,
+			BAFrameSource & frames,
+			std::map<int, cv::Point3f> & points3DMap,
+			std::map<int, std::map<int, FeatureBA > > & wordReferences,
+			bool rematchFeatures,
+			bool useLinkTransformAsGuess,
+			ParametersMap registrationParameters);
+	void reportBALeverStats(
+			const std::multimap<int, Link> & links,
+			const std::map<int, std::map<int, FeatureBA> > & wordReferences) const;
+	std::vector<std::pair<int, int> > proposeWindowPairs(
+			const std::map<int, Transform> & poses,
+			const std::multimap<int, Link> & links,
+			const std::set<std::pair<int, int> > & existing) const;
+	std::vector<std::pair<int, int> > proposeFrustumPairs(
+			const std::map<int, Transform> & poses,
+			BAFrameSource & frameSource,
+			const std::set<std::pair<int, int> > & existing) const;
+	void applyLoopScope(
+			const std::multimap<int, Link> & links,
+			std::map<int, cv::Point3f> & points3DMap,
+			std::map<int, std::map<int, FeatureBA> > & wordReferences) const;
+
 	int iterations_;
 	bool slam2d_;
 	bool covarianceIgnored_;
@@ -416,8 +507,39 @@ private:
 	bool landmarksIgnored_;
 	float gravitySigma_;
 	double loopRedundancyRadius_;
+	double neighborLinearStdPerMeter_;
+	double neighborYawStdPerMeter_;
+	double loopLinearStdMin_;
+	double loopAngularStdMin_;
 	std::atomic<bool> canceled_;
+	bool covarianceRequested_ = true;
 	const ProgressState * progressState_;
+	int baStrategy_;
+	int baMinTrackLength_;
+	float baTriangulationMinAngle_;
+	float baTriangulationMaxReprojError_;
+	float baTriangulationMaxDepthError_;
+	bool baTriangulationDepthSeed_;
+	float baWindowBaseline_;
+	float baWindowBaselineRatio_;
+	bool baGuidedMatching_;
+	int baGuidedWinSize_;
+	float baGuidedNNDR_;
+	bool baGuidedSkipPnP_;
+	bool baMatchCache_;
+	int baFrameCacheMemory_;
+	DBDriver * matchStore_;
+	bool baProposePairs_;
+	float baProposeMaxRange_;
+	float baProposeMaxAngle_;
+	float baProposeMinOverlap_;
+	int baProposeMaxPairs_;
+	int baLoopScope_;
+	int baLoopScopeMinTracks_;
+	int baWindowGraphDepth_;
+	bool baLoopLinkAsEdge_;
+	int baLoopLinkMinObservations_;
+	int baDepth_;
 };
 
 } /* namespace rtabmap */

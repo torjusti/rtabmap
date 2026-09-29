@@ -157,7 +157,8 @@ std::map<int, Transform> OptimizerCeres::optimize(
 	outputCovariance = cv::Mat::eye(6,6,CV_64FC1);
 	std::map<int, Transform> optimizedPoses;
 #ifdef RTABMAP_CERES
-	std::multimap<int, Link> edgeConstraints = downweightRedundantLoopClosures(poses, edgeConstraintsIn);
+	std::multimap<int, Link> edgeConstraints = downweightRedundantLoopClosures(
+			poses, adjustLinkCovariances(edgeConstraintsIn));
 	UDEBUG("Optimizing graph (pose=%d constraints=%d)...", (int)poses.size(), (int)edgeConstraints.size());
 	if(edgeConstraints.size()>=1 && poses.size()>=2 && iterations() > 0)
 	{

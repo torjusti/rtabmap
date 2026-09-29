@@ -63,8 +63,10 @@ std::map<int, Transform> OptimizerTORO::optimize(
 	outputCovariance = cv::Mat::eye(6,6,CV_64FC1);
 	std::map<int, Transform> optimizedPoses;
 #ifdef RTABMAP_TORO
-	UDEBUG("Optimizing graph (pose=%d constraints=%d)...", (int)poses.size(), (int)edgeConstraints.size());
-	if(edgeConstraints.size()>=1 && poses.size()>=2 && iterations() > 0)
+	const std::multimap<int, Link> scaledConstraints = downweightRedundantLoopClosures(
+			poses, adjustLinkCovariances(edgeConstraints));
+	UDEBUG("Optimizing graph (pose=%d constraints=%d)...", (int)poses.size(), (int)scaledConstraints.size());
+	if(scaledConstraints.size()>=1 && poses.size()>=2 && iterations() > 0)
 	{
 		// Apply TORO optimization
 		AISNavigation::TreeOptimizer2 pg2;
@@ -107,7 +109,7 @@ std::map<int, Transform> OptimizerTORO::optimize(
 		UDEBUG("fill edges to TORO...");
 		if(isSlam2d())
 		{
-			for(std::multimap<int, Link>::const_iterator iter=edgeConstraints.begin(); iter!=edgeConstraints.end(); ++iter)
+			for(std::multimap<int, Link>::const_iterator iter=scaledConstraints.begin(); iter!=scaledConstraints.end(); ++iter)
 			{
 				UASSERT(!iter->second.transform().isNull());
 				AISNavigation::TreePoseGraph2::Pose p(iter->second.transform().x(), iter->second.transform().y(), iter->second.transform().theta());
@@ -158,7 +160,7 @@ std::map<int, Transform> OptimizerTORO::optimize(
 		}
 		else
 		{
-			for(std::multimap<int, Link>::const_iterator iter=edgeConstraints.begin(); iter!=edgeConstraints.end(); ++iter)
+			for(std::multimap<int, Link>::const_iterator iter=scaledConstraints.begin(); iter!=scaledConstraints.end(); ++iter)
 			{
 				UASSERT(!iter->second.transform().isNull());
 				float x,y,z, roll,pitch,yaw;
