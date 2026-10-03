@@ -85,6 +85,9 @@ private:
 	double disparityVariance_;
 	double robustKernelDelta_;
 	double baseline_;
+	bool baProgressive_;
+	int baMinActiveObservations_;
+	bool baDiagnostics_;
 };
 
 } /* namespace rtabmap */

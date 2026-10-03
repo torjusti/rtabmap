@@ -33,6 +33,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <rtabmap/utilite/UTimer.h>
 #include <locale.h>
 #include <set>
+#include <unordered_map>
 
 #include <rtabmap/core/Version.h>
 #include <rtabmap/core/optimizer/OptimizerG2O.h>
@@ -44,6 +45,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #if defined(RTABMAP_G2O) || defined(RTABMAP_ORB_SLAM)
 #include "g2o/core/sparse_optimizer.h"
 #include "g2o/core/hyper_graph_action.h"
+#include "g2o/core/batch_stats.h"
 #include "g2o/core/block_solver.h"
 #include "g2o/core/factory.h"
 #include "g2o/core/optimization_algorithm_factory.h"
@@ -165,7 +167,10 @@ OptimizerG2O::OptimizerG2O(const ParametersMap & parameters) :
 		pixelVariance_(Parameters::defaultOptimizerPixelVariance()),
 		disparityVariance_(Parameters::defaultOptimizerDisparityVariance()),
 		robustKernelDelta_(Parameters::defaultOptimizerRobustKernelDelta()),
-		baseline_(Parameters::defaultOptimizerBaseline())
+		baseline_(Parameters::defaultOptimizerBaseline()),
+		baProgressive_(Parameters::defaultOptimizerBAProgressive()),
+		baMinActiveObservations_(Parameters::defaultOptimizerBAMinActiveObservations()),
+		baDiagnostics_(Parameters::defaultOptimizerBADiagnostics())
 {
 #ifdef RTABMAP_G2O
 	// Issue on android, have to explicitly register this type when using fixed root prior below
@@ -191,6 +196,10 @@ void OptimizerG2O::parseParameters(const ParametersMap & parameters)
 	Parameters::parse(parameters, Parameters::kOptimizerDisparityVariance(), disparityVariance_);
 	Parameters::parse(parameters, Parameters::kOptimizerRobustKernelDelta(), robustKernelDelta_);
 	Parameters::parse(parameters, Parameters::kOptimizerBaseline(), baseline_);
+	Parameters::parse(parameters, Parameters::kOptimizerBAProgressive(), baProgressive_);
+	Parameters::parse(parameters, Parameters::kOptimizerBAMinActiveObservations(), baMinActiveObservations_);
+	UASSERT(baMinActiveObservations_ == 0 || baMinActiveObservations_ >= 2);
+	Parameters::parse(parameters, Parameters::kOptimizerBADiagnostics(), baDiagnostics_);
 	UASSERT(pixelVariance_ > 0.0);
 	UASSERT(disparityVariance_ > 0.0);
 	UASSERT(baseline_ >= 0.0);
@@ -1986,6 +1995,31 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 			}
 		}
 
+		// Only projection observations participate in this experimental filter.
+		// Cameras retain their metric pose-graph/gravity constraints even when
+		// all of their visual tracks disappear. Do not prune pose vertices.
+		const bool progressive = baProgressive_ && robustKernelDelta_ > 0.0;
+		if(baProgressive_ && !progressive)
+		{
+			UWARN("BAProgressive requires a positive robust kernel delta; using ordinary BA.");
+		}
+		auto pruneWeakTracks = [&edges, &points3DMap, this]() {
+			if(baMinActiveObservations_ == 0) return 0;
+			std::unordered_map<int, int> support;
+			support.reserve(points3DMap.size());
+			for(const EdgeReference & ref : edges)
+				if(ref.edge->level() == 0) ++support[ref.wordId];
+			int removed = 0;
+			for(const EdgeReference & ref : edges)
+				if(ref.edge->level() == 0 && support[ref.wordId] < baMinActiveObservations_)
+				{
+					ref.edge->setLevel(1);
+					++removed;
+				}
+			// initializeOptimization(0) excludes the now-isolated point vertices.
+			return removed;
+		};
+		const int initiallyPruned = pruneWeakTracks();
 		UDEBUG("Initial optimization...");
 		if(!reportProgress("Initializing bundle adjustment solver..."))
 		{
@@ -1999,13 +2033,14 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 
 		int it = 0;
 		UTimer timer;
-		int outliersCount = 0;
+		int outliersCount = initiallyPruned;
 		int outliersCountFar = 0;
 
 		bool stop = false;
 		int iterOffset = 0;
 		const int pass1Iters = robustKernelDelta_>0.0 ? std::min(5, iterations()) : 0;
-		const int totalIters = pass1Iters + iterations();
+		const int totalIters = (progressive ? 2 : 1)*pass1Iters + iterations();
+		const int passes = progressive ? 3 : (robustKernelDelta_>0.0 ? 2 : 1);
 		struct BAProgressAction : public g2o::HyperGraphAction
 		{
 			OptimizerG2O * self;
@@ -2026,6 +2061,52 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 				return this;
 			}
 		};
+
+		// Statistics are opt-in: g2o evaluates residuals once more per outer
+		// iteration. Never compare objectives across different rejection masks.
+		struct BADiagnosticsAction : public g2o::HyperGraphAction
+		{
+			OptimizerG2O * self;
+			g2o::SparseOptimizer * graph;
+			bool * stopFlag;
+			int pass = 0, completed = 0, decreasing = 0, unchanged = 0, trials = 0;
+			double previous = 0.0, initial = 0.0, linearSeconds = 0.0;
+			void begin(int p, double cost)
+			{
+				pass=p; completed=decreasing=unchanged=trials=0;
+				previous=initial=cost; linearSeconds=0.0;
+			}
+			virtual HyperGraphAction * operator()(const g2o::HyperGraph *, Parameters * parameters)
+			{
+				ParametersIteration * p = dynamic_cast<ParametersIteration *>(parameters);
+				if(!p || p->iteration < 0 || (size_t)p->iteration >= graph->batchStatistics().size()) return this;
+				const g2o::G2OBatchStatistics & s = graph->batchStatistics()[p->iteration];
+				const double reduction = previous-s.chi2;
+				++completed;
+				if(reduction>0.0) ++decreasing;
+				if(reduction==0.0) ++unchanged;
+				trials += s.levenbergIterations;
+				linearSeconds += s.timeLinearSolution;
+				const std::string message = uFormat(
+					"BA diagnostics pass=%d iteration=%d cost_before=%.12g cost_after=%.12g reduction=%.9g relative_reduction=%.9g cost_step=%s lm_trials=%d linear_s=%.6f iteration_s=%.6f active_edges=%d active_vertices=%d",
+					pass, completed, previous, s.chi2, reduction, reduction/std::max(1e-30,std::abs(previous)),
+					reduction>0.0?"decreased":(reduction==0.0?"unchanged":"increased"),
+					s.levenbergIterations, s.timeLinearSolution, s.timeIteration, s.numEdges, s.numVertices);
+				UINFO("%s", message.c_str());
+				if(!self->reportProgress(message)) *stopFlag=true;
+				previous=s.chi2;
+				return this;
+			}
+		};
+		BADiagnosticsAction diagnostics;
+		diagnostics.self=this;
+		diagnostics.graph=&optimizer;
+		diagnostics.stopFlag=&stop;
+		if(baDiagnostics_)
+		{
+			optimizer.setComputeBatchStatistics(true);
+			optimizer.addPostIterationAction(&diagnostics);
+		}
 		BAProgressAction progressAction;
 		progressAction.self = this;
 		progressAction.stopFlag = &stop;
@@ -2034,13 +2115,30 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 		optimizer.addPreIterationAction(&progressAction);
 		optimizer.setForceStopFlag(&stop);
 
-		for(int i=0; i<(robustKernelDelta_>0.0?2:1); ++i)
+		for(int i=0; i<passes; ++i)
 		{
-			// Pass 1 only needs to expose the bad residuals; pass 2 gets the full
-			// budget. std::min so a caller asking for fewer than 5 gets that.
-			const int passIters = i==0&&robustKernelDelta_>0.0?std::min(5, iterations()):iterations();
-			it += optimizer.optimize(passIters);
+			// Short warmup(s), then the full requested iteration budget.
+			const int passIters = i+1 < passes ? std::min(5, iterations()) : iterations();
+			if(baDiagnostics_)
+			{
+				optimizer.computeActiveErrors();
+				diagnostics.begin(i+1, optimizer.activeRobustChi2());
+			}
+			const int solverIterations = optimizer.optimize(passIters);
+			it += solverIterations;
 			iterOffset += passIters;
+			if(baDiagnostics_)
+			{
+				// The backend can terminate because LM exhausted trials, found no
+				// decrease, or failed. Do not label any early exit "converged".
+				const std::string message = uFormat(
+					"BA diagnostics summary pass=%d requested=%d completed=%d solver_return=%d stop=%s initial_cost=%.12g final_cost=%.12g decreasing_steps=%d unchanged_steps=%d lm_trials=%d linear_s=%.6f",
+					i+1, passIters, diagnostics.completed, solverIterations,
+					stop?"canceled":(solverIterations<=0?"backend_failure_or_empty":(solverIterations<passIters?"backend_early_stop":"iteration_budget")),
+					diagnostics.initial, diagnostics.previous, diagnostics.decreasing, diagnostics.unchanged, diagnostics.trials, diagnostics.linearSeconds);
+				UINFO("%s",message.c_str());
+				if(!reportProgress(message)) stop=true;
+			}
 			if(stop)
 			{
 				UWARN("g2o bundle adjustment canceled after %d iteration(s).", it);
@@ -2068,9 +2166,24 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 
 			if(robustKernelDelta_>0.0)
 			{
+				double gateChi2 = robustKernelDelta_;
+				if(progressive && i == 0)
+				{
+					std::vector<double> errors;
+					for(const EdgeReference & ref : edges)
+						if(ref.edge->level() == 0 && uIsFinite(ref.edge->chi2()))
+							errors.push_back(ref.edge->chi2());
+					if(!errors.empty())
+					{
+						const size_t p80 = (errors.size()-1)*4/5;
+						std::nth_element(errors.begin(), errors.begin()+p80, errors.end());
+						gateChi2 = std::max(gateChi2, errors[p80]);
+					}
+				}
 				for(std::list<EdgeReference>::iterator iter=edges.begin(); iter!=edges.end();++iter)
 				{
-					if(iter->edge->level() == 0 && iter->edge->chi2() > iter->edge->robustKernel()->delta())
+					if(iter->edge->level() == 0 &&
+					   (iter->edge->chi2() > gateChi2 || (progressive && !uIsFinite(iter->edge->chi2()))))
 					{
 						iter->edge->setLevel(1);
 						++outliersCount;
@@ -2093,11 +2206,19 @@ std::map<int, Transform> OptimizerG2O::optimizeBA(
 					}
 					//(*iter)->setRobustKernel(0);
 				}
-				if(i==0)
+				if(progressive || baMinActiveObservations_ > 0)
+				{
+					const int weak = pruneWeakTracks();
+					outliersCount += weak;
+					UINFO("BA rejection pass %d/%d: progressive=%d min_support=%d chi2 gate=%g, active observations=%d/%d, weak-track observations removed=%d (initial=%d)",
+							i+1, passes, progressive?1:0, baMinActiveObservations_, gateChi2, (int)edges.size()-outliersCount, (int)edges.size(), weak, initiallyPruned);
+				}
+				if(i+1 < passes)
 					optimizer.initializeOptimization(0);
 				UDEBUG("outliers=%d outliersCountFar=%d", outliersCount, outliersCountFar);
 			}
 		}
+		if(baDiagnostics_) optimizer.removePostIterationAction(&diagnostics);
 		optimizer.removePreIterationAction(&progressAction);
 		optimizer.setForceStopFlag(0);
 
