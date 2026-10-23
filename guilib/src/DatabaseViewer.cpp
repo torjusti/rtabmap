@@ -1003,6 +1003,7 @@ void DatabaseViewer::restoreDefaultSettings()
 	ui_->checkBox_ignoreUserLoop->setChecked(false);
 	ui_->checkBox_ignoreLandmarks->setChecked(false);
 	ui_->checkBox_liveOptimization->setChecked(true);
+	ui_->checkBox_startFromCurrentGraph->setChecked(false);
 	ui_->doubleSpinBox_optimizationScale->setValue(1.0);
 	ui_->doubleSpinBox_gainCompensationRadius->setValue(0.0);
 	ui_->doubleSpinBox_voxelSize->setValue(0.0);
@@ -12187,6 +12188,61 @@ void DatabaseViewer::updateGraphViewInternal(bool force)
 			}
 		}
 
+		// Optionally start from the graph currently shown instead of from the odometry poses.
+		// From scratch (the default), the optimizer first has to rebuild the loop-closed shape
+		// from odometry and then fit the anchors in the same run, which on a large map takes
+		// most of its iterations. From the current graph it only corrects what changed.
+		// Not used with the rotation (it is applied to an optimized graph) nor with the
+		// optimized graph of the database.
+		bool warmStartApplied = false;
+		if(ui_->checkBox_startFromCurrentGraph->isChecked() &&
+		   !applyRotation &&
+		   ui_->comboBox_optimizationFlavor->currentIndex() != 2)
+		{
+			bool covered = !previousOptimizedPoses.empty();
+			for(std::map<int, rtabmap::Transform>::const_iterator iter=poses.begin(); covered && iter!=poses.end(); ++iter)
+			{
+				if(iter->first > 0 && previousOptimizedPoses.find(iter->first) == previousOptimizedPoses.end())
+				{
+					covered = false;
+				}
+			}
+			if(!covered)
+			{
+				UINFO("Start from current graph: %s, starting from scratch.",
+						previousOptimizedPoses.empty()?"there is no current graph":"the current graph does not cover every node");
+			}
+			else
+			{
+				warmStartApplied = true;
+				int reused = 0;
+				for(std::map<int, rtabmap::Transform>::iterator iter=poses.begin(); iter!=poses.end(); ++iter)
+				{
+					std::map<int, rtabmap::Transform>::const_iterator jter = previousOptimizedPoses.find(iter->first);
+					if(jter != previousOptimizedPoses.end() && !jter->second.isNull())
+					{
+						iter->second = jter->second;
+						++reused;
+					}
+				}
+				// Landmarks (anchor points) the current graph does not know yet: they were
+				// seeded from the odometry pose of their observer, put them where it is now.
+				int seeded = 0;
+				for(std::multimap<int, rtabmap::Link>::const_iterator iter=links.begin(); iter!=links.end(); ++iter)
+				{
+					if(iter->second.type() == Link::kLandmark &&
+					   iter->second.from() > 0 && iter->second.to() < 0 &&
+					   previousOptimizedPoses.find(iter->second.to()) == previousOptimizedPoses.end() &&
+					   poses.find(iter->second.from()) != poses.end())
+					{
+						poses[iter->second.to()] = poses.at(iter->second.from())*iter->second.transform();
+						++seeded;
+					}
+				}
+				UINFO("Start from current graph: %d poses taken from it, %d new landmark(s) placed from their observer.", reused, seeded);
+			}
+		}
+
 		if(applyRotation ||
 		   ui_->comboBox_optimizationFlavor->currentIndex() != 2)
 		{
@@ -12335,6 +12391,23 @@ void DatabaseViewer::updateGraphViewInternal(bool force)
 					posesOut,
 					linksOut);
 			UINFO("Connected graph of %d poses and %d links", (int)posesOut.size(), (int)linksOut.size());
+			if(warmStartApplied)
+			{
+				// getConnectedGraph() keeps only the pose of the root: it chains the transforms of
+				// the links from there, which ignores the poses we were given. Put the current
+				// graph (aligned to the anchors above) back as the initial guess.
+				int restored = 0;
+				for(std::map<int, rtabmap::Transform>::iterator iter=posesOut.begin(); iter!=posesOut.end(); ++iter)
+				{
+					std::map<int, rtabmap::Transform>::const_iterator jter = poses.find(iter->first);
+					if(jter != poses.end() && !jter->second.isNull())
+					{
+						iter->second = jter->second;
+						++restored;
+					}
+				}
+				UINFO("Start from current graph: %d of %d initial poses restored after getConnectedGraph().", restored, (int)posesOut.size());
+			}
 			QElapsedTimer time;
 			time.start();
 			double optFinalError = 0.0;

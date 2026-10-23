@@ -1966,7 +1966,30 @@
            </property>
           </widget>
          </item>
-         <item row="8" column="0" colspan="3">
+         <item row="8" column="0">
+          <widget class="QCheckBox" name="checkBox_startFromCurrentGraph">
+           <property name="toolTip">
+            <string>Start the optimization from the graph currently shown instead of from the odometry poses. After an anchor point is added or moved, the optimizer then only has to correct what changed, which takes far fewer iterations on large maps. Unchecked (default), every optimization starts from scratch. Falls back to scratch if the current graph does not cover every node.</string>
+           </property>
+           <property name="text">
+            <string/>
+           </property>
+           <property name="checked">
+            <bool>false</bool>
+           </property>
+          </widget>
+         </item>
+         <item row="8" column="2">
+          <widget class="QLabel" name="label_startFromCurrentGraph">
+           <property name="toolTip">
+            <string>Start the optimization from the graph currently shown instead of from the odometry poses. After an anchor point is added or moved, the optimizer then only has to correct what changed, which takes far fewer iterations on large maps. Unchecked (default), every optimization starts from scratch. Falls back to scratch if the current graph does not cover every node.</string>
+           </property>
+           <property name="text">
+            <string>Start from current graph</string>
+           </property>
+          </widget>
+         </item>
+         <item row="9" column="0" colspan="3">
           <widget class="QPushButton" name="pushButton_optimize">
            <property name="toolTip">
             <string>Re-run graph optimization with the current settings.</string>
@@ -1976,7 +1999,7 @@
            </property>
           </widget>
          </item>
-         <item row="9" column="0">
+         <item row="10" column="0">
           <spacer name="verticalSpacer_3">
            <property name="orientation">
             <enum>Qt::Vertical</enum>
