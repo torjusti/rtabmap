@@ -26,6 +26,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
 #include "rtabmap/core/DBDriverSqlite3.h"
+#include "SqliteReadAheadVfs.h"
 #include <sqlite3.h>
 
 #include "rtabmap/core/Signature.h"
@@ -359,7 +360,21 @@ bool DBDriverSqlite3::connectDatabaseQuery(const std::string & url, bool overwri
 	else
 	{
 		ULOGGER_INFO("Using database \"%s\" from the hard drive.", url.c_str());
-		rc = sqlite3_open_v2(url.c_str(), &_ppDb, readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, 0);
+		// On filesystems where each request is costly (9p/drvfs, CIFS, NFS, FUSE) read the overflow
+		// pages of the images and scans in large blocks (see SqliteReadAheadVfs.h)
+		const char * vfsName = 0;
+		const int readAheadWindow = sqliteReadAheadWindowFor(url);
+		if(readAheadWindow > 0)
+		{
+			vfsName = sqliteReadAheadVfsName();
+			if(vfsName)
+			{
+				ULOGGER_INFO("Reading the database by blocks of %d KB when the access is sequential.", readAheadWindow/1024);
+				sqliteReadAheadSetNextWindow(readAheadWindow);
+			}
+		}
+		rc = sqlite3_open_v2(url.c_str(), &_ppDb, readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, vfsName);
+		sqliteReadAheadSetNextWindow(0);
 	}
 	if(rc != SQLITE_OK)
 	{

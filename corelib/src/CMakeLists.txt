@@ -9,6 +9,7 @@ SET(SRC_FILES
     
     DBDriver.cpp
     DBDriverSqlite3.cpp
+    SqliteReadAheadVfs.cpp
     DBReader.cpp
     
     Recovery.cpp
