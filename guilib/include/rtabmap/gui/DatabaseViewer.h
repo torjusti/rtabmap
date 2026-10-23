@@ -397,8 +397,16 @@ private:
 		// skip redundant re-assemblies (the iterations slider can fire
 		// several times with the same final graph).
 		std::map<int, Transform> lastReposedPoses;
+		// NodeCloudCache this view's per-node clouds can be saved to (empty: they cannot),
+		// the nodes it already holds, and the sensor transform of each node.
+		QString cacheKey;
+		std::set<int> cacheKnownIds;
+		std::map<int, Transform> cacheLocalTransforms;
 	};
 	QList<MapViewerInfo> mapViewers_;
+	// Offers to save the per-node clouds generated for a view that is closing, so that
+	// the next "View 3D map" can load them rather than read the database again.
+	void offerToSaveNodeClouds(CloudViewer * viewer);
 	bool assembledViewerHintShown_;
 	bool graphOptimizationRunning_;
 	bool reposeRunning_;

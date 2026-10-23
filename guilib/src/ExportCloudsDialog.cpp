@@ -66,6 +66,14 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QScreen>
 #include <QCheckBox>
 #include <QLabel>
+#include <QGroupBox>
+#include <QComboBox>
+#include <QLineEdit>
+#include <QSpinBox>
+#include <QDoubleSpinBox>
+#include <QCryptographicHash>
+#include "NodeCloudCache.h"
+#include <rtabmap/utilite/UTimer.h>
 #include <algorithm>
 
 #ifdef _OPENMP
@@ -100,6 +108,7 @@ ExportCloudsDialog::ExportCloudsDialog(QWidget *parent) :
 	_scansHaveRGB(false),
 	_anchorPointsEnabled(false),
 	_captureViewLocalClouds(false),
+	_viewCacheEnabled(false),
 	_checkBoxKeepLocalClouds(0),
 	_labelKeepLocalClouds(0)
 {
@@ -1301,8 +1310,10 @@ void ExportCloudsDialog::viewClouds(
 	// be re-assembled cheaply after a re-optimization (see takeViewLocalClouds()).
 	_viewLocalClouds.clear();
 	_captureViewLocalClouds = _checkBoxKeepLocalClouds->isChecked();
+	_viewCache = ViewCacheInfo();
+	_viewCacheEnabled = true;
 
-	if(getExportedClouds(
+	const bool exported = getExportedClouds(
 			poses,
 			links,
 			mapIds,
@@ -1314,7 +1325,9 @@ void ExportCloudsDialog::viewClouds(
 			clouds,
 			meshes,
 			textureMeshes,
-			textureVertexToPixels))
+			textureVertexToPixels);
+	_viewCacheEnabled = false;
+	if(exported)
 	{
 		QDialog * window = new QDialog(this->parentWidget()?this->parentWidget():this, Qt::Window);
 		window->setAttribute(Qt::WA_DeleteOnClose, true);
@@ -1736,6 +1749,91 @@ std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr> ExportCloudsDialog::
 	return out;
 }
 
+ExportCloudsDialog::ViewCacheInfo ExportCloudsDialog::takeViewCacheInfo()
+{
+	ViewCacheInfo info = _viewCache;
+	_viewCache = ViewCacheInfo();
+	if(!info.key.isEmpty())
+	{
+		bool useIntensity = false;
+		bool withNormals = false;
+		// same rules as for the clouds taken by takeViewLocalClouds()
+		useIntensity = !_ui->checkBox_fromDepth->isChecked() && !_scansHaveRGB &&
+				!(_ui->checkBox_cameraProjection->isEnabled() &&
+				  _ui->checkBox_cameraProjection->isChecked() &&
+				  _ui->checkBox_camProjRecolorPoints->isChecked());
+		withNormals = _ui->spinBox_normalKSearch->value()>0 || _ui->doubleSpinBox_normalRadiusSearch->value()>0.0;
+		info.useIntensity = useIntensity;
+		info.withNormals = withNormals;
+	}
+	return info;
+}
+
+QString ExportCloudsDialog::nodeCloudSettingsDigest(const ParametersMap & parameters) const
+{
+	// Every setting of the dialog counts, except the number of threads. Some
+	// (meshing, texturing) do not change the clouds, which at worst makes a
+	// saved set unusable for no reason, never the opposite.
+	QStringList items;
+	const QList<QWidget *> widgets = this->findChildren<QWidget *>();
+	for(QList<QWidget *>::const_iterator iter=widgets.constBegin(); iter!=widgets.constEnd(); ++iter)
+	{
+		const QString name = (*iter)->objectName();
+		if(name.isEmpty() || name.startsWith("qt_") || name == "spinBox_numThreads")
+		{
+			continue;
+		}
+		QString value;
+		if(QSpinBox * spin = qobject_cast<QSpinBox *>(*iter))
+		{
+			value = QString::number(spin->value());
+		}
+		else if(QDoubleSpinBox * dspin = qobject_cast<QDoubleSpinBox *>(*iter))
+		{
+			value = QString::number(dspin->value(), 'g', 12);
+		}
+		else if(QAbstractButton * button = qobject_cast<QAbstractButton *>(*iter))
+		{
+			if(!button->isCheckable())
+			{
+				continue;
+			}
+			value = button->isChecked()?"1":"0";
+		}
+		else if(QGroupBox * group = qobject_cast<QGroupBox *>(*iter))
+		{
+			if(!group->isCheckable())
+			{
+				continue;
+			}
+			value = group->isChecked()?"1":"0";
+		}
+		else if(QComboBox * combo = qobject_cast<QComboBox *>(*iter))
+		{
+			value = QString::number(combo->currentIndex());
+		}
+		else if(QLineEdit * edit = qobject_cast<QLineEdit *>(*iter))
+		{
+			value = edit->text();
+		}
+		else
+		{
+			continue;
+		}
+		items << name + "=" + value;
+	}
+	// the parameters that act on a node's cloud (disparity of stereo cameras)
+	for(ParametersMap::const_iterator iter=parameters.begin(); iter!=parameters.end(); ++iter)
+	{
+		if(iter->first.compare(0, 6, "Stereo") == 0)
+		{
+			items << QString::fromStdString(iter->first + "=" + iter->second);
+		}
+	}
+	items.sort();
+	return QString(QCryptographicHash::hash(items.join("|").toUtf8(), QCryptographicHash::Sha1).toHex());
+}
+
 int ExportCloudsDialog::getTextureSize() const
 {
 	int textureSize = 1024;
@@ -1849,6 +1947,65 @@ bool ExportCloudsDialog::getExportedClouds(
 			QMessageBox::critical(this, tr("Creating clouds..."), tr("Poses are empty! Cannot export/view clouds."));
 			return false;
 		}
+
+		// Per-node clouds saved by an earlier view (see NodeCloudCache): offer to read them
+		// instead of reading every node from the database and projecting it again.
+		QString cacheKey;
+		std::set<int> cachedHits;
+		bool cachedUseIntensity = false;
+		{
+			const bool assembling = _ui->checkBox_assemble->isChecked() &&
+					!((_ui->comboBox_pipeline->currentIndex()==0 || _ui->comboBox_meshingApproach->currentIndex()==4) && _ui->checkBox_meshing->isChecked());
+			// Gain compensation and cloud subtraction make a node's cloud depend on the other nodes
+			if(_viewCacheEnabled && _dbDriver && !_dbDriver->getUrl().empty() && cachedSignatures.isEmpty() &&
+			   assembling && _ui->checkBox_regenerate->isChecked() &&
+			   !_ui->checkBox_gainCompensation->isChecked() && !_ui->checkBox_subtraction->isChecked())
+			{
+				cacheKey = NodeCloudCache::makeKey(
+						QFileInfo(QString::fromStdString(_dbDriver->getUrl())).absoluteFilePath(),
+						nodeCloudSettingsDigest(parameters));
+				const NodeCloudCache::Summary summary = NodeCloudCache::summary(cacheKey);
+				int nodeCount = 0;
+				for(std::map<int, Transform>::const_iterator iter=poses.lower_bound(1); iter!=poses.end(); ++iter)
+				{
+					++nodeCount;
+					if(summary.valid && summary.ids.find(iter->first) != summary.ids.end())
+					{
+						cachedHits.insert(iter->first);
+					}
+				}
+				if(!cachedHits.empty())
+				{
+					cachedUseIntensity = summary.useIntensity;
+					QMessageBox box(QMessageBox::Question,
+							tr("Saved clouds"),
+							tr("Per-node clouds saved on %1 match these settings and cover %2 of the %3 nodes to view.\n\n"
+							   "Load them instead of reading those nodes from the database again?%4")
+							.arg(QLocale().toString(summary.created, QLocale::ShortFormat))
+							.arg((int)cachedHits.size())
+							.arg(nodeCount)
+							.arg(cachedHits.size() < (size_t)nodeCount?tr(" The other %1 nodes are generated as usual.").arg(nodeCount-(int)cachedHits.size()):QString()),
+							QMessageBox::NoButton,
+							this);
+					QPushButton * loadButton = box.addButton(tr("Load saved"), QMessageBox::AcceptRole);
+					QPushButton * regenerateButton = box.addButton(tr("Regenerate"), QMessageBox::DestructiveRole);
+					box.addButton(QMessageBox::Cancel);
+					box.setDefaultButton(loadButton);
+					box.exec();
+					if(box.clickedButton() == regenerateButton)
+					{
+						cachedHits.clear();
+					}
+					else if(box.clickedButton() != loadButton)
+					{
+						return false;
+					}
+				}
+			}
+		}
+		_viewCache = ViewCacheInfo();
+		_viewCache.key = cacheKey;
+
 		_progressDialog->resetProgress();
 		_progressDialog->show();
 		int mul = 1;
@@ -1889,16 +2046,57 @@ bool ExportCloudsDialog::getExportedClouds(
 
 		bool has2dScans = false;
 		std::map<int, std::pair<pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr, pcl::IndicesPtr> > clouds;
+		std::map<int, Transform> localTransforms; // sensor in the robot frame, by node
+		std::set<int> loadedIds; // nodes read from the NodeCloudCache
 		if(loadClouds)
 		{
-			clouds = this->getClouds(
-					poses,
-					cachedSignatures,
-					cachedClouds,
-					cachedScans,
-					parameters,
-					has2dScans,
-					_scansHaveRGB);
+			std::map<int, Transform> posesToGenerate = poses;
+			if(!cachedHits.empty())
+			{
+				_progressDialog->appendText(tr("Loading %1 saved clouds...").arg((int)cachedHits.size()));
+				QApplication::processEvents();
+				UTimer loadTimer;
+				std::map<int, NodeCloudCache::Entry> entries;
+				QString error;
+				if(NodeCloudCache::load(cacheKey, cachedHits, entries, &error))
+				{
+					for(std::map<int, NodeCloudCache::Entry>::iterator iter=entries.begin(); iter!=entries.end(); ++iter)
+					{
+						pcl::IndicesPtr indices(new std::vector<int>(iter->second.cloud->size()));
+						for(unsigned int i=0; i<indices->size(); ++i)
+						{
+							indices->at(i) = i;
+						}
+						clouds.insert(std::make_pair(iter->first, std::make_pair(iter->second.cloud, indices)));
+						localTransforms[iter->first] = iter->second.localTransform;
+						loadedIds.insert(iter->first);
+						posesToGenerate.erase(iter->first);
+					}
+					_progressDialog->appendText(tr("Loaded %1 saved clouds in %2 s.").arg((int)loadedIds.size()).arg(loadTimer.ticks(), 0, 'f', 1));
+				}
+				else
+				{
+					QMessageBox::warning(this, tr("Saved clouds"), tr("%1 All the clouds are generated again.").arg(error));
+				}
+			}
+
+			if(posesToGenerate.lower_bound(1) != posesToGenerate.end())
+			{
+				std::map<int, std::pair<pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr, pcl::IndicesPtr> > generated = this->getClouds(
+						posesToGenerate,
+						cachedSignatures,
+						cachedClouds,
+						cachedScans,
+						parameters,
+						has2dScans,
+						_scansHaveRGB,
+						&localTransforms);
+				clouds.insert(generated.begin(), generated.end());
+			}
+			else
+			{
+				_scansHaveRGB = !cachedUseIntensity;
+			}
 		}
 		else
 		{
@@ -1914,6 +2112,8 @@ bool ExportCloudsDialog::getExportedClouds(
 		}
 
 		std::set<int> validCameras = uKeysSet(clouds);
+		_viewCache.loadedIds = loadedIds;
+		_viewCache.localTransforms = localTransforms;
 
 		UDEBUG("");
 		if(_canceled)
@@ -2016,9 +2216,26 @@ bool ExportCloudsDialog::getExportedClouds(
 		if(_ui->checkBox_assemble->isChecked())
 		{
 			// Adjust view points with local transforms
-			for(std::map<int, Transform>::iterator iter= normalViewpoints.begin(); iter!=normalViewpoints.end(); ++iter)
+			for(std::map<int, Transform>::iterator iter= normalViewpoints.begin(); iter!=normalViewpoints.end();)
 			{
-				if(_ui->checkBox_fromDepth->isChecked())
+				// Only the nodes that have a cloud have points whose normals need a viewpoint.
+				if(validCameras.find(iter->first) == validCameras.end())
+				{
+					normalViewpoints.erase(iter++);
+					continue;
+				}
+				// Generating the cloud of a node already read its calibration (or scan info). Asking
+				// the database again costs as much as loading the node's images: the calibration
+				// is stored after them, and SQLite reads through the images to get to it.
+				std::map<int, Transform>::const_iterator localIter = localTransforms.find(iter->first);
+				if(localIter != localTransforms.end())
+				{
+					if(!localIter->second.isNull())
+					{
+						iter->second *= localIter->second;
+					}
+				}
+				else if(_ui->checkBox_fromDepth->isChecked())
 				{
 					std::vector<CameraModel> models;
 					std::vector<StereoCameraModel> stereoModels;
@@ -2067,6 +2284,7 @@ bool ExportCloudsDialog::getExportedClouds(
 						iter->second *= scan.localTransform();
 					}
 				}
+				++iter;
 			}
 		}
 
@@ -4194,6 +4412,8 @@ ExportCloudsDialog::CloudGenResult ExportCloudsDialog::generateCloudForNode(
 			}
 
 			result.cloud = cloud;
+			result.localTransform = localTransform;
+			result.hasLocalTransform = true;
 
 			result.indices = indices;
 		}
@@ -4213,7 +4433,8 @@ std::map<int, std::pair<pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr, pcl::Indic
 		const std::map<int, LaserScan> & cachedScans,
 		const ParametersMap & parameters,
 		bool & has2dScans,
-		bool & scansHaveRGB) const
+		bool & scansHaveRGB,
+		std::map<int, Transform> * localTransforms) const
 {
 	scansHaveRGB = false;
 	has2dScans = false;
@@ -4263,6 +4484,10 @@ std::map<int, std::pair<pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr, pcl::Indic
 		if(result.cloud.get() && result.indices.get() && !result.indices->empty())
 		{
 			clouds.insert(std::make_pair(nodes[i].first, std::make_pair(result.cloud, result.indices)));
+			if(localTransforms && result.hasLocalTransform)
+			{
+				(*localTransforms)[nodes[i].first] = result.localTransform;
+			}
 			points = (int)result.cloud->size();
 			totalIndices = (int)result.indices->size();
 		}

@@ -73,6 +73,7 @@ SET(SRC_FILES
 	./ExportColmapDialog.cpp
 	./PostProcessingDialog.cpp
 	./ExportCloudsDialog.cpp
+	./NodeCloudCache.cpp
 	./EditConstraintDialog.cpp
 	./MapVisibilityWidget.cpp
 	./GraphViewer.cpp

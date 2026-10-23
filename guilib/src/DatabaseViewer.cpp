@@ -111,6 +111,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "rtabmap/core/Recovery.h"
 #include "rtabmap/gui/DataRecorder.h"
 #include "rtabmap/gui/ExportCloudsDialog.h"
+#include "NodeCloudCache.h"
 #include "rtabmap/gui/BasemapTileSource.h"
 #include "rtabmap/gui/GeoRaster.h"
 #include "rtabmap/gui/EditDepthArea.h"
@@ -1644,6 +1645,15 @@ void DatabaseViewer::closeEvent(QCloseEvent* event)
 	if(save)
 	{
 		writeSettings();
+	}
+
+	// 3D map views still open: their generated clouds are lost when the viewer closes
+	for(int i=0; i<mapViewers_.size(); ++i)
+	{
+		if(mapViewers_[i].viewer)
+		{
+			offerToSaveNodeClouds(mapViewers_[i].viewer);
+		}
 	}
 
 	event->accept();
@@ -4728,6 +4738,103 @@ void DatabaseViewer::mapViewerCreated(CloudViewer * viewer)
 			UINFO("3D map view: kept %d per-node clouds for re-assembly after re-optimization.",
 					(int)info.localClouds.size());
 		}
+
+		// where they can be saved, for the next time this map is viewed
+		const ExportCloudsDialog::ViewCacheInfo cache = exportDialog_->takeViewCacheInfo();
+		if(!info.localClouds.empty() && !cache.key.isEmpty())
+		{
+			info.cacheKey = cache.key;
+			info.cacheKnownIds = cache.loadedIds;
+			info.cacheLocalTransforms = cache.localTransforms;
+			QDialog * window = qobject_cast<QDialog *>(viewer->window());
+			if(window)
+			{
+				QPointer<CloudViewer> viewerPtr(viewer);
+				connect(window, &QDialog::finished, this, [this, viewerPtr](int)
+				{
+					if(viewerPtr)
+					{
+						offerToSaveNodeClouds(viewerPtr);
+					}
+				});
+			}
+		}
+	}
+}
+
+void DatabaseViewer::offerToSaveNodeClouds(CloudViewer * viewer)
+{
+	for(int i=0; i<mapViewers_.size(); ++i)
+	{
+		MapViewerInfo & info = mapViewers_[i];
+		if(info.viewer != viewer)
+		{
+			continue;
+		}
+		if(info.cacheKey.isEmpty() || info.localClouds.empty())
+		{
+			return;
+		}
+
+		// only the nodes that were generated, the others are already in the file
+		std::map<int, NodeCloudCache::Entry> entries;
+		qint64 bytes = 0;
+		for(std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr>::const_iterator iter=info.localClouds.begin();
+			iter!=info.localClouds.end(); ++iter)
+		{
+			if(!iter->second || iter->second->empty() || info.cacheKnownIds.find(iter->first) != info.cacheKnownIds.end())
+			{
+				continue;
+			}
+			NodeCloudCache::Entry entry;
+			entry.cloud = iter->second;
+			std::map<int, Transform>::const_iterator tter = info.cacheLocalTransforms.find(iter->first);
+			if(tter != info.cacheLocalTransforms.end())
+			{
+				entry.localTransform = tter->second;
+			}
+			entries.insert(std::make_pair(iter->first, entry));
+			bytes += (qint64)iter->second->size() * (info.withNormals?28:16);
+		}
+		if(entries.empty())
+		{
+			return;
+		}
+
+		const QMessageBox::StandardButton answer = QMessageBox::question(this,
+				tr("Save the clouds?"),
+				tr("The clouds of the %1 nodes generated for this view can be saved (about %2 MB) in\n%3\n\n"
+				   "Next time, \"View 3D map\" will offer to load them instead of reading and projecting these nodes from the database again.")
+				.arg((int)entries.size())
+				.arg(bytes/(1024*1024))
+				.arg(QFileInfo(NodeCloudCache::filePath(info.cacheKey)).absolutePath()),
+				QMessageBox::Save | QMessageBox::Discard,
+				QMessageBox::Save);
+		if(answer == QMessageBox::Save)
+		{
+			QApplication::setOverrideCursor(Qt::WaitCursor);
+			QString error;
+			UTimer timer;
+			const bool saved = NodeCloudCache::save(info.cacheKey, info.withNormals, info.useIntensity, entries, &error);
+			QApplication::restoreOverrideCursor();
+			if(saved)
+			{
+				UINFO("Saved %d per-node clouds in %s s.", (int)entries.size(), uNumber2Str(timer.ticks()).c_str());
+				for(std::map<int, NodeCloudCache::Entry>::const_iterator iter=entries.begin(); iter!=entries.end(); ++iter)
+				{
+					info.cacheKnownIds.insert(iter->first);
+				}
+			}
+			else
+			{
+				QMessageBox::warning(this, tr("Save the clouds"), error);
+			}
+		}
+		else
+		{
+			info.cacheKey.clear(); // asked once
+		}
+		return;
 	}
 }
 

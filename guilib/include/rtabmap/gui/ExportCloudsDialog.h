@@ -154,6 +154,10 @@ private:
 		pcl::IndicesPtr indices;
 		bool hasScan = false;
 		bool scanHasRGB = false;
+		// Sensor in the robot frame, the viewpoint of the normals. Gathered here so
+		// that nobody has to ask the database for the calibration of every node again.
+		Transform localTransform;
+		bool hasLocalTransform = false;
 		std::vector<std::pair<QString, QColor> > messages;
 	};
 	CloudGenResult generateCloudForNode(
@@ -177,7 +181,10 @@ private:
 			const std::map<int, LaserScan> & cachedScans,
 			const ParametersMap & parameters,
 			bool & has2dScans,
-			bool & scansHaveRGB) const;
+			bool & scansHaveRGB,
+			std::map<int, Transform> * localTransforms = 0) const;
+	// Settings that shape the per-node clouds, as a digest (see NodeCloudCache)
+	QString nodeCloudSettingsDigest(const ParametersMap & parameters) const;
 	void saveClouds(const QString & workingDirectory, const std::map<int, Transform> & poses, const std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr> & clouds, bool binaryMode = true, const std::vector<std::map<int, pcl::PointXY> > & pointToPixels = std::vector<std::map<int, pcl::PointXY> >());
 	void saveMeshes(const QString & workingDirectory, const std::map<int, Transform> & poses, const std::map<int, pcl::PolygonMesh::Ptr> & meshes, bool binaryMode = true);
 	void saveTextureMeshes(const QString & workingDirectory, const std::map<int, Transform> & poses, std::map<int, pcl::TextureMesh::Ptr> & textureMeshes, const QMap<int, Signature> & cachedSignatures, const std::vector<std::map<int, pcl::PointXY> > & textureVertexToPixels);
@@ -187,6 +194,19 @@ public:
 	// last viewed cloud, so the caller can re-assemble it with new poses
 	// after a re-optimization. Empties the internal copy.
 	std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr> takeViewLocalClouds(bool & useIntensity, bool & withNormals);
+
+	// What the caller needs to save the per-node clouds of the last view in a NodeCloudCache
+	// (the clouds themselves come from takeViewLocalClouds()). Empties the internal copy.
+	struct ViewCacheInfo
+	{
+		ViewCacheInfo() : withNormals(false), useIntensity(false) {}
+		QString key; // empty when the clouds of this view cannot be cached
+		std::set<int> loadedIds; // nodes read from the cache rather than generated
+		std::map<int, Transform> localTransforms; // by node
+		bool withNormals;
+		bool useIntensity;
+	};
+	ViewCacheInfo takeViewCacheInfo();
 
 private:
 	Ui_ExportCloudsDialog * _ui;
@@ -199,6 +219,8 @@ private:
 	bool _anchorPointsEnabled;
 	bool _captureViewLocalClouds;
 	std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr> _viewLocalClouds;
+	bool _viewCacheEnabled; // set by viewClouds(): the per-node clouds may be read from / saved to a NodeCloudCache
+	ViewCacheInfo _viewCache;
 	QCheckBox * _checkBoxKeepLocalClouds;
 	QLabel * _labelKeepLocalClouds;
 
