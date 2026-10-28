@@ -5288,6 +5288,15 @@ void DatabaseViewer::generate3DMap()
 			}
 		}
 
+		if(anchorFrameOffsetSet_)
+		{
+			exportDialog_->setGeoreference(anchorFrameOffsetX_, anchorFrameOffsetY_,
+					basemap_ && basemap_->isLoaded()?basemap_->crsAuthority():QString());
+		}
+		else
+		{
+			exportDialog_->clearGeoreference();
+		}
 		exportDialog_->setDBDriver(dbDriver_);
 		exportDialog_->exportClouds(optimizedPoses,
 				updateLinksWithModifications(links_),

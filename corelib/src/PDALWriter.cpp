@@ -42,6 +42,27 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 namespace rtabmap {
 
+static void addGeoreferenceOptions(pdal::Options & writerOps, const std::string & ext, const PDALGeoreference & georef)
+{
+	if(ext.compare("las")==0 || ext.compare("laz")==0)
+	{
+		if(!georef.isNull())
+		{
+			// millimeter precision, header offset chosen from the data
+			writerOps.add("scale_x", 0.001);
+			writerOps.add("scale_y", 0.001);
+			writerOps.add("scale_z", 0.001);
+			writerOps.add("offset_x", "auto");
+			writerOps.add("offset_y", "auto");
+			writerOps.add("offset_z", "auto");
+		}
+		if(!georef.srs.empty())
+		{
+			writerOps.add("a_srs", georef.srs);
+		}
+	}
+}
+
 std::string getPDALSupportedWriters()
 {
 	std::string output;
@@ -76,7 +97,8 @@ std::string getPDALSupportedWriters()
 int savePDALFile(const std::string & filePath,
 		const pcl::PointCloud<pcl::PointXYZ> & cloud,
 		const std::vector<int> & cameraIds,
-		bool binary)
+		bool binary,
+		const PDALGeoreference & georef)
 {
 	UASSERT_MSG(cameraIds.empty() || cameraIds.size() == cloud.size(),
 			uFormat("cameraIds=%d cloud=%d", (int)cameraIds.size(), (int)cloud.size()).c_str());
@@ -103,9 +125,9 @@ int savePDALFile(const std::string & filePath,
 	pdal::PointViewPtr view(new pdal::PointView(table));
 	for(size_t i=0; i<cloud.size(); ++i)
 	{
-		view->setField(pdal::Dimension::Id::X, i, cloud.at(i).x);
-		view->setField(pdal::Dimension::Id::Y, i, cloud.at(i).y);
-		view->setField(pdal::Dimension::Id::Z, i, cloud.at(i).z);
+		view->setField(pdal::Dimension::Id::X, i, (double)cloud.at(i).x + georef.offsetX);
+		view->setField(pdal::Dimension::Id::Y, i, (double)cloud.at(i).y + georef.offsetY);
+		view->setField(pdal::Dimension::Id::Z, i, (double)cloud.at(i).z + georef.offsetZ);
 		if(!cameraIds.empty())
 		{
 			view->setField(pdal::Dimension::Id::PointSourceId, i, cameraIds.at(i));
@@ -123,6 +145,7 @@ int savePDALFile(const std::string & filePath,
 		if(ext.compare("ply")==0) writerOps.add("storage_mode", binary?"little endian":"ascii"); // PLY
 		if(ext.compare("pcd")==0) writerOps.add("compression", binary?"binary":"ascii"); // PCD
 		if(ext.compare("laz")==0) writerOps.add("compression", "lazperf");
+		addGeoreferenceOptions(writerOps, ext, georef);
 
 		writer->setOptions(writerOps);
 		writer->setInput(bufferReader);
@@ -145,7 +168,8 @@ int savePDALFile(const std::string & filePath,
 		const pcl::PointCloud<pcl::PointXYZRGB> & cloud,
 		const std::vector<int> & cameraIds,
 		bool binary,
-		const std::vector<float> & intensities)
+		const std::vector<float> & intensities,
+		const PDALGeoreference & georef)
 {
 	UASSERT_MSG(cameraIds.empty() || cameraIds.size() == cloud.size(),
 			uFormat("cameraIds=%d cloud=%d", (int)cameraIds.size(), (int)cloud.size()).c_str());
@@ -203,9 +227,9 @@ int savePDALFile(const std::string & filePath,
 	pdal::PointViewPtr view(new pdal::PointView(table));
 	for(size_t i=0; i<cloud.size(); ++i)
 	{
-		view->setField(pdal::Dimension::Id::X, i, cloud.at(i).x);
-		view->setField(pdal::Dimension::Id::Y, i, cloud.at(i).y);
-		view->setField(pdal::Dimension::Id::Z, i, cloud.at(i).z);
+		view->setField(pdal::Dimension::Id::X, i, (double)cloud.at(i).x + georef.offsetX);
+		view->setField(pdal::Dimension::Id::Y, i, (double)cloud.at(i).y + georef.offsetY);
+		view->setField(pdal::Dimension::Id::Z, i, (double)cloud.at(i).z + georef.offsetZ);
 		view->setField(pdal::Dimension::Id::Red, i, cloud.at(i).r);
 		view->setField(pdal::Dimension::Id::Green, i, cloud.at(i).g);
 		view->setField(pdal::Dimension::Id::Blue, i, cloud.at(i).b);
@@ -230,6 +254,7 @@ int savePDALFile(const std::string & filePath,
 		if(ext.compare("ply")==0) writerOps.add("storage_mode", binary?"little endian":"ascii"); // PLY
 		if(ext.compare("pcd")==0) writerOps.add("compression", binary?"binary":"ascii"); // PCD
 		if(ext.compare("laz")==0) writerOps.add("compression", "lazperf");
+		addGeoreferenceOptions(writerOps, ext, georef);
 
 		writer->setOptions(writerOps);
 		writer->setInput(bufferReader);
@@ -252,7 +277,8 @@ int savePDALFile(const std::string & filePath,
 		const pcl::PointCloud<pcl::PointXYZRGBNormal> & cloud,
 		const std::vector<int> & cameraIds,
 		bool binary,
-		const std::vector<float> & intensities)
+		const std::vector<float> & intensities,
+		const PDALGeoreference & georef)
 {
 	UASSERT_MSG(cameraIds.empty() || cameraIds.size() == cloud.size(),
 			uFormat("cameraIds=%d cloud=%d", (int)cameraIds.size(), (int)cloud.size()).c_str());
@@ -322,9 +348,9 @@ int savePDALFile(const std::string & filePath,
 	pdal::PointViewPtr view(new pdal::PointView(table));
 	for(size_t i=0; i<cloud.size(); ++i)
 	{
-		view->setField(pdal::Dimension::Id::X, i, cloud.at(i).x);
-		view->setField(pdal::Dimension::Id::Y, i, cloud.at(i).y);
-		view->setField(pdal::Dimension::Id::Z, i, cloud.at(i).z);
+		view->setField(pdal::Dimension::Id::X, i, (double)cloud.at(i).x + georef.offsetX);
+		view->setField(pdal::Dimension::Id::Y, i, (double)cloud.at(i).y + georef.offsetY);
+		view->setField(pdal::Dimension::Id::Z, i, (double)cloud.at(i).z + georef.offsetZ);
 		view->setField(pdal::Dimension::Id::Red, i, cloud.at(i).r);
 		view->setField(pdal::Dimension::Id::Green, i, cloud.at(i).g);
 		view->setField(pdal::Dimension::Id::Blue, i, cloud.at(i).b);
@@ -352,6 +378,7 @@ int savePDALFile(const std::string & filePath,
 		if(ext.compare("ply")==0) writerOps.add("storage_mode", binary?"little endian":"ascii"); // PLY
 		if(ext.compare("pcd")==0) writerOps.add("compression", binary?"binary":"ascii"); // PCD
 		if(ext.compare("laz")==0) writerOps.add("compression", "lazperf");
+		addGeoreferenceOptions(writerOps, ext, georef);
 
 		writer->setOptions(writerOps);
 		writer->setInput(bufferReader);
@@ -373,7 +400,8 @@ int savePDALFile(const std::string & filePath,
 int savePDALFile(const std::string & filePath,
 		const pcl::PointCloud<pcl::PointXYZI> & cloud,
 		const std::vector<int> & cameraIds,
-		bool binary)
+		bool binary,
+		const PDALGeoreference & georef)
 {
 	UASSERT_MSG(cameraIds.empty() || cameraIds.size() == cloud.size(),
 			uFormat("cameraIds=%d cloud=%d", (int)cameraIds.size(), (int)cloud.size()).c_str());
@@ -402,9 +430,9 @@ int savePDALFile(const std::string & filePath,
 	pdal::PointViewPtr view(new pdal::PointView(table));
 	for(size_t i=0; i<cloud.size(); ++i)
 	{
-		view->setField(pdal::Dimension::Id::X, i, cloud.at(i).x);
-		view->setField(pdal::Dimension::Id::Y, i, cloud.at(i).y);
-		view->setField(pdal::Dimension::Id::Z, i, cloud.at(i).z);
+		view->setField(pdal::Dimension::Id::X, i, (double)cloud.at(i).x + georef.offsetX);
+		view->setField(pdal::Dimension::Id::Y, i, (double)cloud.at(i).y + georef.offsetY);
+		view->setField(pdal::Dimension::Id::Z, i, (double)cloud.at(i).z + georef.offsetZ);
 		view->setField(pdal::Dimension::Id::Intensity, i, (unsigned short)cloud.at(i).intensity);
 		if(!cameraIds.empty())
 		{
@@ -423,6 +451,7 @@ int savePDALFile(const std::string & filePath,
 		if(ext.compare("ply")==0) writerOps.add("storage_mode", binary?"little endian":"ascii"); // PLY
 		if(ext.compare("pcd")==0) writerOps.add("compression", binary?"binary":"ascii"); // PCD
 		if(ext.compare("laz")==0) writerOps.add("compression", "lazperf");
+		addGeoreferenceOptions(writerOps, ext, georef);
 
 		writer->setOptions(writerOps);
 		writer->setInput(bufferReader);
@@ -444,7 +473,8 @@ int savePDALFile(const std::string & filePath,
 int savePDALFile(const std::string & filePath,
 		const pcl::PointCloud<pcl::PointXYZINormal> & cloud,
 		const std::vector<int> & cameraIds,
-		bool binary)
+		bool binary,
+		const PDALGeoreference & georef)
 {
 	UASSERT_MSG(cameraIds.empty() || cameraIds.size() == cloud.size(),
 			uFormat("cameraIds=%d cloud=%d", (int)cameraIds.size(), (int)cloud.size()).c_str());
@@ -479,9 +509,9 @@ int savePDALFile(const std::string & filePath,
 	pdal::PointViewPtr view(new pdal::PointView(table));
 	for(size_t i=0; i<cloud.size(); ++i)
 	{
-		view->setField(pdal::Dimension::Id::X, i, cloud.at(i).x);
-		view->setField(pdal::Dimension::Id::Y, i, cloud.at(i).y);
-		view->setField(pdal::Dimension::Id::Z, i, cloud.at(i).z);
+		view->setField(pdal::Dimension::Id::X, i, (double)cloud.at(i).x + georef.offsetX);
+		view->setField(pdal::Dimension::Id::Y, i, (double)cloud.at(i).y + georef.offsetY);
+		view->setField(pdal::Dimension::Id::Z, i, (double)cloud.at(i).z + georef.offsetZ);
 		view->setField(pdal::Dimension::Id::Intensity, i, (unsigned short)cloud.at(i).intensity);
 		view->setField(pdal::Dimension::Id::NormalX, i, cloud.at(i).normal_x);
 		view->setField(pdal::Dimension::Id::NormalY, i, cloud.at(i).normal_y);
@@ -503,6 +533,7 @@ int savePDALFile(const std::string & filePath,
 		if(ext.compare("ply")==0) writerOps.add("storage_mode", binary?"little endian":"ascii"); // PLY
 		if(ext.compare("pcd")==0) writerOps.add("compression", binary?"binary":"ascii"); // PCD
 		if(ext.compare("laz")==0) writerOps.add("compression", "lazperf");
+		addGeoreferenceOptions(writerOps, ext, georef);
 
 		writer->setOptions(writerOps);
 		writer->setInput(bufferReader);

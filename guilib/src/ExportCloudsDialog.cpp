@@ -110,7 +110,19 @@ ExportCloudsDialog::ExportCloudsDialog(QWidget *parent) :
 	_captureViewLocalClouds(false),
 	_viewCacheEnabled(false),
 	_checkBoxKeepLocalClouds(0),
-	_labelKeepLocalClouds(0)
+	_labelKeepLocalClouds(0),
+	_hasGeoref(false),
+	_georefX(0.0),
+	_georefY(0.0),
+	_georefSrsAsked(false),
+	_checkBoxGeoref(0),
+	_labelGeoref(0),
+	_checkBoxTiles(0),
+	_spinBoxTiles(0),
+	_labelTiles(0),
+	_tilingAllowed(false),
+	_skipExec(false),
+	_tileIndex(-1)
 {
 	_ui = new Ui_ExportCloudsDialog();
 	_ui->setupUi(this);
@@ -130,10 +142,34 @@ ExportCloudsDialog::ExportCloudsDialog(QWidget *parent) :
 
 	_checkBoxKeepLocalClouds = new QCheckBox();
 	_checkBoxKeepLocalClouds->setChecked(true);
+	_checkBoxGeoref->setChecked(false);
+	_checkBoxTiles->setChecked(false);
+	_spinBoxTiles->setValue(4);
 	_labelKeepLocalClouds = new QLabel(tr("Keep per-node clouds in RAM so this view can follow graph updates (live optimization / F5). Uncheck on large maps to use less memory; the assembled view will then stay frozen after re-optimization."));
 	_labelKeepLocalClouds->setWordWrap(true);
 	_ui->gridLayout_8->addWidget(_checkBoxKeepLocalClouds, 20, 0);
 	_ui->gridLayout_8->addWidget(_labelKeepLocalClouds, 20, 1);
+
+	_checkBoxGeoref = new QCheckBox();
+	_checkBoxGeoref->setEnabled(false);
+	_labelGeoref = new QLabel(tr("Georeferenced LAS/LAZ: add the CRS coordinates of the map origin to the points (in double precision) and write the CRS. Available when the map has anchor points with a CRS origin."));
+	_labelGeoref->setWordWrap(true);
+	_ui->gridLayout_8->addWidget(_checkBoxGeoref, 21, 0);
+	_ui->gridLayout_8->addWidget(_labelGeoref, 21, 1);
+
+	_checkBoxTiles = new QCheckBox();
+	_labelTiles = new QLabel(tr("Split the assembled cloud in a grid of tiles over the extent of the nodes, one file per tile (\"name_X_Y.ext\"). Each node goes to the tile containing it. Use it on maps too large to be exported in one cloud. Requires assembling and no meshing."));
+	_labelTiles->setWordWrap(true);
+	_spinBoxTiles = new QSpinBox();
+	_spinBoxTiles->setRange(1, 50);
+	_spinBoxTiles->setValue(4);
+	_spinBoxTiles->setPrefix(tr("Grid: "));
+	_spinBoxTiles->setSuffix(tr(" x N tiles"));
+	_spinBoxTiles->setEnabled(false);
+	_ui->gridLayout_8->addWidget(_checkBoxTiles, 22, 0);
+	_ui->gridLayout_8->addWidget(_labelTiles, 22, 1);
+	_ui->gridLayout_8->addWidget(_spinBoxTiles, 23, 0);
+	connect(_checkBoxTiles, SIGNAL(toggled(bool)), _spinBoxTiles, SLOT(setEnabled(bool)));
 
 	connect(_ui->buttonBox->button(QDialogButtonBox::RestoreDefaults), SIGNAL(clicked()), this, SLOT(restoreDefaults()));
 	QPushButton * loadSettingsButton = _ui->buttonBox->addButton("Load Settings", QDialogButtonBox::ActionRole);
@@ -168,6 +204,9 @@ ExportCloudsDialog::ExportCloudsDialog(QWidget *parent) :
 	connect(_ui->checkBox_regenerate, SIGNAL(stateChanged(int)), this, SLOT(updateReconstructionFlavor()));
 	connect(_ui->spinBox_numThreads, SIGNAL(valueChanged(int)), this, SIGNAL(configChanged()));
 	connect(_checkBoxKeepLocalClouds, SIGNAL(stateChanged(int)), this, SIGNAL(configChanged()));
+	connect(_checkBoxGeoref, SIGNAL(stateChanged(int)), this, SIGNAL(configChanged()));
+	connect(_checkBoxTiles, SIGNAL(stateChanged(int)), this, SIGNAL(configChanged()));
+	connect(_spinBoxTiles, SIGNAL(valueChanged(int)), this, SIGNAL(configChanged()));
 	connect(_ui->spinBox_decimation, SIGNAL(valueChanged(int)), this, SIGNAL(configChanged()));
 	connect(_ui->doubleSpinBox_maxDepth, SIGNAL(valueChanged(double)), this, SIGNAL(configChanged()));
 	connect(_ui->doubleSpinBox_minDepth, SIGNAL(valueChanged(double)), this, SIGNAL(configChanged()));
@@ -425,6 +464,9 @@ void ExportCloudsDialog::saveSettings(QSettings & settings, const QString & grou
 	settings.setValue("regenerate", _ui->checkBox_regenerate->isChecked());
 	settings.setValue("num_threads", _ui->spinBox_numThreads->value());
 	settings.setValue("keep_local_clouds", _checkBoxKeepLocalClouds->isChecked());
+	settings.setValue("georeferenced_export", _checkBoxGeoref->isChecked());
+	settings.setValue("export_tiles", _checkBoxTiles->isChecked());
+	settings.setValue("export_tiles_grid", _spinBoxTiles->value());
 	settings.setValue("regenerate_decimation", _ui->spinBox_decimation->value());
 	settings.setValue("regenerate_max_depth", _ui->doubleSpinBox_maxDepth->value());
 	settings.setValue("regenerate_min_depth", _ui->doubleSpinBox_minDepth->value());
@@ -612,6 +654,9 @@ void ExportCloudsDialog::loadSettings(QSettings & settings, const QString & grou
 	_ui->checkBox_regenerate->setChecked(settings.value("regenerate", _ui->checkBox_regenerate->isChecked()).toBool());
 	_ui->spinBox_numThreads->setValue(settings.value("num_threads", _ui->spinBox_numThreads->value()).toInt());
 	_checkBoxKeepLocalClouds->setChecked(settings.value("keep_local_clouds", _checkBoxKeepLocalClouds->isChecked()).toBool());
+	_checkBoxGeoref->setChecked(settings.value("georeferenced_export", _checkBoxGeoref->isChecked()).toBool());
+	_checkBoxTiles->setChecked(settings.value("export_tiles", _checkBoxTiles->isChecked()).toBool());
+	_spinBoxTiles->setValue(settings.value("export_tiles_grid", _spinBoxTiles->value()).toInt());
 	_ui->spinBox_decimation->setValue(settings.value("regenerate_decimation", _ui->spinBox_decimation->value()).toInt());
 	_ui->doubleSpinBox_maxDepth->setValue(settings.value("regenerate_max_depth", _ui->doubleSpinBox_maxDepth->value()).toDouble());
 	_ui->doubleSpinBox_minDepth->setValue(settings.value("regenerate_min_depth", _ui->doubleSpinBox_minDepth->value()).toDouble());
@@ -1158,6 +1203,11 @@ void ExportCloudsDialog::setSaveButton()
 	_ui->label_quad->setVisible(false);
 	_checkBoxKeepLocalClouds->setVisible(false);
 	_labelKeepLocalClouds->setVisible(false);
+	_checkBoxGeoref->setVisible(true);
+	_labelGeoref->setVisible(true);
+	_checkBoxTiles->setVisible(true);
+	_labelTiles->setVisible(true);
+	_spinBoxTiles->setVisible(true);
 	updateReconstructionFlavor();
 }
 
@@ -1173,6 +1223,11 @@ void ExportCloudsDialog::setOkButton()
 	_ui->label_quad->setVisible(true);
 	_checkBoxKeepLocalClouds->setVisible(true);
 	_labelKeepLocalClouds->setVisible(true);
+	_checkBoxGeoref->setVisible(false);
+	_labelGeoref->setVisible(false);
+	_checkBoxTiles->setVisible(false);
+	_labelTiles->setVisible(false);
+	_spinBoxTiles->setVisible(false);
 	updateReconstructionFlavor();
 }
 
@@ -1237,56 +1292,201 @@ void ExportCloudsDialog::exportClouds(
 		const QString & workingDirectory,
 		const ParametersMap & parameters)
 {
-	std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr> clouds;
-	std::map<int, pcl::PolygonMesh::Ptr> meshes;
-	std::map<int, pcl::TextureMesh::Ptr> textureMeshes;
-	std::vector<std::map<int, pcl::PointXY> > textureVertexToPixels;
-
 	setSaveButton();
 
-	if(getExportedClouds(
-			poses,
-			links,
-			mapIds,
-			cachedSignatures,
-			cachedClouds,
-			cachedScans,
-			workingDirectory,
-			parameters,
-			clouds,
-			meshes,
-			textureMeshes,
-			textureVertexToPixels))
+	// With tiling, the first pass shows the settings dialog and plans the tiles
+	// (see getExportedClouds()), the next ones export the other tiles.
+	_tilingAllowed = true;
+	_skipExec = false;
+	_tiles.clear();
+	_tileIndex = -1;
+	_tileBasePath.clear();
+	_georefSrsAsked = false;
+
+	do
 	{
-		if(textureMeshes.size())
+		std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr> clouds;
+		std::map<int, pcl::PolygonMesh::Ptr> meshes;
+		std::map<int, pcl::TextureMesh::Ptr> textureMeshes;
+		std::vector<std::map<int, pcl::PointXY> > textureVertexToPixels;
+
+		if(getExportedClouds(
+				poses,
+				links,
+				mapIds,
+				cachedSignatures,
+				cachedClouds,
+				cachedScans,
+				workingDirectory,
+				parameters,
+				clouds,
+				meshes,
+				textureMeshes,
+				textureVertexToPixels))
 		{
-			saveTextureMeshes(workingDirectory, poses, textureMeshes, cachedSignatures, textureVertexToPixels);
-		}
-		else if(meshes.size())
-		{
-			bool exportMeshes = true;
-			if(_ui->checkBox_textureMapping->isEnabled() && _ui->checkBox_textureMapping->isChecked())
+			if(textureMeshes.size())
 			{
-				QMessageBox::StandardButton r = QMessageBox::warning(this, tr("Exporting Texture Mesh"),
-						tr("No texture mesh could be created, do you want to continue with saving only the meshes (%1)?").arg(meshes.size()),
-						QMessageBox::Yes|QMessageBox::No, QMessageBox::Yes);
-				exportMeshes = r == QMessageBox::Yes;
+				saveTextureMeshes(workingDirectory, poses, textureMeshes, cachedSignatures, textureVertexToPixels);
 			}
-			if(exportMeshes)
+			else if(meshes.size())
 			{
-				saveMeshes(workingDirectory, poses, meshes, _ui->checkBox_binary->isChecked());
+				bool exportMeshes = true;
+				if(_ui->checkBox_textureMapping->isEnabled() && _ui->checkBox_textureMapping->isChecked())
+				{
+					QMessageBox::StandardButton r = QMessageBox::warning(this, tr("Exporting Texture Mesh"),
+							tr("No texture mesh could be created, do you want to continue with saving only the meshes (%1)?").arg(meshes.size()),
+							QMessageBox::Yes|QMessageBox::No, QMessageBox::Yes);
+					exportMeshes = r == QMessageBox::Yes;
+				}
+				if(exportMeshes)
+				{
+					saveMeshes(workingDirectory, poses, meshes, _ui->checkBox_binary->isChecked());
+				}
+			}
+			else
+			{
+				saveClouds(workingDirectory, poses, clouds, _ui->checkBox_binary->isChecked(), textureVertexToPixels);
 			}
 		}
 		else
 		{
-			saveClouds(workingDirectory, poses, clouds, _ui->checkBox_binary->isChecked(), textureVertexToPixels);
+			if(!_canceled)
+			{
+				_progressDialog->setAutoClose(false);
+			}
+			break;
+		}
+
+		if(_tiles.empty() || ++_tileIndex >= (int)_tiles.size())
+		{
+			break;
+		}
+		_skipExec = true;
+	}
+	while(!_canceled);
+
+	_tilingAllowed = false;
+	_skipExec = false;
+	_tiles.clear();
+	_tileIndex = -1;
+	_progressDialog->setValue(_progressDialog->maximumSteps());
+}
+
+void ExportCloudsDialog::setGeoreference(double offsetX, double offsetY, const QString & srs)
+{
+	_hasGeoref = true;
+	_georefX = offsetX;
+	_georefY = offsetY;
+	_georefSrs = srs;
+#if defined(RTABMAP_PDAL)
+	_checkBoxGeoref->setEnabled(true);
+	_labelGeoref->setText(tr("Georeferenced LAS/LAZ: add the CRS coordinates of the map origin (%1, %2) to the points, in double precision, and write the CRS (%3). The CRS is asked if unknown.")
+			.arg(offsetX, 0, 'f', 3).arg(offsetY, 0, 'f', 3).arg(srs.isEmpty()?tr("none loaded"):srs));
+#endif
+}
+
+void ExportCloudsDialog::clearGeoreference()
+{
+	_hasGeoref = false;
+	_georefSrs.clear();
+	_checkBoxGeoref->setEnabled(false);
+	_labelGeoref->setText(tr("Georeferenced LAS/LAZ: add the CRS coordinates of the map origin to the points (in double precision) and write the CRS. Available when the map has anchor points with a CRS origin."));
+}
+
+QString ExportCloudsDialog::cloudFileFilter() const
+{
+#ifdef RTABMAP_PDAL
+	QString extensions = tr("Point cloud data (*.ply *.pcd");
+	std::list<std::string> pdalFormats = uSplit(getPDALSupportedWriters(), ' ');
+	for(std::list<std::string>::iterator iter=pdalFormats.begin(); iter!=pdalFormats.end(); ++iter)
+	{
+		if(iter->compare("ply") == 0 || iter->compare("pcd") == 0 || iter->compare("laz") == 0)
+		{
+			continue;
+		}
+		extensions += QString(" *.") + iter->c_str();
+		if(iter->compare("las") == 0)
+		{
+			extensions += QString(" *.laz");
 		}
 	}
-	else if(!_canceled)
+	extensions += ")";
+	return extensions;
+#elif defined(RTABMAP_LIBLAS)
+	return tr("Point cloud data (*.ply *.pcd *.las *.laz)");
+#else
+	return tr("Point cloud data (*.ply *.pcd)");
+#endif
+}
+
+// Assigns the nodes to the cells of a grid x grid split of their extent and
+// asks the output file name. Returns false if canceled.
+bool ExportCloudsDialog::planTiles(const std::map<int, Transform> & poses, const QString & workingDirectory)
+{
+	const bool assembling = _ui->checkBox_assemble->isChecked() && !_ui->checkBox_meshing->isChecked();
+	if(!assembling)
 	{
-		_progressDialog->setAutoClose(false);
+		QMessageBox::warning(this, tr("Tiles"),
+				tr("Tiles require assembling the clouds without meshing. The export will produce a single file."));
+		return true;
 	}
-	_progressDialog->setValue(_progressDialog->maximumSteps());
+	const int grid = _spinBoxTiles->value();
+	double xMin = 0, xMax = 0, yMin = 0, yMax = 0;
+	bool first = true;
+	for(std::map<int, Transform>::const_iterator iter=poses.lower_bound(1); iter!=poses.end(); ++iter)
+	{
+		if(first)
+		{
+			xMin = xMax = iter->second.x();
+			yMin = yMax = iter->second.y();
+			first = false;
+		}
+		else
+		{
+			xMin = std::min(xMin, (double)iter->second.x());
+			xMax = std::max(xMax, (double)iter->second.x());
+			yMin = std::min(yMin, (double)iter->second.y());
+			yMax = std::max(yMax, (double)iter->second.y());
+		}
+	}
+	if(first)
+	{
+		return true;
+	}
+
+	QString path = QFileDialog::getSaveFileName(this, tr("Save tiles to ... (_X_Y is appended)"),
+			workingDirectory+QDir::separator()+"cloud.ply", cloudFileFilter());
+	if(path.isEmpty())
+	{
+		return false;
+	}
+	if(QFileInfo(path).suffix().isEmpty())
+	{
+		path += ".ply";
+	}
+
+	const double dx = (xMax-xMin)/grid;
+	const double dy = (yMax-yMin)/grid;
+	std::map<std::pair<int, int>, Tile> cells;
+	for(std::map<int, Transform>::const_iterator iter=poses.lower_bound(1); iter!=poses.end(); ++iter)
+	{
+		int ix = dx>0.0?(int)((iter->second.x()-xMin)/dx):0;
+		int iy = dy>0.0?(int)((iter->second.y()-yMin)/dy):0;
+		ix = std::max(0, std::min(grid-1, ix));
+		iy = std::max(0, std::min(grid-1, iy));
+		Tile & tile = cells[std::make_pair(ix, iy)];
+		tile.ix = ix;
+		tile.iy = iy;
+		tile.nodes.insert(iter->first);
+	}
+	_tiles.clear();
+	for(std::map<std::pair<int, int>, Tile>::iterator iter=cells.begin(); iter!=cells.end(); ++iter)
+	{
+		_tiles.push_back(iter->second);
+	}
+	_tileIndex = 0;
+	_tileBasePath = path;
+	return true;
 }
 
 void ExportCloudsDialog::viewClouds(
@@ -1938,7 +2138,7 @@ bool ExportCloudsDialog::getExportedClouds(
 		delete _compensator;
 		_compensator = 0;
 	}
-	if(this->exec() == QDialog::Accepted)
+	if(_skipExec || this->exec() == QDialog::Accepted)
 	{
 		std::map<int, Transform> poses = filterNodes(posesIn);
 
@@ -1946,6 +2146,27 @@ bool ExportCloudsDialog::getExportedClouds(
 		{
 			QMessageBox::critical(this, tr("Creating clouds..."), tr("Poses are empty! Cannot export/view clouds."));
 			return false;
+		}
+
+		if(_tilingAllowed && _tiles.empty() && _tileIndex<0 && _checkBoxTiles->isChecked())
+		{
+			if(!planTiles(poses, workingDirectory))
+			{
+				return false;
+			}
+		}
+		if(!_tiles.empty() && _tileIndex>=0)
+		{
+			const Tile & tile = _tiles[_tileIndex];
+			std::map<int, Transform> tilePoses;
+			for(std::map<int, Transform>::const_iterator iter=poses.begin(); iter!=poses.end(); ++iter)
+			{
+				if(iter->first<=0 || tile.nodes.find(iter->first)!=tile.nodes.end())
+				{
+					tilePoses.insert(*iter);
+				}
+			}
+			poses = tilePoses;
 		}
 
 		// Per-node clouds saved by an earlier view (see NodeCloudCache): offer to read them
@@ -4586,28 +4807,20 @@ void ExportCloudsDialog::saveClouds(
 {
 	if(clouds.size() == 1)
 	{
-#ifdef RTABMAP_PDAL
-		QString extensions = tr("Point cloud data (*.ply *.pcd");
-		std::list<std::string> pdalFormats = uSplit(getPDALSupportedWriters(), ' ');
-		for(std::list<std::string>::iterator iter=pdalFormats.begin(); iter!=pdalFormats.end(); ++iter)
+		const bool tileMode = !_tiles.empty() && _tileIndex>=0;
+		QString path;
+		if(tileMode)
 		{
-			if(iter->compare("ply") == 0 || iter->compare("pcd") == 0 || iter->compare("laz") == 0)
-			{
-				continue;
-			}
-			extensions += QString(" *.") + iter->c_str();
-			if(iter->compare("las") == 0)
-			{
-				extensions += QString(" *.laz");
-			}
+			const QFileInfo info(_tileBasePath);
+			path = info.absolutePath()+QDir::separator()+info.completeBaseName()+
+					QString("_%1_%2.").arg(_tiles[_tileIndex].ix).arg(_tiles[_tileIndex].iy)+info.suffix();
+			_progressDialog->appendText(tr("Tile %1/%2 (%3,%4): %5 nodes")
+					.arg(_tileIndex+1).arg((int)_tiles.size()).arg(_tiles[_tileIndex].ix).arg(_tiles[_tileIndex].iy).arg((int)_tiles[_tileIndex].nodes.size()));
 		}
-		extensions += ")";
-#elif defined(RTABMAP_LIBLAS)
-		QString extensions = tr("Point cloud data (*.ply *.pcd *.las *.laz)");
-#else
-		QString extensions = tr("Point cloud data (*.ply *.pcd)");
-#endif
-		QString path = QFileDialog::getSaveFileName(this, tr("Save cloud to ..."), workingDirectory+QDir::separator()+"cloud.ply", extensions);
+		else
+		{
+			path = QFileDialog::getSaveFileName(this, tr("Save cloud to ..."), workingDirectory+QDir::separator()+"cloud.ply", cloudFileFilter());
+		}
 
 		if(!path.isEmpty())
 		{
@@ -4616,6 +4829,37 @@ void ExportCloudsDialog::saveClouds(
 				//use ply by default
 				path += ".ply";
 			}
+
+#ifdef RTABMAP_PDAL
+			PDALGeoreference georef;
+			if(_hasGeoref && _checkBoxGeoref->isChecked())
+			{
+				const QString suffix = QFileInfo(path).suffix().toLower();
+				if(suffix == "las" || suffix == "laz")
+				{
+					if(_georefSrs.isEmpty() && !_georefSrsAsked)
+					{
+						_georefSrsAsked = true;
+						bool ok = false;
+						QString srs = QInputDialog::getText(this, tr("Coordinate reference system"),
+								tr("No CRS is known for the anchor point coordinates (no GeoTIFF base map loaded).\n"
+								   "Enter it (e.g., EPSG:2154), or leave empty to write the LAS/LAZ without a CRS:"),
+								QLineEdit::Normal, "", &ok);
+						if(ok)
+						{
+							_georefSrs = srs.trimmed();
+						}
+					}
+					georef.offsetX = _georefX;
+					georef.offsetY = _georefY;
+					georef.srs = _georefSrs.toStdString();
+				}
+				else
+				{
+					_progressDialog->appendText(tr("Georeferencing is only supported for LAS/LAZ files, ignored for \"%1\".").arg(path), Qt::darkYellow);
+				}
+			}
+#endif
 
 			if(clouds.begin()->second->size())
 			{
@@ -4732,7 +4976,7 @@ void ExportCloudsDialog::saveClouds(
 					if(cloudIWithNormals.get())
 					{
 #ifdef RTABMAP_PDAL
-						success = savePDALFile(path.toStdString(), *cloudIWithNormals, cameraIds, binaryMode) == 0;
+						success = savePDALFile(path.toStdString(), *cloudIWithNormals, cameraIds, binaryMode, georef) == 0;
 #else
 						UERROR("Normals cannot be save with current libLAS implementation, disable normals estimation.");
 						success = false;
@@ -4741,7 +4985,7 @@ void ExportCloudsDialog::saveClouds(
 					else if(cloudIWithoutNormals.get())
 					{
 #ifdef RTABMAP_PDAL
-						success = savePDALFile(path.toStdString(), *cloudIWithoutNormals, cameraIds, binaryMode) == 0;
+						success = savePDALFile(path.toStdString(), *cloudIWithoutNormals, cameraIds, binaryMode, georef) == 0;
 #else
 						success = saveLASFile(path.toStdString(), *cloudIWithoutNormals, cameraIds) == 0;
 #endif
@@ -4749,7 +4993,7 @@ void ExportCloudsDialog::saveClouds(
 					else if(cloudRGBWithoutNormals.get())
 					{
 #ifdef RTABMAP_PDAL
-						success = savePDALFile(path.toStdString(), *cloudRGBWithoutNormals, cameraIds, binaryMode) == 0;
+						success = savePDALFile(path.toStdString(), *cloudRGBWithoutNormals, cameraIds, binaryMode, std::vector<float>(), georef) == 0;
 #else
 						success = saveLASFile(path.toStdString(), *cloudRGBWithoutNormals, cameraIds) == 0;
 #endif
@@ -4757,7 +5001,7 @@ void ExportCloudsDialog::saveClouds(
 					else
 					{
 #ifdef RTABMAP_PDAL
-						success = savePDALFile(path.toStdString(), *clouds.begin()->second, cameraIds, binaryMode) == 0;
+						success = savePDALFile(path.toStdString(), *clouds.begin()->second, cameraIds, binaryMode, std::vector<float>(), georef) == 0;
 #else
 						UERROR("Normals cannot be save with current libLAS implementation, disable normals estimation.");
 						success = false;
@@ -4774,7 +5018,10 @@ void ExportCloudsDialog::saveClouds(
 					_progressDialog->incrementStep();
 					_progressDialog->appendText(tr("Saving the cloud (%1 points)... done.").arg(clouds.begin()->second->size()));
 
-					QMessageBox::information(this, tr("Save successful!"), tr("Cloud saved to \"%1\"").arg(path));
+					if(!tileMode)
+					{
+						QMessageBox::information(this, tr("Save successful!"), tr("Cloud saved to \"%1\"").arg(path));
+					}
 				}
 				else
 				{
@@ -4783,7 +5030,14 @@ void ExportCloudsDialog::saveClouds(
 			}
 			else
 			{
-				QMessageBox::warning(this, tr("Save failed!"), tr("Cloud is empty..."));
+				if(tileMode)
+				{
+					_progressDialog->appendText(tr("Tile is empty, nothing saved."), Qt::darkYellow);
+				}
+				else
+				{
+					QMessageBox::warning(this, tr("Save failed!"), tr("Cloud is empty..."));
+				}
 			}
 		}
 	}

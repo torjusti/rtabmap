@@ -34,6 +34,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QMap>
 #include <QColor>
 #include <QtCore/QSettings>
+#include <set>
+#include <vector>
 
 #include <rtabmap/core/Signature.h>
 #include <rtabmap/core/Parameters.h>
@@ -48,6 +50,7 @@ class Ui_ExportCloudsDialog;
 class QAbstractButton;
 class QCheckBox;
 class QLabel;
+class QSpinBox;
 
 namespace clams {
 class DiscreteDepthDistortionModel;
@@ -75,6 +78,11 @@ public:
 	// Enable the "Add anchor point" context menu action in viewers opened by viewClouds()
 	void setAnchorPointActionEnabled(bool enabled) {_anchorPointsEnabled = enabled;}
 	void forceAssembling(bool enabled);
+	// CRS coordinates of the map origin (map frame + offset = CRS), and the
+	// CRS identifier (e.g., "EPSG:2154", can be empty if unknown). Enables the
+	// georeferenced LAS/LAZ export.
+	void setGeoreference(double offsetX, double offsetY, const QString & srs);
+	void clearGeoreference();
 	void setProgressDialogToMax();
 	void setSaveButton();
 	void setOkButton();
@@ -223,6 +231,34 @@ private:
 	ViewCacheInfo _viewCache;
 	QCheckBox * _checkBoxKeepLocalClouds;
 	QLabel * _labelKeepLocalClouds;
+
+	// Georeferenced LAS/LAZ export
+	bool _hasGeoref;
+	double _georefX;
+	double _georefY;
+	QString _georefSrs;
+	bool _georefSrsAsked;
+	QCheckBox * _checkBoxGeoref;
+	QLabel * _labelGeoref;
+
+	// Export split in tiles, one file per tile (see exportClouds())
+	struct Tile
+	{
+		int ix;
+		int iy;
+		std::set<int> nodes;
+	};
+	QCheckBox * _checkBoxTiles;
+	QSpinBox * _spinBoxTiles;
+	QLabel * _labelTiles;
+	bool _tilingAllowed; // only while exportClouds() runs
+	bool _skipExec;      // the settings dialog was already accepted for the first tile
+	std::vector<Tile> _tiles;
+	int _tileIndex;
+	QString _tileBasePath;
+
+	QString cloudFileFilter() const;
+	bool planTiles(const std::map<int, Transform> & poses, const QString & workingDirectory);
 
     bool saveOBJFile(const QString &path, pcl::TextureMesh::Ptr &mesh) const;
     bool saveOBJFile(const QString &path, pcl::PolygonMesh &mesh) const;

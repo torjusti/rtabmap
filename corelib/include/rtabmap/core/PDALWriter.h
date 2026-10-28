@@ -33,13 +33,28 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 namespace rtabmap {
 
+// Optional georeferencing of the exported coordinates. The offset (e.g., the
+// CRS coordinates of the map origin) is added in double precision, so the
+// cloud can stay in small local coordinates in memory. Only meaningful for
+// LAS/LAZ outputs: the offset is also stored as the header offset, the
+// srs (e.g., "EPSG:2154") as the coordinate reference system.
+struct PDALGeoreference
+{
+	PDALGeoreference() : offsetX(0.0), offsetY(0.0), offsetZ(0.0) {}
+	bool isNull() const {return offsetX==0.0 && offsetY==0.0 && offsetZ==0.0 && srs.empty();}
+	double offsetX;
+	double offsetY;
+	double offsetZ;
+	std::string srs;
+};
+
 std::string getPDALSupportedWriters();
 
-int savePDALFile(const std::string & filePath, const pcl::PointCloud<pcl::PointXYZ> & cloud,          const std::vector<int> & cameraIds = std::vector<int>(), bool binary = false);
-int savePDALFile(const std::string & filePath, const pcl::PointCloud<pcl::PointXYZRGB> & cloud,       const std::vector<int> & cameraIds = std::vector<int>(), bool binary = false, const std::vector<float> & intensities = std::vector<float>());
-int savePDALFile(const std::string & filePath, const pcl::PointCloud<pcl::PointXYZRGBNormal> & cloud, const std::vector<int> & cameraIds = std::vector<int>(), bool binary = false, const std::vector<float> & intensities = std::vector<float>());
-int savePDALFile(const std::string & filePath, const pcl::PointCloud<pcl::PointXYZI> & cloud,         const std::vector<int> & cameraIds = std::vector<int>(), bool binary = false);
-int savePDALFile(const std::string & filePath, const pcl::PointCloud<pcl::PointXYZINormal> & cloud,   const std::vector<int> & cameraIds = std::vector<int>(), bool binary = false);
+int savePDALFile(const std::string & filePath, const pcl::PointCloud<pcl::PointXYZ> & cloud,          const std::vector<int> & cameraIds = std::vector<int>(), bool binary = false, const PDALGeoreference & georef = PDALGeoreference());
+int savePDALFile(const std::string & filePath, const pcl::PointCloud<pcl::PointXYZRGB> & cloud,       const std::vector<int> & cameraIds = std::vector<int>(), bool binary = false, const std::vector<float> & intensities = std::vector<float>(), const PDALGeoreference & georef = PDALGeoreference());
+int savePDALFile(const std::string & filePath, const pcl::PointCloud<pcl::PointXYZRGBNormal> & cloud, const std::vector<int> & cameraIds = std::vector<int>(), bool binary = false, const std::vector<float> & intensities = std::vector<float>(), const PDALGeoreference & georef = PDALGeoreference());
+int savePDALFile(const std::string & filePath, const pcl::PointCloud<pcl::PointXYZI> & cloud,         const std::vector<int> & cameraIds = std::vector<int>(), bool binary = false, const PDALGeoreference & georef = PDALGeoreference());
+int savePDALFile(const std::string & filePath, const pcl::PointCloud<pcl::PointXYZINormal> & cloud,   const std::vector<int> & cameraIds = std::vector<int>(), bool binary = false, const PDALGeoreference & georef = PDALGeoreference());
 
 }
 
