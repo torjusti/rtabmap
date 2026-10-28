@@ -925,6 +925,7 @@
     </widget>
     <addaction name="actionOpen_database"/>
     <addaction name="actionClose_database"/>
+    <addaction name="actionSave_links_and_priors"/>
     <addaction name="separator"/>
     <addaction name="actionDatabase_recovery"/>
     <addaction name="separator"/>
@@ -3904,6 +3905,14 @@
   <action name="actionDatabase_recovery">
    <property name="text">
     <string>Database recovery</string>
+   </property>
+  </action>
+  <action name="actionSave_links_and_priors">
+   <property name="text">
+    <string>Save links and priors</string>
+   </property>
+   <property name="shortcut">
+    <string>Ctrl+Shift+S</string>
    </property>
   </action>
   <action name="actionClose_database">

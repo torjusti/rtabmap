@@ -402,12 +402,14 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 
 	ui_->actionOpen_database->setEnabled(true);
 	ui_->actionClose_database->setEnabled(false);
+	ui_->actionSave_links_and_priors->setEnabled(false);
 
 	// connect actions with custom slots
 	ui_->actionSave_config->setShortcut(QKeySequence::Save);
 	connect(ui_->actionSave_config, SIGNAL(triggered()), this, SLOT(writeSettings()));
 	connect(ui_->actionOpen_database, SIGNAL(triggered()), this, SLOT(openDatabase()));
 	connect(ui_->actionClose_database, SIGNAL(triggered()), this, SLOT(closeDatabase()));
+	connect(ui_->actionSave_links_and_priors, SIGNAL(triggered()), this, SLOT(saveLinksAndPriors()));
 	connect(ui_->actionDatabase_recovery, SIGNAL(triggered()), this, SLOT(recoverDatabase()));
 	connect(ui_->actionExport, SIGNAL(triggered()), this, SLOT(exportDatabase()));
 	exportColmapAction_ = new QAction(tr("Export COLMAP model..."), this);
@@ -1223,48 +1225,11 @@ bool DatabaseViewer::closeDatabase()
 
 			if(button == QMessageBox::Yes)
 			{
-				// Added links
-				for(std::multimap<int, rtabmap::Link>::iterator iter=linksAdded_.begin(); iter!=linksAdded_.end(); ++iter)
-				{
-					std::multimap<int, rtabmap::Link>::iterator refinedIter = rtabmap::graph::findLink(linksRefined_, iter->second.from(), iter->second.to());
-					if(refinedIter != linksRefined_.end())
-					{
-						dbDriver_->addLink(refinedIter->second);
-						// landmark links are stored one-way (node -> landmark)
-						if(refinedIter->second.from() != refinedIter->second.to() && refinedIter->second.type() != Link::kLandmark)
-							dbDriver_->addLink(refinedIter->second.inverse());
-					}
-					else
-					{
-						dbDriver_->addLink(iter->second);
-						if(iter->second.from() != iter->second.to() && iter->second.type() != Link::kLandmark)
-							dbDriver_->addLink(iter->second.inverse());
-					}
-				}
-
-				//Refined links
-				for(std::multimap<int, rtabmap::Link>::iterator iter=linksRefined_.begin(); iter!=linksRefined_.end(); ++iter)
-				{
-					if(!containsLink(linksAdded_, iter->second.from(), iter->second.to()))
-					{
-						dbDriver_->updateLink(iter->second);
-						if(iter->second.from() != iter->second.to() && iter->second.type() != Link::kLandmark)
-							dbDriver_->updateLink(iter->second.inverse());
-					}
-				}
-
-				// Rejected links
-				for(std::multimap<int, rtabmap::Link>::iterator iter=linksRemoved_.begin(); iter!=linksRemoved_.end(); ++iter)
-				{
-					dbDriver_->removeLink(iter->second.to(), iter->second.from());
-					if(iter->second.from() != iter->second.to())
-						dbDriver_->removeLink(iter->second.from(), iter->second.to());
-				}
+				saveLinksToDatabase();
 
 				// re-evaluate with the links that were just saved
 				anchorsInDatabase = false;
-				std::multimap<int, Link> savedLinks = updateLinksWithModifications(links_);
-				for(std::multimap<int, rtabmap::Link>::iterator iter=savedLinks.begin(); iter!=savedLinks.end(); ++iter)
+				for(std::multimap<int, rtabmap::Link>::iterator iter=links_.begin(); iter!=links_.end(); ++iter)
 				{
 					if(iter->second.from() == iter->second.to() &&
 					   iter->second.from() < 0 &&
@@ -1274,20 +1239,6 @@ bool DatabaseViewer::closeDatabase()
 						break;
 					}
 				}
-
-				linksAdded_.clear();
-				linksRefined_.clear();
-				linksRemoved_.clear();
-
-				// Clear the optimized poses, this will force rtabmap to re-optimize the graph on initialization
-				Transform lastLocalizationPose;
-				if(!dbDriver_->loadOptimizedPoses(&lastLocalizationPose).empty())
-				{
-					dbDriver_->saveOptimizedPoses(std::map<int, Transform>(), lastLocalizationPose);
-				}
-				// This will force rtabmap_ros to regenerate the global occupancy grid if there was one
-				dbDriver_->save2DMap(cv::Mat(), 0, 0, 0);
-				dbDriver_->saveOptimizedMesh(cv::Mat());
 			}
 
 			if(button != QMessageBox::Yes && button != QMessageBox::No)
@@ -1587,6 +1538,7 @@ bool DatabaseViewer::closeDatabase()
 	}
 
 	ui_->actionClose_database->setEnabled(dbDriver_ != 0);
+	ui_->actionSave_links_and_priors->setEnabled(dbDriver_ != 0);
 	ui_->actionOpen_database->setEnabled(dbDriver_ == 0);
 
 	return dbDriver_ == 0;
@@ -1619,6 +1571,113 @@ void DatabaseViewer::recoverDatabase()
 			QMessageBox::warning(this, "Database recovery", tr("Database recovery failed: \"%1\".").arg(errorMsg.c_str()));
 		}
 		progressDialog->setValue(progressDialog->maximumSteps());
+	}
+}
+
+void DatabaseViewer::saveLinksToDatabase()
+{
+	if(!dbDriver_)
+	{
+		return;
+	}
+
+	// Added links
+	for(std::multimap<int, rtabmap::Link>::iterator iter=linksAdded_.begin(); iter!=linksAdded_.end(); ++iter)
+	{
+		std::multimap<int, rtabmap::Link>::iterator refinedIter = rtabmap::graph::findLink(linksRefined_, iter->second.from(), iter->second.to());
+		if(refinedIter != linksRefined_.end())
+		{
+			dbDriver_->addLink(refinedIter->second);
+			// landmark links are stored one-way (node -> landmark)
+			if(refinedIter->second.from() != refinedIter->second.to() && refinedIter->second.type() != Link::kLandmark)
+				dbDriver_->addLink(refinedIter->second.inverse());
+		}
+		else
+		{
+			dbDriver_->addLink(iter->second);
+			if(iter->second.from() != iter->second.to() && iter->second.type() != Link::kLandmark)
+				dbDriver_->addLink(iter->second.inverse());
+		}
+	}
+
+	//Refined links
+	for(std::multimap<int, rtabmap::Link>::iterator iter=linksRefined_.begin(); iter!=linksRefined_.end(); ++iter)
+	{
+		if(!containsLink(linksAdded_, iter->second.from(), iter->second.to()))
+		{
+			dbDriver_->updateLink(iter->second);
+			if(iter->second.from() != iter->second.to() && iter->second.type() != Link::kLandmark)
+				dbDriver_->updateLink(iter->second.inverse());
+		}
+	}
+
+	// Rejected links
+	for(std::multimap<int, rtabmap::Link>::iterator iter=linksRemoved_.begin(); iter!=linksRemoved_.end(); ++iter)
+	{
+		dbDriver_->removeLink(iter->second.to(), iter->second.from());
+		if(iter->second.from() != iter->second.to())
+			dbDriver_->removeLink(iter->second.from(), iter->second.to());
+	}
+
+	// What is in the database now becomes the baseline the viewer compares against
+	links_ = updateLinksWithModifications(links_);
+	linksAdded_.clear();
+	linksRefined_.clear();
+	linksRemoved_.clear();
+
+	// Clear the optimized poses, this will force rtabmap to re-optimize the graph on initialization
+	Transform lastLocalizationPose;
+	if(!dbDriver_->loadOptimizedPoses(&lastLocalizationPose).empty())
+	{
+		dbDriver_->saveOptimizedPoses(std::map<int, Transform>(), lastLocalizationPose);
+	}
+	// This will force rtabmap_ros to regenerate the global occupancy grid if there was one
+	dbDriver_->save2DMap(cv::Mat(), 0, 0, 0);
+	dbDriver_->saveOptimizedMesh(cv::Mat());
+}
+
+void DatabaseViewer::saveLinksAndPriors()
+{
+	if(!dbDriver_)
+	{
+		return;
+	}
+	if(graphOptimizationRunning_ || reposeRunning_)
+	{
+		QMessageBox::warning(this, tr("Operation running"),
+				tr("A graph optimization or 3D view update is running, wait for it "
+				   "to finish before saving."));
+		return;
+	}
+
+	const int added = (int)linksAdded_.size();
+	const int refined = (int)linksRefined_.size();
+	const int removed = (int)linksRemoved_.size();
+	if(added || refined || removed)
+	{
+		saveLinksToDatabase();
+	}
+	const bool offsetSaved = anchorFrameOffsetSet_;
+	if(anchorFrameOffsetSet_)
+	{
+		saveAnchorFrameOffset();
+	}
+
+	// links_ now matches the database, refresh what is displayed from it
+	updateNeighborsSlider();
+	updateLoopClosuresSlider();
+	updateAnchorPointsTable();
+	this->updateGraphView();
+
+	if(added || refined || removed || offsetSaved)
+	{
+		QMessageBox::information(this, tr("Saved"),
+				tr("Saved %1 added, %2 refined and %3 removed links to the database.")
+				.arg(added).arg(refined).arg(removed));
+	}
+	else
+	{
+		QMessageBox::information(this, tr("Nothing to save"), tr("There are no modified links or priors."));
 	}
 }
 
@@ -9374,8 +9433,13 @@ void DatabaseViewer::saveAnchorFrameOffset()
 		return;
 	}
 	ParametersMap dbParameters = dbDriver_->getLastParameters();
-	mergeAnchorFrameOffset(dbParameters);
-	dbDriver_->addInfoAfterRun(0, 0, 0, 0, 0, dbParameters);
+	ParametersMap merged = dbParameters;
+	mergeAnchorFrameOffset(merged);
+	if(merged == dbParameters)
+	{
+		return; // already stored, don't add another parameters row
+	}
+	dbDriver_->addInfoAfterRun(0, 0, 0, 0, 0, merged);
 }
 
 bool DatabaseViewer::hasAnchorPriors()

@@ -127,6 +127,7 @@ private Q_SLOTS:
 	void configModified();
 	void openDatabase();
 	bool closeDatabase();
+	void saveLinksAndPriors();
 	void recoverDatabase();
 	void updateInfo();
 	void updateStatistics();
@@ -280,6 +281,7 @@ private:
 	static cv::Mat makeAnchorObservationInfMatrix(double sigmaXY);
 	void loadAnchorFrameOffset(const ParametersMap & parameters);
 	void saveAnchorFrameOffset();
+	void saveLinksToDatabase();
 	void mergeAnchorFrameOffset(ParametersMap & parameters) const;
 	bool hasAnchorPriors();
 	// Convert pasted/edited CRS coordinates into the map frame (metres from
