@@ -72,12 +72,34 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "vertigo/gtsam/betweenFactorSwitchable.h"
 #include "vertigo/gtsam/switchVariableLinear.h"
 #endif
+
+#ifdef GTSAM_USE_TBB
+// Same include path as GTSAM's own TBB headers, so both come from one TBB install
+#if __has_include(<tbb/global_control.h>)
+#include <tbb/global_control.h>
+#define RTABMAP_GTSAM_TBB_STACK
+#elif __has_include(<oneapi/tbb/global_control.h>)
+#include <oneapi/tbb/global_control.h>
+#define RTABMAP_GTSAM_TBB_STACK
+#endif
+#endif
 #endif // end RTABMAP_GTSAM
 
 namespace rtabmap {
 
 #ifdef RTABMAP_GTSAM
 namespace {
+
+#ifdef RTABMAP_GTSAM_TBB_STACK
+// GTSAM eliminates the factor graph on TBB worker threads, recursing once per
+// level of the elimination tree. A long trajectory makes that tree deep (about
+// 24k nested frames on a 340k-node map), which overflows TBB's default 4 MB
+// worker stack and segfaults. Raise it when the library loads: TBB only applies
+// the size to workers created afterwards, and other libraries (e.g. OpenCV) may
+// start workers before the first optimization. TBB keeps the largest requested
+// value, so this never lowers a size set by the application.
+const tbb::global_control gtsamWorkerStackSize(tbb::global_control::thread_stack_size, 16 * 1024 * 1024);
+#endif
 
 // Anchor observations are written with the same variance on x, y and z.
 // Marker detections that ignore orientation are not: X/Y carry the bearing
