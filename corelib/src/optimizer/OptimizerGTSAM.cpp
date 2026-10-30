@@ -55,6 +55,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <gtsam/nonlinear/NonlinearFactorGraph.h>
 #include <gtsam/nonlinear/GaussNewtonOptimizer.h>
 #include <gtsam/nonlinear/DoglegOptimizer.h>
+#include <gtsam/nonlinear/DoglegOptimizerImpl.h>
+#include <gtsam/nonlinear/internal/NonlinearOptimizerState.h>
+#include <gtsam/linear/GaussianBayesTree.h>
 #include <gtsam/nonlinear/LevenbergMarquardtOptimizer.h>
 #include <gtsam/linear/PCGSolver.h>
 #include <gtsam/linear/Preconditioner.h>
@@ -89,6 +92,84 @@ namespace rtabmap {
 
 #ifdef RTABMAP_GTSAM
 namespace {
+
+// GTSAM's DoglegOptimizer reduces its trust region radius by halves until a step lowers the
+// error. Every radius larger than the Gauss-Newton step gives that very same step, so when
+// the full Gauss-Newton step overshoots (an unsettled warm start), starting from a large radius
+// costs a dozen identical, rejected trials, each a retraction and an error evaluation over the
+// whole graph (~1 s on 340k poses). This variant is the same algorithm but starts each
+// iteration from at most 3 times the length of the Gauss-Newton step: a good step is still
+// taken whole at the first trial (the radius is not reduced), a rejected one costs 3 trials.
+struct ClippedDoglegState : public gtsam::internal::NonlinearOptimizerState
+{
+	ClippedDoglegState(const gtsam::Values & values, double error, double delta, bool fullStep, size_t iterations = 0) :
+		gtsam::internal::NonlinearOptimizerState(values, error, iterations),
+		delta(delta),
+		fullStep(fullStep) {}
+	const double delta;    // trust region radius
+	const bool fullStep;   // the last iteration did not have to reduce the radius
+};
+
+class ClippedDoglegOptimizer : public gtsam::NonlinearOptimizer
+{
+public:
+	ClippedDoglegOptimizer(const gtsam::NonlinearFactorGraph & graph, const gtsam::Values & initialValues, const gtsam::DoglegParams & params) :
+		gtsam::NonlinearOptimizer(graph, std::unique_ptr<gtsam::internal::NonlinearOptimizerState>(
+				new ClippedDoglegState(initialValues, graph.error(initialValues), params.deltaInitial, true))),
+		params_(params) {}
+
+	double getDelta() const {return static_cast<const ClippedDoglegState &>(*state_).delta;}
+	bool lastStepWasFull() const {return static_cast<const ClippedDoglegState &>(*state_).fullStep;}
+
+	gtsam::GaussianFactorGraph::shared_ptr iterate() override
+	{
+		const ClippedDoglegState & s = static_cast<const ClippedDoglegState &>(*state_);
+		gtsam::GaussianFactorGraph::shared_ptr linear = graph_.linearize(s.values);
+		gtsam::GaussianBayesTree bt = *linear->eliminateMultifrontal();
+		const gtsam::VectorValues dx_n = bt.optimize();
+		const gtsam::VectorValues dx_u = bt.optimizeGradientSearch();
+
+		double delta = s.delta;
+		const double newtonNorm = dx_n.norm();
+		if(newtonNorm > 1e-9 && delta > 3.0*newtonNorm)
+		{
+			delta = 3.0*newtonNorm;
+		}
+		const gtsam::DoglegOptimizerImpl::IterationResult result = gtsam::DoglegOptimizerImpl::Iterate(
+				delta, gtsam::DoglegOptimizerImpl::SEARCH_EACH_ITERATION, dx_u, dx_n, bt, graph_, s.values, s.error, false);
+
+		gtsam::Values newValues = s.values.retract(result.dx_d);
+		const size_t iterations = s.iterations + 1;
+		state_.reset(new ClippedDoglegState(newValues, result.f_error, result.delta, result.delta >= delta, iterations));
+		return linear;
+	}
+
+protected:
+	const gtsam::NonlinearOptimizerParams & _params() const override {return params_;}
+
+private:
+	gtsam::DoglegParams params_;
+};
+
+// Trust region radius of a Dogleg optimizer, and whether its last iteration had to reduce it.
+bool doglegState(const gtsam::NonlinearOptimizer * optimizer, double & radius, bool & lastStepFull)
+{
+	const ClippedDoglegOptimizer * clipped = dynamic_cast<const ClippedDoglegOptimizer *>(optimizer);
+	if(clipped)
+	{
+		radius = clipped->getDelta();
+		lastStepFull = clipped->lastStepWasFull();
+		return true;
+	}
+	const gtsam::DoglegOptimizer * dogleg = dynamic_cast<const gtsam::DoglegOptimizer *>(optimizer);
+	if(dogleg)
+	{
+		radius = dogleg->getDelta();
+		lastStepFull = radius >= 0.99e6;
+		return true;
+	}
+	return false;
+}
 
 #ifdef RTABMAP_GTSAM_TBB_STACK
 // GTSAM eliminates the factor graph on TBB worker threads, recursing once per
@@ -974,7 +1055,7 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 				// the first step is a full Gauss-Newton one; Dogleg still shrinks the
 				// region by itself when a step does not decrease the error.
 				parameters.deltaInitial = 1e6;
-				optimizer = new gtsam::DoglegOptimizer(graph, initialEstimate, parameters);
+				optimizer = new ClippedDoglegOptimizer(graph, initialEstimate, parameters);
 			}
 			else if(internalOptimizerType_ == 1)
 			{
@@ -1220,10 +1301,10 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 				// correction of a few metres across a long trajectory does not
 				// fit until delta has grown. While it does not, the step is
 				// steepest descent.
-				const gtsam::DoglegOptimizer * dogleg =
-						dynamic_cast<const gtsam::DoglegOptimizer *>(optimizer);
-				UINFO("iteration %d error =%f doglegDelta=%f", i+1, error,
-						dogleg ? dogleg->getDelta() : -1.0);
+				double radius = -1.0;
+				bool lastStepFull = false;
+				doglegState(optimizer, radius, lastStepFull);
+				UINFO("iteration %d error =%f doglegDelta=%f", i+1, error, radius);
 			}
 			else
 			{
@@ -1294,8 +1375,9 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 				{
 					smallImprovements = 0;
 				}
-				const gtsam::DoglegOptimizer * doglegOpt = dynamic_cast<const gtsam::DoglegOptimizer *>(optimizer);
-				const bool fullSteps = doglegOpt && doglegOpt->getDelta() >= 0.99e6;
+				double doglegRadius = 0.0;
+				bool fullSteps = false;
+				doglegState(optimizer, doglegRadius, fullSteps);
 				if(trackBest && haveBest && worseCount >= 3)
 				{
 					UINFO("Stop optimizing, the error went up in %d iterations since its best value (%f): keeping that estimate.", worseCount, bestError);
