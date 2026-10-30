@@ -4988,6 +4988,39 @@ void DatabaseViewer::registerMapViewer(CloudViewer * viewer, bool fromFile)
 	}
 }
 
+namespace {
+
+// Runs fn(begin, end) on contiguous chunks of [0, n), one chunk per core when n is large enough
+// to be worth the threads.
+template<typename Fn>
+void parallelChunks(size_t n, Fn fn)
+{
+	const size_t workers = std::max<size_t>(1, std::min<size_t>(std::thread::hardware_concurrency(), n/50000 + 1));
+	if(workers <= 1)
+	{
+		fn((size_t)0, n);
+		return;
+	}
+	const size_t chunk = (n + workers - 1) / workers;
+	std::vector<std::thread> pool;
+	pool.reserve(workers);
+	for(size_t w=0; w<workers; ++w)
+	{
+		const size_t begin = w * chunk;
+		const size_t end = std::min(n, begin + chunk);
+		if(begin < end)
+		{
+			pool.push_back(std::thread(fn, begin, end));
+		}
+	}
+	for(size_t w=0; w<pool.size(); ++w)
+	{
+		pool[w].join();
+	}
+}
+
+} // namespace
+
 bool DatabaseViewer::reposeMapViewers(const std::map<int, Transform> & poses)
 {
 	if(reposeRunning_)
@@ -5097,6 +5130,8 @@ bool DatabaseViewer::reposeMapViewers(const std::map<int, Transform> & poses)
 			QEventLoop waitLoop;
 			std::thread assembleThread([&]()
 			{
+					std::vector<std::pair<pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr, Transform> > toMerge;
+					toMerge.reserve(localClouds.size());
 				for(std::map<int, pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr>::const_iterator jter=localClouds.begin();
 					jter!=localClouds.end(); ++jter)
 				{
@@ -5116,9 +5151,11 @@ bool DatabaseViewer::reposeMapViewers(const std::map<int, Transform> & poses)
 						}
 						pose = gter->second;
 					}
-					*merged += *util3d::transformPointCloud(jter->second, pose);
-					++used;
-				}
+						toMerge.push_back(std::make_pair(jter->second, pose));
+					}
+					// Transform every node cloud straight into one pre-sized cloud, in parallel.
+					merged = util3d::transformAndMergePointClouds(toMerge);
+					used = (int)toMerge.size();
 				if(used && !merged->empty() && useIntensity)
 				{
 					// Same conversion as when the view was created: scans
@@ -5127,45 +5164,52 @@ bool DatabaseViewer::reposeMapViewers(const std::map<int, Transform> & poses)
 					{
 						mergedINormal.reset(new pcl::PointCloud<pcl::PointXYZINormal>);
 						mergedINormal->resize(merged->size());
-						for(unsigned int j=0; j<mergedINormal->size(); ++j)
-						{
-							mergedINormal->points[j].x = merged->points[j].x;
-							mergedINormal->points[j].y = merged->points[j].y;
-							mergedINormal->points[j].z = merged->points[j].z;
-							mergedINormal->points[j].normal_x = merged->points[j].normal_x;
-							mergedINormal->points[j].normal_y = merged->points[j].normal_y;
-							mergedINormal->points[j].normal_z = merged->points[j].normal_z;
-							mergedINormal->points[j].curvature = merged->points[j].curvature;
-							int * intensity = (int *)&mergedINormal->points[j].intensity;
-							*intensity =
-									int(merged->points[j].r) |
-									int(merged->points[j].g) << 8 |
-									int(merged->points[j].b) << 16 |
-									int(merged->points[j].a) << 24;
-						}
+							parallelChunks(mergedINormal->size(), [&](size_t jBegin, size_t jEnd)
+							{
+								for(size_t j=jBegin; j<jEnd; ++j)
+								{
+								mergedINormal->points[j].x = merged->points[j].x;
+								mergedINormal->points[j].y = merged->points[j].y;
+								mergedINormal->points[j].z = merged->points[j].z;
+								mergedINormal->points[j].normal_x = merged->points[j].normal_x;
+								mergedINormal->points[j].normal_y = merged->points[j].normal_y;
+								mergedINormal->points[j].normal_z = merged->points[j].normal_z;
+								mergedINormal->points[j].curvature = merged->points[j].curvature;
+								int * intensity = (int *)&mergedINormal->points[j].intensity;
+								*intensity =
+										int(merged->points[j].r) |
+										int(merged->points[j].g) << 8 |
+										int(merged->points[j].b) << 16 |
+										int(merged->points[j].a) << 24;
+								}
+							});
 					}
 					else
 					{
 						mergedI.reset(new pcl::PointCloud<pcl::PointXYZI>);
 						mergedI->resize(merged->size());
-						for(unsigned int j=0; j<mergedI->size(); ++j)
-						{
-							mergedI->points[j].x = merged->points[j].x;
-							mergedI->points[j].y = merged->points[j].y;
-							mergedI->points[j].z = merged->points[j].z;
-							int * intensity = (int *)&mergedI->points[j].intensity;
-							*intensity =
-									int(merged->points[j].r) |
-									int(merged->points[j].g) << 8 |
-									int(merged->points[j].b) << 16 |
-									int(merged->points[j].a) << 24;
-						}
+							parallelChunks(mergedI->size(), [&](size_t jBegin, size_t jEnd)
+							{
+								for(size_t j=jBegin; j<jEnd; ++j)
+								{
+								mergedI->points[j].x = merged->points[j].x;
+								mergedI->points[j].y = merged->points[j].y;
+								mergedI->points[j].z = merged->points[j].z;
+								int * intensity = (int *)&mergedI->points[j].intensity;
+								*intensity =
+										int(merged->points[j].r) |
+										int(merged->points[j].g) << 8 |
+										int(merged->points[j].b) << 16 |
+										int(merged->points[j].a) << 24;
+								}
+							});
 					}
 				}
 				QMetaObject::invokeMethod(&waitLoop, "quit", Qt::QueuedConnection);
 			});
 			waitLoop.exec();
 			assembleThread.join();
+			const double assembled = timer.elapsed();
 
 			if(used && !merged->empty() && viewerPtr)
 			{
@@ -5189,8 +5233,8 @@ bool DatabaseViewer::reposeMapViewers(const std::map<int, Transform> & poses)
 				// event loop; indices stay valid (windows are only pruned at
 				// the top of this function and the guard prevents re-entry).
 				mapViewers_[i].lastReposedPoses = poses;
-				UINFO("3D map view: re-assembled %d node clouds (%d points) in %.1fs.",
-						used, (int)merged->size(), timer.elapsed());
+				UINFO("3D map view: re-assembled %d node clouds (%d points) in %.1fs, then %.1fs to hand them to the view (total %.1fs).",
+						used, (int)merged->size(), assembled, timer.elapsed()-assembled, timer.elapsed());
 			}
 		}
 		else if(!assembledClouds.empty() || assembledMeshFound)
