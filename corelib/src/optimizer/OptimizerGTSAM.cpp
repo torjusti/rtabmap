@@ -968,6 +968,12 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 				gtsam::DoglegParams parameters;
 				parameters.relativeErrorTol = epsilon();
 				parameters.maxIterations = iterations();
+				// The default initial trust region (1) is the norm of all pose
+				// tangents stacked together: on a large graph it is far below the
+				// Gauss-Newton step and takes ~10 iterations to grow. Start wide so
+				// the first step is a full Gauss-Newton one; Dogleg still shrinks the
+				// region by itself when a step does not decrease the error.
+				parameters.deltaInitial = 1e6;
 				optimizer = new gtsam::DoglegOptimizer(graph, initialEstimate, parameters);
 			}
 			else if(internalOptimizerType_ == 1)
@@ -1183,7 +1189,12 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 			}
 			else
 			{
-				if((isam2_ || i>0) && errorDelta < this->epsilon())
+				// Batch mode: epsilon is an absolute error, which on a graph with
+				// hundreds of thousands of nodes is reached long after the poses
+				// stopped moving. Also stop when the error improves by less than
+				// 0.5% between two iterations.
+				const double stopDelta = isam2_ ? this->epsilon() : std::max(this->epsilon(), 5e-3 * lastError);
+				if((isam2_ || i>0) && errorDelta < stopDelta)
 				{
 					if(errorDelta < 0)
 					{
