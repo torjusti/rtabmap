@@ -999,6 +999,7 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 		UDEBUG("GTSAM optimizing begin (max iterations=%d, robust=%d)", iterations(), isRobust()?1:0);
 		UTimer timer;
 		int it = 0;
+		int smallImprovements = 0;
 		double initialError = optimizer?graph.error(initialEstimate):0;
 		double lastError = optimizer?optimizer->error():0;
 		for(int i=0; i<iterations(); ++i)
@@ -1192,9 +1193,21 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 				// Batch mode: epsilon is an absolute error, which on a graph with
 				// hundreds of thousands of nodes is reached long after the poses
 				// stopped moving. Also stop when the error improves by less than
-				// 0.5% between two iterations.
-				const double stopDelta = isam2_ ? this->epsilon() : std::max(this->epsilon(), 5e-3 * lastError);
-				if((isam2_ || i>0) && errorDelta < stopDelta)
+				// 0.5% in two consecutive iterations: one small improvement is not
+				// enough, a trust region cut down far from the solution also gives
+				// small steps. It is enough when Dogleg still takes full
+				// Gauss-Newton steps (its trust region never had to shrink).
+				if(!isam2_ && errorDelta >= 0 && errorDelta < 5e-3 * lastError)
+				{
+					++smallImprovements;
+				}
+				else
+				{
+					smallImprovements = 0;
+				}
+				const gtsam::DoglegOptimizer * doglegOpt = dynamic_cast<const gtsam::DoglegOptimizer *>(optimizer);
+				const bool fullSteps = doglegOpt && doglegOpt->getDelta() >= 0.99e6;
+				if((isam2_ || i>0) && (errorDelta < this->epsilon() || smallImprovements >= (fullSteps?1:2)))
 				{
 					if(errorDelta < 0)
 					{
@@ -1203,6 +1216,7 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 					else
 					{
 						UDEBUG("Stop optimizing, not enough improvement (%f < %f)", errorDelta, this->epsilon());
+						lastError = error; // the final error is the one of the last iteration
 						break;
 					}
 				}
