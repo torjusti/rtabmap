@@ -35,6 +35,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <pcl/pcl_base.h>
 #include <rtabmap/core/Transform.h>
 #include <rtabmap/core/LaserScan.h>
+#include <utility>
+#include <vector>
 
 namespace rtabmap
 {
@@ -113,6 +115,21 @@ pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr RTABMAP_CORE_EXPORT transformPointC
 pcl::PointCloud<pcl::PointXYZINormal>::Ptr RTABMAP_CORE_EXPORT transformPointCloud(
 		const pcl::PointCloud<pcl::PointXYZINormal>::Ptr & cloud,
 		const Transform & transform);
+/**
+ * @brief Transforms each `pcl::PointXYZRGBNormal` cloud by its own transform and concatenates
+ * them, in the order given.
+ *
+ * Same result as appending the transformPointCloud() of every cloud one after the other, but
+ * the output is allocated once and written directly (no temporary copy per cloud), and the
+ * clouds are transformed in parallel. Re-assembling a map of tens of millions of points from
+ * per-node clouds after the poses changed is where that matters.
+ * @param clouds Clouds and the transform to apply to each. Null clouds are skipped.
+ * @param threads Number of threads, 0 for one per core.
+ * @return The merged cloud (unorganized). It is dense only if every input cloud is.
+ */
+pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr RTABMAP_CORE_EXPORT transformAndMergePointClouds(
+		const std::vector<std::pair<pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr, Transform> > & clouds,
+		unsigned int threads = 0);
 
 /** @brief Transforms `pcl::PointXYZ` point cloud type with specified indices. */
 pcl::PointCloud<pcl::PointXYZ>::Ptr RTABMAP_CORE_EXPORT transformPointCloud(

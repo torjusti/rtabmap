@@ -29,6 +29,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <pcl/common/transforms.h>
 #include <rtabmap/utilite/ULogger.h>
+#include <algorithm>
+#include <atomic>
+#include <thread>
 
 namespace rtabmap
 {
@@ -158,6 +161,83 @@ pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr transformPointCloud(
 		pcl::transformPointCloudWithNormals(*cloud, *output, transform.toEigen4f());
 	}
 	return output;
+}
+pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr transformAndMergePointClouds(
+		const std::vector<std::pair<pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr, Transform> > & clouds,
+		unsigned int threads)
+{
+	pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr merged(new pcl::PointCloud<pcl::PointXYZRGBNormal>);
+
+	// Where each cloud lands in the output.
+	std::vector<size_t> offsets(clouds.size()+1, 0);
+	bool dense = true;
+	for(size_t i=0; i<clouds.size(); ++i)
+	{
+		const pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr & cloud = clouds[i].first;
+		offsets[i+1] = offsets[i] + (cloud ? cloud->size() : 0);
+		if(cloud)
+		{
+			dense = dense && cloud->is_dense;
+		}
+	}
+	merged->resize(offsets.back());
+	merged->is_dense = dense;
+
+	// Same arithmetic as pcl::transformPointCloudWithNormals(): the rotation and the
+	// translation apply to the position, the rotation alone to the normal.
+	auto transformOne = [&](size_t i)
+	{
+		const pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr & cloud = clouds[i].first;
+		if(!cloud || cloud->empty())
+		{
+			return;
+		}
+		const Eigen::Matrix4f m = clouds[i].second.toEigen4f();
+		pcl::PointXYZRGBNormal * out = merged->points.data() + offsets[i];
+		for(size_t k=0; k<cloud->size(); ++k)
+		{
+			const pcl::PointXYZRGBNormal & p = cloud->points[k];
+			pcl::PointXYZRGBNormal & o = out[k];
+			o = p; // keeps color and curvature
+			o.x = m(0,0)*p.x + m(0,1)*p.y + m(0,2)*p.z + m(0,3);
+			o.y = m(1,0)*p.x + m(1,1)*p.y + m(1,2)*p.z + m(1,3);
+			o.z = m(2,0)*p.x + m(2,1)*p.y + m(2,2)*p.z + m(2,3);
+			o.normal_x = m(0,0)*p.normal_x + m(0,1)*p.normal_y + m(0,2)*p.normal_z;
+			o.normal_y = m(1,0)*p.normal_x + m(1,1)*p.normal_y + m(1,2)*p.normal_z;
+			o.normal_z = m(2,0)*p.normal_x + m(2,1)*p.normal_y + m(2,2)*p.normal_z;
+		}
+	};
+
+	size_t workers = threads > 0 ? threads : std::max(1u, std::thread::hardware_concurrency());
+	workers = std::min(workers, clouds.size());
+	if(workers <= 1)
+	{
+		for(size_t i=0; i<clouds.size(); ++i)
+		{
+			transformOne(i);
+		}
+	}
+	else
+	{
+		std::atomic<size_t> next(0);
+		std::vector<std::thread> pool;
+		pool.reserve(workers);
+		for(size_t w=0; w<workers; ++w)
+		{
+			pool.push_back(std::thread([&]()
+			{
+				for(size_t i=next.fetch_add(1); i<clouds.size(); i=next.fetch_add(1))
+				{
+					transformOne(i);
+				}
+			}));
+		}
+		for(size_t w=0; w<pool.size(); ++w)
+		{
+			pool[w].join();
+		}
+	}
+	return merged;
 }
 pcl::PointCloud<pcl::PointXYZINormal>::Ptr transformPointCloud(
 		const pcl::PointCloud<pcl::PointXYZINormal>::Ptr & cloud,
