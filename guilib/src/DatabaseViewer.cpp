@@ -76,6 +76,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <QtCore/QFile>
 #include <QtCore/QStandardPaths>
 #include <QThread>
+#include <QStatusBar>
 #include <rtabmap/utilite/ULogger.h>
 #include <rtabmap/utilite/UDirectory.h>
 #include <rtabmap/utilite/UConversion.h>
@@ -1006,7 +1007,8 @@ void DatabaseViewer::restoreDefaultSettings()
 	ui_->checkBox_ignoreUserLoop->setChecked(false);
 	ui_->checkBox_ignoreLandmarks->setChecked(false);
 	ui_->checkBox_liveOptimization->setChecked(true);
-	ui_->checkBox_startFromCurrentGraph->setChecked(false);
+	ui_->checkBox_startFromCurrentGraph->setChecked(true);
+	ui_->checkBox_quickPreview->setChecked(false);
 	ui_->doubleSpinBox_optimizationScale->setValue(1.0);
 	ui_->doubleSpinBox_gainCompensationRadius->setValue(0.0);
 	ui_->doubleSpinBox_voxelSize->setValue(0.0);
@@ -12342,7 +12344,10 @@ void DatabaseViewer::updateGraphViewInternal(bool force)
 		// Not used with the rotation (it is applied to an optimized graph) nor with the
 		// optimized graph of the database.
 		bool warmStartApplied = false;
-		if(ui_->checkBox_startFromCurrentGraph->isChecked() &&
+		// Automatic optimizations (not the Optimize button) can be a quick preview: one
+		// iteration from the current graph, which therefore has to be the starting point.
+		const bool quickPreview = !force && ui_->checkBox_quickPreview->isChecked();
+		if((ui_->checkBox_startFromCurrentGraph->isChecked() || quickPreview) &&
 		   !applyRotation &&
 		   ui_->comboBox_optimizationFlavor->currentIndex() != 2)
 		{
@@ -12403,6 +12408,37 @@ void DatabaseViewer::updateGraphViewInternal(bool force)
 			}
 
 			graphes_.push_back(poses);
+
+			if(quickPreview && warmStartApplied)
+			{
+				// One iteration is enough to follow a change when starting from a converged graph
+				// (Dogleg then keeps the step safe), a full run is not worth waiting for.
+				parameters[Parameters::kOptimizerIterations()] = "1";
+				UINFO("Quick preview: one optimization iteration from the current graph.");
+				statusBar()->showMessage(tr("Quick preview: one iteration from the previous graph. Click Optimize (or press F5) to converge."));
+			}
+			else
+			{
+				statusBar()->clearMessage();
+				if(force)
+				{
+					// The Optimize button is where the user asks for a converged graph: unless a
+					// movement threshold is set, stop when no pose moves more than 10 cm / 1 degree
+					// instead of when the error stops changing (which leaves long weakly
+					// constrained stretches unsettled). Only the GTSAM batch optimizer uses it.
+					double stopTranslation = Parameters::defaultOptimizerStopTranslation();
+					double stopRotation = Parameters::defaultOptimizerStopRotation();
+					Parameters::parse(parameters, Parameters::kOptimizerStopTranslation(), stopTranslation);
+					Parameters::parse(parameters, Parameters::kOptimizerStopRotation(), stopRotation);
+					if(stopTranslation <= 0.0 && stopRotation <= 0.0)
+					{
+						parameters[Parameters::kOptimizerStopTranslation()] = "0.1";
+						parameters[Parameters::kOptimizerStopRotation()] = "1";
+						UINFO("Optimize: stopping when no pose moves more than 0.1 m / 1 deg between iterations (set %s or %s to change).",
+								Parameters::kOptimizerStopTranslation().c_str(), Parameters::kOptimizerStopRotation().c_str());
+					}
+				}
+			}
 
 			Optimizer * optimizer = Optimizer::create(parameters);
 
