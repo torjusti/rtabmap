@@ -222,6 +222,7 @@ private:
 	void readSettings();
 
 	void updateIds();
+	void loadWmStates();
 	void update(int value,
 				QSpinBox * spinBoxIndex,
 				QLabel * labelParents,
@@ -324,6 +325,7 @@ private:
 	std::map<int, int> mapIds_;
 	std::map<int, int> weights_;
 	std::map<int, std::vector<int> > wmStates_;
+	bool wmStatesLoaded_; // wmStates_ is read from the database on first use (it scans the whole Statistics table)
 	std::map<int, EnvSensors> envSensors_;
 	QMap<int, int> idToIndex_;
 	QList<rtabmap::Link> neighborLinks_;

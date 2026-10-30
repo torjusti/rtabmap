@@ -201,6 +201,7 @@ DatabaseViewer::DatabaseViewer(const QString & ini, QWidget * parent) :
 	assembledViewerHintShown_(false),
 	graphOptimizationRunning_(false),
 	reposeRunning_(false),
+	wmStatesLoaded_(false),
 	runningOptimizer_(0),
 	optimizeRestartPending_(false),
 	savedMaximized_(false),
@@ -1415,6 +1416,7 @@ bool DatabaseViewer::closeDatabase()
 		weights_.clear();
 		envSensors_.clear();
 		wmStates_.clear();
+		wmStatesLoaded_ = false;
 		links_.clear();
 		linksAdded_.clear();
 		linksRefined_.clear();
@@ -2221,6 +2223,27 @@ void DatabaseViewer::extractImages()
 	}
 }
 
+void DatabaseViewer::loadWmStates()
+{
+	if(wmStatesLoaded_ || !dbDriver_)
+	{
+		return;
+	}
+	wmStatesLoaded_ = true;
+	QApplication::setOverrideCursor(Qt::WaitCursor);
+	UINFO("Loading working memory states...");
+	const std::map<int, std::vector<int> > wmStates = dbDriver_->getAllStatisticsWmStates();
+	wmStates_.clear();
+	for(std::map<int, std::vector<int> >::const_iterator iter=wmStates.begin(); iter!=wmStates.end(); ++iter)
+	{
+		if(idToIndex_.contains(iter->first))
+		{
+			wmStates_.insert(*iter);
+		}
+	}
+	QApplication::restoreOverrideCursor();
+}
+
 void DatabaseViewer::updateIds()
 {
 	if(!dbDriver_)
@@ -2267,6 +2290,7 @@ void DatabaseViewer::updateIds()
 	weights_.clear();
 	envSensors_.clear();
 	wmStates_.clear();
+	wmStatesLoaded_ = false;
 	odomPoses_.clear();
 	groundTruthPoses_.clear();
 	gpsPoses_.clear();
@@ -2354,7 +2378,7 @@ void DatabaseViewer::updateIds()
 	infoTotalTime_ = 0.0;
 	double previousStamp = 0.0;
 	infoReducedGraph_ = false;
-	std::map<int, std::vector<int> > wmStates = dbDriver_->getAllStatisticsWmStates();
+	// The working memory states are loaded when first needed, see loadWmStates().
 
 	progressDialog->appendText("Loading Working Memory state... done!");
 	progressDialog->incrementStep();
@@ -2362,6 +2386,10 @@ void DatabaseViewer::updateIds()
 	QApplication::processEvents();
 	uSleep(100);
 	QApplication::processEvents();
+
+	// One pass over the Node table: a query per node costs ~1 ms each on a
+	// network or Windows drive (6 min for 340k nodes) versus ~2 s in one pass.
+	const std::map<int, DBDriver::NodeInfo> nodeInfos = dbDriver_->getAllNodeInfos();
 
 	lastValidNodeId_ = 0;
 	for(int i=0; i<ids_.size(); ++i)
@@ -2376,7 +2404,23 @@ void DatabaseViewer::updateIds()
 		std::vector<float> v;
 		GPS gps;
 		EnvSensors sensors;
-		dbDriver_->getNodeInfo(ids_[i], p, mapId, w, l, s, g, v, gps, sensors);
+		std::map<int, DBDriver::NodeInfo>::const_iterator infoIter = nodeInfos.find(ids_[i]);
+		if(infoIter != nodeInfos.end())
+		{
+			p = infoIter->second.pose;
+			mapId = infoIter->second.mapId;
+			w = infoIter->second.weight;
+			l = infoIter->second.label;
+			s = infoIter->second.stamp;
+			g = infoIter->second.groundTruthPose;
+			v = infoIter->second.velocity;
+			gps = infoIter->second.gps;
+			sensors = infoIter->second.sensors;
+		}
+		else
+		{
+			dbDriver_->getNodeInfo(ids_[i], p, mapId, w, l, s, g, v, gps, sensors);
+		}
 		mapIds_.insert(std::make_pair(ids_[i], mapId));
 		weights_.insert(std::make_pair(ids_[i], w));
 		envSensors_.insert(std::make_pair(ids_[i], sensors));
@@ -2390,10 +2434,6 @@ void DatabaseViewer::updateIds()
 					lastValidNodeId_ = ids_[i];
 				}
 			}
-		}
-		if(wmStates.find(ids_[i]) != wmStates.end())
-		{
-			wmStates_.insert(std::make_pair(ids_[i], wmStates.at(ids_[i])));
 		}
 		if(w < 0)
 		{
@@ -2485,7 +2525,8 @@ void DatabaseViewer::updateIds()
 		}
 	}
 
-	ui_->checkBox_wmState->setVisible(!wmStates_.empty() || !lastWmIds_.empty());
+	// Whether states are saved is only known after reading them, shown anyway.
+	ui_->checkBox_wmState->setVisible(true);
 
 	progressDialog->appendText("Loading info for all nodes... done!");
 	progressDialog->incrementStep();
@@ -2656,8 +2697,10 @@ void DatabaseViewer::updateIds()
 		ui_->horizontalSlider_B->setEnabled(true);
 		ui_->horizontalSlider_A->setSliderPosition(0);
 		ui_->horizontalSlider_B->setSliderPosition(0);
+		UINFO("Loading first nodes A and B...");
 		sliderAValueChanged(0);
 		sliderBValueChanged(0);
+		UINFO("Loading first nodes A and B... done");
 	}
 	else
 	{
@@ -2673,8 +2716,10 @@ void DatabaseViewer::updateIds()
 
 	if(ids_.size())
 	{
+		UINFO("Updating neighbors and loop closures sliders...");
 		updateNeighborsSlider();
 		updateLoopClosuresSlider();
+		UINFO("Updating neighbors and loop closures sliders... done");
 		if(ui_->graphViewer->isVisible() || ui_->dockWidget_occupancyGridView->isVisible())
 		{
 			progressDialog->appendText("Updating Graph View...");
@@ -11221,11 +11266,36 @@ void DatabaseViewer::sliderIterationsValueChanged(int value)
 		delete octomap_;
 		octomap_ = 0;
 #endif
-		if(ui_->dockWidget_graphView->isVisible() || ui_->dockWidget_occupancyGridView->isVisible())
+		// Only needed to draw the grid map below. Loading them is one database
+		// query per filtered node (~100 s for 80k nodes on a Windows drive, even
+		// when the database has no grids), so skip it when no grid is shown.
+		// Showing the grid map requests an update (mapShownRequested).
+		if(ui_->graphViewer->isGridMapVisible() || ui_->dockWidget_occupancyGridView->isVisible())
 		{
 			//update scans
 			UINFO("Update local maps list...");
 			std::vector<int> ids = uKeys(graphFiltered);
+			// A database made without saved grids answers nothing for every node,
+			// at one query each: look at ~100 evenly spaced nodes before asking all.
+			bool queryNodes = true;
+			if(ids.size() > 200 && generatedLocalMaps_.empty())
+			{
+				queryNodes = false;
+				const size_t step = ids.size()/100;
+				for(size_t k=0; k<ids.size() && !queryNodes; k+=step)
+				{
+					if(ids[k] > 0)
+					{
+						SensorData probe;
+						dbDriver_->getNodeData(ids[k], probe, false, false, false);
+						queryNodes = probe.gridCellSize() > 0.0f;
+					}
+				}
+				if(!queryNodes)
+				{
+					UINFO("No saved local grid in the %d sampled nodes, not querying the %d nodes one by one.", (int)(ids.size()/step), (int)ids.size());
+				}
+			}
 			for(unsigned int i=0; i<ids.size(); ++i)
 			{
 				if(generatedLocalMaps_.shareTo(ids[i], combinedLocalMaps) ||
@@ -11233,7 +11303,7 @@ void DatabaseViewer::sliderIterationsValueChanged(int value)
 				{
 					// Added to combined maps
 				}
-				else if(ids.at(i)>0)
+				else if(ids.at(i)>0 && queryNodes)
 				{
 					SensorData data;
 					dbDriver_->getNodeData(ids.at(i), data, false, false, false);
@@ -11936,6 +12006,10 @@ void DatabaseViewer::updateGraphViewInternal(bool force)
 		graphLinks_.clear();
 
 		std::map<int, rtabmap::Transform> poses = odomPoses_;
+		if(ui_->checkBox_wmState->isEnabled() && ui_->checkBox_wmState->isChecked())
+		{
+			loadWmStates();
+		}
 		if(ui_->checkBox_wmState->isEnabled() &&
 		   ui_->checkBox_wmState->isChecked() &&
 		   uContains(wmStates_, fromId))
@@ -12319,29 +12393,70 @@ void DatabaseViewer::updateGraphViewInternal(bool force)
 		if(applyRotation ||
 		   ui_->comboBox_optimizationFlavor->currentIndex() != 2)
 		{
-			// If there are anchor point priors (world-referenced landmarks) and
-			// priors are used, rigidly pre-align the initial guess to them
-			// (translation + yaw, like an alignment to GPS). Absolute priors can
-			// be arbitrarily far from the current map frame (e.g. site CRS
-			// coordinates) and the iterative optimizers diverge when starting
-			// that far from the solution; the optimizer only has to correct
-			// drift after this rigid alignment.
 			bool priorsIgnored = Parameters::defaultOptimizerPriorsIgnored();
 			Parameters::parse(parameters, Parameters::kOptimizerPriorsIgnored(), priorsIgnored);
+			if(ui_->horizontalSlider_rotation->value()!=0 && applyRotation)
+			{
+				float theta = float(-ui_->horizontalSlider_rotation->value())*M_PI/1800.0f;
+				Transform rotT(0,0,theta);
+				poses.at(fromId) = rotT * poses.at(fromId);
+			}
+
+			graphes_.push_back(poses);
+
+			Optimizer * optimizer = Optimizer::create(parameters);
+
+			std::map<int, rtabmap::Transform> posesOut;
+			std::multimap<int, rtabmap::Link> linksOut;
+			UINFO("Get connected graph from %d (%d poses, %d links)", fromId, (int)poses.size(), (int)links.size());
+			optimizer->getConnectedGraph(
+					fromId,
+					poses,
+					links,
+					posesOut,
+					linksOut);
+			UINFO("Connected graph of %d poses and %d links", (int)posesOut.size(), (int)linksOut.size());
+			if(warmStartApplied)
+			{
+				// getConnectedGraph() keeps only the pose of the root: it chains the transforms of
+				// the links from there, which ignores the poses we were given. Put the current
+				// graph back as the initial guess (it is aligned to the anchors below).
+				int restored = 0;
+				for(std::map<int, rtabmap::Transform>::iterator iter=posesOut.begin(); iter!=posesOut.end(); ++iter)
+				{
+					std::map<int, rtabmap::Transform>::const_iterator jter = poses.find(iter->first);
+					if(jter != poses.end() && !jter->second.isNull())
+					{
+						iter->second = jter->second;
+						++restored;
+					}
+				}
+				UINFO("Start from current graph: %d of %d initial poses restored after getConnectedGraph().", restored, (int)posesOut.size());
+			}
+			// If there are anchor point priors (world-referenced landmarks) and priors are
+			// used, rigidly align the initial guess to them (translation + yaw, like an
+			// alignment to GPS). Absolute priors can be arbitrarily far from the current map
+			// frame (e.g. site CRS coordinates) and the iterative optimizers diverge when
+			// starting that far from the solution; the optimizer only has to correct drift
+			// after this rigid alignment. This is done on the connected graph, not on the
+			// odometry poses: getConnectedGraph() rebuilds every pose from the root by
+			// chaining the link transforms (loop closures included) and keeps only the root's
+			// pose, and the odometry-only layout can be hundreds of metres off the anchors,
+			// which makes its alignment arbitrary.
 			if(!priorsIgnored)
 			{
 				std::vector<int> anchorIds;
 				std::vector<cv::Point3d> effPoints;   // current landmark estimates
 				std::vector<cv::Point3d> priorPoints; // known world positions
 				std::vector<bool> zConstrained;       // prior actually constrains Z
-				for(std::multimap<int, rtabmap::Link>::iterator iter=links.begin(); iter!=links.end(); ++iter)
+				for(std::multimap<int, rtabmap::Link>::iterator iter=linksOut.begin(); iter!=linksOut.end(); ++iter)
 				{
 					if(iter->second.from() == iter->second.to() &&
 					   iter->second.from() < 0 &&
 					   iter->second.type() == Link::kPosePrior &&
-					   uContains(poses, iter->second.from()))
+					   uContains(posesOut, iter->second.from()))
 					{
-						const Transform & p = poses.at(iter->second.from());
+						const Transform & p = posesOut.at(iter->second.from());
 						const Transform & q = iter->second.transform();
 						anchorIds.push_back(iter->second.from());
 						effPoints.push_back(cv::Point3d(p.x(), p.y(), p.z()));
@@ -12355,7 +12470,7 @@ void DatabaseViewer::updateGraphViewInternal(bool force)
 				}
 				if(!effPoints.empty())
 				{
-					Transform align = graph::alignPosesToLandmarkPriors(poses, links);
+					Transform align = graph::alignPosesToLandmarkPriors(posesOut, linksOut);
 					double theta = align.theta();
 					double cosT = cos(theta);
 					double sinT = sin(theta);
@@ -12363,7 +12478,12 @@ void DatabaseViewer::updateGraphViewInternal(bool force)
 					{
 						UINFO("Pre-aligning initial guess to %d anchor point prior(s): %s",
 								(int)effPoints.size(), align.prettyPrint().c_str());
-						for(std::map<int, rtabmap::Transform>::iterator iter=poses.begin(); iter!=poses.end(); ++iter)
+						for(std::map<int, rtabmap::Transform>::iterator iter=posesOut.begin(); iter!=posesOut.end(); ++iter)
+						{
+							iter->second = align * iter->second;
+						}
+						// the initial graph shown at iteration 0
+						for(std::map<int, rtabmap::Transform>::iterator iter=graphes_.back().begin(); iter!=graphes_.back().end(); ++iter)
 						{
 							iter->second = align * iter->second;
 						}
@@ -12390,8 +12510,8 @@ void DatabaseViewer::updateGraphViewInternal(bool force)
 						double dy = priorPoints[i].y - ay;
 						double dz = priorPoints[i].z - az;
 						double residualXY = sqrt(dx*dx + dy*dy);
-						UINFO("Anchor %d: XY residual after rigid alignment of the odometry-only graph: %.2f m "
-							  "(dx=%.2f dy=%.2f dz=%s). This includes odometry drift that loop closures will absorb.",
+						UINFO("Anchor %d: XY residual after rigid alignment of the connected graph: %.2f m "
+							  "(dx=%.2f dy=%.2f dz=%s). The optimization absorbs what remains.",
 								-anchorIds[i], residualXY, dx, dy,
 								zConstrained[i]?uFormat("%.2f", dz).c_str():"n/a (Z unconstrained)");
 					}
@@ -12435,51 +12555,12 @@ void DatabaseViewer::updateGraphViewInternal(bool force)
 							else
 							{
 								UINFO("Anchors %d<->%d: distance in %s map = %.2f m, distance between entered coordinates = %.2f m (difference %.2f m)",
-										-anchorIds[i], -anchorIds[j], optimized?"optimized":"odometry-only", dMap, dPrior, diff);
+										-anchorIds[i], -anchorIds[j], optimized?"optimized":"connected", dMap, dPrior, diff);
 							}
 						}
 					}
 
 				}
-			}
-
-			if(ui_->horizontalSlider_rotation->value()!=0 && applyRotation)
-			{
-				float theta = float(-ui_->horizontalSlider_rotation->value())*M_PI/1800.0f;
-				Transform rotT(0,0,theta);
-				poses.at(fromId) = rotT * poses.at(fromId);
-			}
-
-			graphes_.push_back(poses);
-
-			Optimizer * optimizer = Optimizer::create(parameters);
-
-			std::map<int, rtabmap::Transform> posesOut;
-			std::multimap<int, rtabmap::Link> linksOut;
-			UINFO("Get connected graph from %d (%d poses, %d links)", fromId, (int)poses.size(), (int)links.size());
-			optimizer->getConnectedGraph(
-					fromId,
-					poses,
-					links,
-					posesOut,
-					linksOut);
-			UINFO("Connected graph of %d poses and %d links", (int)posesOut.size(), (int)linksOut.size());
-			if(warmStartApplied)
-			{
-				// getConnectedGraph() keeps only the pose of the root: it chains the transforms of
-				// the links from there, which ignores the poses we were given. Put the current
-				// graph (aligned to the anchors above) back as the initial guess.
-				int restored = 0;
-				for(std::map<int, rtabmap::Transform>::iterator iter=posesOut.begin(); iter!=posesOut.end(); ++iter)
-				{
-					std::map<int, rtabmap::Transform>::const_iterator jter = poses.find(iter->first);
-					if(jter != poses.end() && !jter->second.isNull())
-					{
-						iter->second = jter->second;
-						++restored;
-					}
-				}
-				UINFO("Start from current graph: %d of %d initial poses restored after getConnectedGraph().", restored, (int)posesOut.size());
 			}
 			QElapsedTimer time;
 			time.start();

@@ -2251,6 +2251,119 @@ bool DBDriverSqlite3::getLaserScanInfoQuery(
 	return found;
 }
 
+namespace {
+
+// Columns of Node read by getNodeInfoQuery() and getAllNodeInfosQuery(), in the order readNodeInfoRow() decodes them.
+std::string nodeInfoColumns(const std::string & version)
+{
+	if(uStrNumCmp(version, "0.18.0") >= 0)
+	{
+		return "pose, map_id, weight, label, stamp, ground_truth_pose, velocity, gps, env_sensors";
+	}
+	else if(uStrNumCmp(version, "0.14.0") >= 0)
+	{
+		return "pose, map_id, weight, label, stamp, ground_truth_pose, velocity, gps";
+	}
+	else if(uStrNumCmp(version, "0.13.0") >= 0)
+	{
+		return "pose, map_id, weight, label, stamp, ground_truth_pose, velocity";
+	}
+	else if(uStrNumCmp(version, "0.11.1") >= 0)
+	{
+		return "pose, map_id, weight, label, stamp, ground_truth_pose";
+	}
+	else if(uStrNumCmp(version, "0.8.5") >= 0)
+	{
+		return "pose, map_id, weight, label, stamp";
+	}
+	return "pose, map_id, weight";
+}
+
+// Decodes the columns of nodeInfoColumns() found from column @p index of the current row.
+void readNodeInfoRow(sqlite3_stmt * ppStmt, const std::string & version, int index, DBDriver::NodeInfo & info)
+{
+	const void * data = sqlite3_column_blob(ppStmt, index); // pose
+	int dataSize = sqlite3_column_bytes(ppStmt, index++);
+	if((unsigned int)dataSize == info.pose.size()*sizeof(float) && data)
+	{
+		info.pose = Transform();
+		memcpy(info.pose.data(), data, dataSize);
+		if(uStrNumCmp(version, "0.15.2") < 0)
+		{
+			info.pose.normalizeRotation();
+		}
+	}
+
+	info.mapId = sqlite3_column_int(ppStmt, index++); // map id
+	info.weight = sqlite3_column_int(ppStmt, index++); // weight
+
+	if(uStrNumCmp(version, "0.8.5") >= 0)
+	{
+		const unsigned char * p = sqlite3_column_text(ppStmt, index++);
+		if(p)
+		{
+			info.label = reinterpret_cast<const char*>(p); // label
+		}
+		info.stamp = sqlite3_column_double(ppStmt, index++); // stamp
+
+		if(uStrNumCmp(version, "0.11.1") >= 0)
+		{
+			data = sqlite3_column_blob(ppStmt, index); // ground_truth_pose
+			dataSize = sqlite3_column_bytes(ppStmt, index++);
+			if((unsigned int)dataSize == info.groundTruthPose.size()*sizeof(float) && data)
+			{
+				info.groundTruthPose = Transform();
+				memcpy(info.groundTruthPose.data(), data, dataSize);
+				if(uStrNumCmp(version, "0.15.2") < 0)
+				{
+					info.groundTruthPose.normalizeRotation();
+				}
+			}
+
+			if(uStrNumCmp(version, "0.13.0") >= 0)
+			{
+				info.velocity.resize(6,0);
+				data = sqlite3_column_blob(ppStmt, index); // velocity
+				dataSize = sqlite3_column_bytes(ppStmt, index++);
+				if((unsigned int)dataSize == info.velocity.size()*sizeof(float) && data)
+				{
+					memcpy(info.velocity.data(), data, dataSize);
+				}
+			}
+
+			if(uStrNumCmp(version, "0.14.0") >= 0)
+			{
+				data = sqlite3_column_blob(ppStmt, index); // gps
+				dataSize = sqlite3_column_bytes(ppStmt, index++);
+				if((unsigned int)dataSize == 6*sizeof(double) && data)
+				{
+					const double * dataDouble = (const double *)data;
+					info.gps = GPS(dataDouble[0], dataDouble[1], dataDouble[2], dataDouble[3], dataDouble[4], dataDouble[5]);
+				}
+
+				if(uStrNumCmp(version, "0.18.0") >= 0)
+				{
+					data = sqlite3_column_blob(ppStmt, index);
+					dataSize = sqlite3_column_bytes(ppStmt, index++);
+					if(data)
+					{
+						UASSERT(dataSize%sizeof(double)==0 && (dataSize/sizeof(double))%3 == 0);
+						const double * dataDouble = (const double *)data;
+						int sensorsNum = (dataSize/sizeof(double))/3;
+						for(int i=0; i<sensorsNum;++i)
+						{
+							EnvSensor::Type type = (EnvSensor::Type)(int)dataDouble[i*3];
+							info.sensors.insert(std::make_pair(type, EnvSensor(type, dataDouble[i*3+1], dataDouble[i*3+2])));
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+} // namespace
+
 bool DBDriverSqlite3::getNodeInfoQuery(int signatureId,
 		Transform & pose,
 		int & mapId,
@@ -2268,138 +2381,27 @@ bool DBDriverSqlite3::getNodeInfoQuery(int signatureId,
 		int rc = SQLITE_OK;
 		sqlite3_stmt * ppStmt = 0;
 		std::stringstream query;
-
-		if(uStrNumCmp(_version, "0.18.0") >= 0)
-		{
-			query << "SELECT pose, map_id, weight, label, stamp, ground_truth_pose, velocity, gps, env_sensors "
-					 "FROM Node "
-					 "WHERE id = " << signatureId <<
-					 ";";
-		}
-		else if(uStrNumCmp(_version, "0.14.0") >= 0)
-		{
-			query << "SELECT pose, map_id, weight, label, stamp, ground_truth_pose, velocity, gps "
-					 "FROM Node "
-					 "WHERE id = " << signatureId <<
-					 ";";
-		}
-		else if(uStrNumCmp(_version, "0.13.0") >= 0)
-		{
-			query << "SELECT pose, map_id, weight, label, stamp, ground_truth_pose, velocity "
-					 "FROM Node "
-					 "WHERE id = " << signatureId <<
-					 ";";
-		}
-		else if(uStrNumCmp(_version, "0.11.1") >= 0)
-		{
-			query << "SELECT pose, map_id, weight, label, stamp, ground_truth_pose "
-					 "FROM Node "
-					 "WHERE id = " << signatureId <<
-					 ";";
-		}
-		else if(uStrNumCmp(_version, "0.8.5") >= 0)
-		{
-			query << "SELECT pose, map_id, weight, label, stamp "
-					 "FROM Node "
-					 "WHERE id = " << signatureId <<
-					 ";";
-		}
-		else
-		{
-			query << "SELECT pose, map_id, weight "
-					 "FROM Node "
-					 "WHERE id = " << signatureId <<
-					 ";";
-		}
+		query << "SELECT " << nodeInfoColumns(_version) << " FROM Node WHERE id = " << signatureId << ";";
 
 		rc = sqlite3_prepare_v2(_ppDb, query.str().c_str(), -1, &ppStmt, 0);
 		UASSERT_MSG(rc == SQLITE_OK, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
-
-		const void * data = 0;
-		int dataSize = 0;
 
 		// Process the result if one
 		rc = sqlite3_step(ppStmt);
 		if(rc == SQLITE_ROW)
 		{
 			found = true;
-			int index = 0;
-			data = sqlite3_column_blob(ppStmt, index); // pose
-			dataSize = sqlite3_column_bytes(ppStmt, index++);
-			if((unsigned int)dataSize == pose.size()*sizeof(float) && data)
-			{
-				memcpy(pose.data(), data, dataSize);
-				if(uStrNumCmp(_version, "0.15.2") < 0)
-				{
-					pose.normalizeRotation();
-				}
-			}
-
-			mapId = sqlite3_column_int(ppStmt, index++); // map id
-			weight = sqlite3_column_int(ppStmt, index++); // weight
-
-			if(uStrNumCmp(_version, "0.8.5") >= 0)
-			{
-				const unsigned char * p = sqlite3_column_text(ppStmt, index++);
-				if(p)
-				{
-					label = reinterpret_cast<const char*>(p); // label
-				}
-				stamp = sqlite3_column_double(ppStmt, index++); // stamp
-
-				if(uStrNumCmp(_version, "0.11.1") >= 0)
-				{
-					data = sqlite3_column_blob(ppStmt, index); // ground_truth_pose
-					dataSize = sqlite3_column_bytes(ppStmt, index++);
-					if((unsigned int)dataSize == groundTruthPose.size()*sizeof(float) && data)
-					{
-						memcpy(groundTruthPose.data(), data, dataSize);
-						if(uStrNumCmp(_version, "0.15.2") < 0)
-						{
-							groundTruthPose.normalizeRotation();
-						}
-					}
-
-					if(uStrNumCmp(_version, "0.13.0") >= 0)
-					{
-						velocity.resize(6,0);
-						data = sqlite3_column_blob(ppStmt, index); // velocity
-						dataSize = sqlite3_column_bytes(ppStmt, index++);
-						if((unsigned int)dataSize == velocity.size()*sizeof(float) && data)
-						{
-							memcpy(velocity.data(), data, dataSize);
-						}
-					}
-
-					if(uStrNumCmp(_version, "0.14.0") >= 0)
-					{
-						data = sqlite3_column_blob(ppStmt, index); // gps
-						dataSize = sqlite3_column_bytes(ppStmt, index++);
-						if((unsigned int)dataSize == 6*sizeof(double) && data)
-						{
-							const double * dataDouble = (const double *)data;
-							gps = GPS(dataDouble[0], dataDouble[1], dataDouble[2], dataDouble[3], dataDouble[4], dataDouble[5]);
-						}
-
-						if(uStrNumCmp(_version, "0.18.0") >= 0)
-						{
-							data = sqlite3_column_blob(ppStmt, index);
-							dataSize = sqlite3_column_bytes(ppStmt, index++);
-							if(data)
-							{
-								UASSERT(dataSize%sizeof(double)==0 && (dataSize/sizeof(double))%3 == 0);
-								const double * dataDouble = (const double *)data;
-								int sensorsNum = (dataSize/sizeof(double))/3;
-								for(int i=0; i<sensorsNum;++i)
-								{
-									EnvSensor::Type type = (EnvSensor::Type)(int)dataDouble[i*3];
-									sensors.insert(std::make_pair(type, EnvSensor(type, dataDouble[i*3+1], dataDouble[i*3+2])));
-								}
-							}
-						}
-					}
-				}
-			}
+			NodeInfo info;
+			readNodeInfoRow(ppStmt, _version, 0, info);
+			pose = info.pose;
+			mapId = info.mapId;
+			weight = info.weight;
+			label = info.label;
+			stamp = info.stamp;
+			groundTruthPose = info.groundTruthPose;
+			velocity = info.velocity;
+			gps = info.gps;
+			sensors = info.sensors;
 
 			rc = sqlite3_step(ppStmt); // next result...
 		}
@@ -2411,6 +2413,37 @@ bool DBDriverSqlite3::getNodeInfoQuery(int signatureId,
 	}
 	return found;
 }
+
+std::map<int, DBDriver::NodeInfo> DBDriverSqlite3::getAllNodeInfosQuery() const
+{
+	std::map<int, NodeInfo> infos;
+	if(_ppDb)
+	{
+		UTimer timer;
+		int rc = SQLITE_OK;
+		sqlite3_stmt * ppStmt = 0;
+		std::string query = "SELECT id, " + nodeInfoColumns(_version) + " FROM Node ORDER BY id;";
+
+		rc = sqlite3_prepare_v2(_ppDb, query.c_str(), -1, &ppStmt, 0);
+		UASSERT_MSG(rc == SQLITE_OK, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
+
+		rc = sqlite3_step(ppStmt);
+		while(rc == SQLITE_ROW)
+		{
+			int id = sqlite3_column_int(ppStmt, 0);
+			NodeInfo & info = infos.insert(infos.end(), std::make_pair(id, NodeInfo()))->second;
+			readNodeInfoRow(ppStmt, _version, 1, info);
+			rc = sqlite3_step(ppStmt);
+		}
+		UASSERT_MSG(rc == SQLITE_DONE, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
+
+		rc = sqlite3_finalize(ppStmt);
+		UASSERT_MSG(rc == SQLITE_OK, uFormat("DB error (%s): %s", _version.c_str(), sqlite3_errmsg(_ppDb)).c_str());
+		ULOGGER_DEBUG("Time=%f nodes=%d", timer.ticks(), (int)infos.size());
+	}
+	return infos;
+}
+
 
 void DBDriverSqlite3::getLocalFeaturesQuery(
 	int signatureId,

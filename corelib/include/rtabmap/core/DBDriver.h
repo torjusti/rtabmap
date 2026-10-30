@@ -305,6 +305,27 @@ public:
 	bool getCalibration(int signatureId, std::vector<CameraModel> & models, std::vector<StereoCameraModel> & stereoModels) const;
 	bool getLaserScanInfo(int signatureId, LaserScan & info) const;
 	bool getNodeInfo(int signatureId, Transform & pose, int & mapId, int & weight, std::string & label, double & stamp, Transform & groundTruthPose, std::vector<float> & velocity, GPS & gps, EnvSensors & sensors) const;
+	/** @brief What getNodeInfo() returns for one node. */
+	struct NodeInfo
+	{
+		NodeInfo() : mapId(0), weight(0), stamp(0.0) {}
+		Transform pose;
+		int mapId;
+		int weight;
+		std::string label;
+		double stamp;
+		Transform groundTruthPose;
+		std::vector<float> velocity;
+		GPS gps;
+		EnvSensors sensors;
+	};
+	/**
+	 * @brief getNodeInfo() for every node of the database, in one pass over the Node table.
+	 * Calling getNodeInfo() once per node costs one query (and one file lock/validation round trip)
+	 * each, which dominates opening a large database on a network or Windows drive: 1 ms per node
+	 * versus 2 s for 340k nodes in one pass. Nodes still in memory (trash) are not included.
+	 */
+	std::map<int, NodeInfo> getAllNodeInfos() const;
 	void getLocalFeatures(int signatureId, std::multimap<int, int> & words, std::vector<cv::KeyPoint> & keypoints, std::vector<cv::Point3f> & points, cv::Mat & descriptors, bool withDescriptors = true) const;
 	/** @brief Load outgoing links from @p signatureId, optionally filtered by @p type. */
 	void loadLinks(int signatureId, std::multimap<int, Link> & links, Link::Type type = Link::kUndef) const;
@@ -434,6 +455,8 @@ protected:
 	virtual bool getCalibrationQuery(int signatureId, std::vector<CameraModel> & models, std::vector<StereoCameraModel> & stereoModels) const = 0;
 	virtual bool getLaserScanInfoQuery(int signatureId, LaserScan & info) const = 0;
 	virtual bool getNodeInfoQuery(int signatureId, Transform & pose, int & mapId, int & weight, std::string & label, double & stamp, Transform & groundTruthPose, std::vector<float> & velocity, GPS & gps, EnvSensors & sensors) const = 0;
+	/** Default: one getNodeInfoQuery() per node; drivers should override with a single pass. */
+	virtual std::map<int, NodeInfo> getAllNodeInfosQuery() const;
 	virtual void getLocalFeaturesQuery(int signatureId, std::multimap<int, int> & words, std::vector<cv::KeyPoint> & keypoints, std::vector<cv::Point3f> & points, cv::Mat & descriptors, bool withDescriptors = true) const = 0;
 	virtual void getLastNodeIdsQuery(std::set<int> & ids) const = 0;
 	virtual void getAllNodeIdsQuery(std::set<int> & ids, bool ignoreChildren, bool ignoreBadSignatures, bool ignoreIntermediateNodes) const = 0;

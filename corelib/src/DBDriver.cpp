@@ -835,6 +835,30 @@ bool DBDriver::getNodeInfo(
 	return found;
 }
 
+std::map<int, DBDriver::NodeInfo> DBDriver::getAllNodeInfos() const
+{
+	_dbSafeAccessMutex.lock();
+	std::map<int, NodeInfo> infos = this->getAllNodeInfosQuery();
+	_dbSafeAccessMutex.unlock();
+	return infos;
+}
+
+std::map<int, DBDriver::NodeInfo> DBDriver::getAllNodeInfosQuery() const
+{
+	std::map<int, NodeInfo> infos;
+	std::set<int> ids;
+	this->getAllNodeIdsQuery(ids, false, false, false);
+	for(std::set<int>::const_iterator iter=ids.begin(); iter!=ids.end(); ++iter)
+	{
+		NodeInfo info;
+		if(this->getNodeInfoQuery(*iter, info.pose, info.mapId, info.weight, info.label, info.stamp, info.groundTruthPose, info.velocity, info.gps, info.sensors))
+		{
+			infos.insert(std::make_pair(*iter, info));
+		}
+	}
+	return infos;
+}
+
 void DBDriver::getLocalFeatures(
 	int signatureId,
 	std::multimap<int, int> & words,
