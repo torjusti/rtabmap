@@ -161,6 +161,8 @@ public:
 	bool isSlam2d() const {return slam2d_;}                  ///< True if optimizing in SE(2) instead of SE(3).
 	bool isCovarianceIgnored() const {return covarianceIgnored_;} ///< If true, all edges share an identity information matrix.
 	double epsilon() const {return epsilon_;}                ///< Convergence threshold on cost decrease.
+	double stopTranslation() const {return stopTranslation_;} ///< Stop when no pose moved more than this (m) twice in a row; 0 disables (GTSAM batch only).
+	double stopRotation() const {return stopRotation_;}      ///< Same for rotation (deg); 0 disables.
 	bool isRobust() const {return robust_;}                  ///< If true, use a robust kernel / switchable factors against bad loop closures.
 	bool priorsIgnored() const {return priorsIgnored_;}      ///< If true, unary priors on poses are dropped.
 	bool landmarksIgnored() const {return landmarksIgnored_;}///< If true, landmark/marker observations are dropped.
@@ -178,6 +180,8 @@ public:
 	void setSlam2d(bool enabled) {slam2d_ = enabled;}
 	void setCovarianceIgnored(bool enabled) {covarianceIgnored_ = enabled;}
 	void setEpsilon(double epsilon) {epsilon_ = epsilon;}
+	void setStopTranslation(double meters) {stopTranslation_ = meters;}
+	void setStopRotation(double degrees) {stopRotation_ = degrees;}
 	void setRobust(bool enabled) {robust_ = enabled;}
 	void setPriorsIgnored(bool enabled) {priorsIgnored_ = enabled;}
 	void setLandmarksIgnored(bool enabled) {landmarksIgnored_ = enabled;}
@@ -502,6 +506,8 @@ private:
 	bool slam2d_;
 	bool covarianceIgnored_;
 	double epsilon_;
+	double stopTranslation_;
+	double stopRotation_;
 	bool robust_;
 	bool priorsIgnored_;
 	bool landmarksIgnored_;

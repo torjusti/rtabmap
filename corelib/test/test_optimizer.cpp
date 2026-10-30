@@ -3909,3 +3909,124 @@ TEST_P(BAOutlierRejectionTest, DiagnosticsPreserveSolutionAndReportActualWork)
     EXPECT_TRUE(runBA(canceledOutliers).empty());
     opt_->setProgressState(nullptr);
 }
+
+// ---------------------------------------------------------------------------
+// Movement-based stop test (Optimizer/StopTranslation, Optimizer/StopRotation)
+// ---------------------------------------------------------------------------
+
+TEST(OptimizerTest, StopThresholdsOffByDefaultAndParsedFromMap)
+{
+	std::unique_ptr<Optimizer> defaults(Optimizer::create(ParametersMap()));
+	ASSERT_NE(defaults.get(), nullptr);
+	EXPECT_DOUBLE_EQ(defaults->stopTranslation(), 0.0);
+	EXPECT_DOUBLE_EQ(defaults->stopRotation(), 0.0);
+
+	ParametersMap params;
+	params[Parameters::kOptimizerStopTranslation()] = "0.02";
+	params[Parameters::kOptimizerStopRotation()]    = "0.3";
+	std::unique_ptr<Optimizer> opt(Optimizer::create(params));
+	ASSERT_NE(opt.get(), nullptr);
+	EXPECT_DOUBLE_EQ(opt->stopTranslation(), 0.02);
+	EXPECT_DOUBLE_EQ(opt->stopRotation(), 0.3);
+
+	ParametersMap update;
+	update[Parameters::kOptimizerStopTranslation()] = "0.5";
+	opt->parseParameters(update);
+	EXPECT_DOUBLE_EQ(opt->stopTranslation(), 0.5);
+	EXPECT_DOUBLE_EQ(opt->stopRotation(), 0.3); // unspecified fields are preserved
+}
+
+namespace {
+
+// Optimizes the noisy circle graph with GTSAM (batch) and returns how many iterations it took.
+int optimizeNoisyCircle(const ParametersMap & extra, std::map<int, Transform> & out, std::map<int, Transform> & truth)
+{
+	ParametersMap params;
+	params[Parameters::kOptimizerStrategy()]         = uNumber2Str(static_cast<int>(Optimizer::kTypeGTSAM));
+	params[Parameters::kOptimizerIterations()]       = "50";
+	params[Parameters::kOptimizerEpsilon()]          = "0"; // only the movement test (or the iteration limit) can stop it
+	params[Parameters::kOptimizerPriorsIgnored()]    = "true";
+	params[Parameters::kOptimizerLandmarksIgnored()] = "true";
+	params[Parameters::kOptimizerGravitySigma()]     = "0";
+	uInsert(params, extra);
+	std::unique_ptr<Optimizer> opt(Optimizer::create(params));
+
+	CircleGraph g = buildCircleGraph(/*noisy=*/true, /*numLandmarks=*/1, /*force3DoF=*/false);
+	std::map<int, Transform> connectedPoses;
+	std::multimap<int, Link> inLinks;
+	opt->getConnectedGraph(1, g.poses, g.links, connectedPoses, inLinks);
+	std::map<int, Transform> inPoses = g.poses;
+	inPoses.erase(kLandmarkId);
+
+	int iterations = 0;
+	double finalError = 0.0;
+	out = opt->optimize(1, inPoses, inLinks, 0, &finalError, &iterations);
+	truth = g.truePoses;
+	return iterations;
+}
+
+}  // namespace
+
+TEST(OptimizerTest, GtsamMovementStopEndsBeforeIterationLimitAndConverges)
+{
+	if(!Optimizer::isAvailable(Optimizer::kTypeGTSAM))
+	{
+		GTEST_SKIP() << "GTSAM not built in";
+	}
+	std::map<int, Transform> loose, tight, truth;
+
+	// Generous thresholds (the initial guess is ~15 cm off): satisfied from the first iterations,
+	// so two of them are enough.
+	ParametersMap looseParams;
+	looseParams[Parameters::kOptimizerStopTranslation()] = "1";
+	looseParams[Parameters::kOptimizerStopRotation()]    = "30";
+	const int looseIterations = optimizeNoisyCircle(looseParams, loose, truth);
+	ASSERT_FALSE(loose.empty());
+	EXPECT_GE(looseIterations, 2);
+	EXPECT_LE(looseIterations, 4);
+
+	// Tight thresholds need the solver to settle first, and the result is then converged.
+	ParametersMap tightParams;
+	tightParams[Parameters::kOptimizerStopTranslation()] = "0.000001";
+	tightParams[Parameters::kOptimizerStopRotation()]    = "0.00001";
+	const int tightIterations = optimizeNoisyCircle(tightParams, tight, truth);
+	ASSERT_FALSE(tight.empty());
+	EXPECT_GE(tightIterations, looseIterations);
+	EXPECT_LT(tightIterations, 50) << "the movement test never fired";
+	for(const auto & kv : truth)
+	{
+		if(kv.first == kLandmarkId)
+		{
+			continue;
+		}
+		ASSERT_TRUE(tight.count(kv.first)) << "missing id " << kv.first;
+		EXPECT_LT(tight.at(kv.first).getDistance(kv.second), 0.002f) << "id=" << kv.first;
+	}
+}
+
+TEST(OptimizerTest, GtsamGaussNewtonStillConvergesWithBestStateTracking)
+{
+	if(!Optimizer::isAvailable(Optimizer::kTypeGTSAM))
+	{
+		GTEST_SKIP() << "GTSAM not built in";
+	}
+	// Plain Gauss-Newton can overshoot past the optimum on weakly constrained chains, so the
+	// optimizer keeps the best estimate it has seen. This well-conditioned graph has no
+	// overshoot to guard against: this only checks that the tracking does not get in the way
+	// of a normal solve.
+	ParametersMap gn;
+	gn[Parameters::kGTSAMOptimizer()] = "1";
+	std::map<int, Transform> out, truth;
+	const int iterations = optimizeNoisyCircle(gn, out, truth);
+	ASSERT_FALSE(out.empty());
+	EXPECT_GE(iterations, 1);
+	for(const auto & kv : truth)
+	{
+		if(kv.first == kLandmarkId)
+		{
+			continue;
+		}
+		ASSERT_TRUE(out.count(kv.first)) << "missing id " << kv.first;
+		EXPECT_LT(out.at(kv.first).getDistance(kv.second), 0.01f) << "id=" << kv.first;
+	}
+}

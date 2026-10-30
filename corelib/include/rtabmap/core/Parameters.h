@@ -472,6 +472,8 @@ class RTABMAP_CORE_EXPORT Parameters
 #endif
 #endif
 #endif
+    RTABMAP_PARAM(Optimizer, StopTranslation, double, 0.0,     "Stop optimizing when no pose moved more than this distance (m) in two consecutive iterations that decreased the error. Unlike the error improvement (see Optimizer/Epsilon), it does not depend on the size of the graph or the scale of the information matrices. 0 to disable. Only GTSAM batch optimization (not iSAM2) uses it; it replaces the relative error stop test when set.");
+    RTABMAP_PARAM(Optimizer, StopRotation,    double, 0.0,     "Stop optimizing when no pose rotated more than this angle (deg) in two consecutive iterations that decreased the error. When both this and Optimizer/StopTranslation are set, both must be satisfied. 0 to disable.");
     RTABMAP_PARAM(Optimizer, VarianceIgnored, bool, false,     "Ignore constraints' variance. If checked, identity information matrix is used for each constraint. Otherwise, an information matrix is generated from the variance saved in the links.");
     RTABMAP_PARAM(Optimizer, Robust,          bool, false,     "Robust graph optimization using Vertigo (only work for g2o and GTSAM optimization strategies).");
     RTABMAP_PARAM(Optimizer, PriorsIgnored,   bool, true,      "Ignore prior constraints (global pose, GPS or marker priors) while optimizing. Currently only g2o and gtsam optimization supports this.");

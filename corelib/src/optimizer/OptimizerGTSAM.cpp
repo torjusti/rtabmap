@@ -1002,6 +1002,63 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 		int smallImprovements = 0;
 		double initialError = optimizer?graph.error(initialEstimate):0;
 		double lastError = optimizer?optimizer->error():0;
+
+		// Stop test in physical units (batch mode): no pose moved more than the given
+		// translation/rotation in two consecutive iterations that decreased the error.
+		const bool metricStop = optimizer && (stopTranslation() > 0.0 || stopRotation() > 0.0);
+		int smallMoves = 0;
+		std::map<gtsam::Key, gtsam::Pose3> previousPoses3;
+		std::map<gtsam::Key, gtsam::Pose2> previousPoses2;
+		// Largest translation (m) and rotation (rad) between the poses of two iterations.
+		auto measureMove = [&](const gtsam::Values & vals, double & maxT, double & maxR)
+		{
+			maxT = 0.0;
+			maxR = 0.0;
+			if(isSlam2d())
+			{
+				std::map<gtsam::Key, gtsam::Pose2> now = vals.extract<gtsam::Pose2>();
+				for(std::map<gtsam::Key, gtsam::Pose2>::const_iterator iter=now.begin(); iter!=now.end(); ++iter)
+				{
+					std::map<gtsam::Key, gtsam::Pose2>::const_iterator prev = previousPoses2.find(iter->first);
+					if(prev != previousPoses2.end())
+					{
+						maxT = std::max(maxT, std::hypot(iter->second.x()-prev->second.x(), iter->second.y()-prev->second.y()));
+						double dTheta = std::fabs(iter->second.theta()-prev->second.theta());
+						maxR = std::max(maxR, std::min(dTheta, 2.0*M_PI-dTheta));
+					}
+				}
+				previousPoses2.swap(now);
+			}
+			else
+			{
+				std::map<gtsam::Key, gtsam::Pose3> now = vals.extract<gtsam::Pose3>();
+				for(std::map<gtsam::Key, gtsam::Pose3>::const_iterator iter=now.begin(); iter!=now.end(); ++iter)
+				{
+					std::map<gtsam::Key, gtsam::Pose3>::const_iterator prev = previousPoses3.find(iter->first);
+					if(prev != previousPoses3.end())
+					{
+						maxT = std::max(maxT, (iter->second.translation()-prev->second.translation()).norm());
+						maxR = std::max(maxR, gtsam::Rot3::Logmap(prev->second.rotation().between(iter->second.rotation())).norm());
+					}
+				}
+				previousPoses3.swap(now);
+			}
+		};
+		if(metricStop)
+		{
+			double t, r;
+			measureMove(initialEstimate, t, r); // only stores the starting poses
+		}
+
+		// Plain Gauss-Newton takes undamped steps: past the optimum it can overshoot and
+		// the error goes back up (on long odometry-only chains). Keep the best estimate seen
+		// and stop after a few worse iterations. Dogleg and Levenberg-Marquardt never accept
+		// a step that increases the error.
+		const bool trackBest = optimizer && internalOptimizerType_ == 1;
+		gtsam::Values bestValues;
+		double bestError = initialError;
+		bool haveBest = false;
+		int worseCount = 0;
 		for(int i=0; i<iterations(); ++i)
 		{
 			if(intermediateGraphes && i > 0)
@@ -1173,6 +1230,38 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 				UINFO("iteration %d error =%f", i+1, error);
 			}
 			double errorDelta = lastError - error;
+			if(metricStop)
+			{
+				double maxTranslation = 0.0, maxRotation = 0.0;
+				measureMove(optimizer->values(), maxTranslation, maxRotation);
+				UINFO("iteration %d largest move: %.4f m, %.3f deg", i+1, maxTranslation, maxRotation*180.0/M_PI);
+				// A rejected step (no change in the error) moves nothing and says nothing about
+				// convergence: only iterations that decreased the error count.
+				if(errorDelta > 0.0 &&
+				   (stopTranslation() <= 0.0 || maxTranslation < stopTranslation()) &&
+				   (stopRotation() <= 0.0 || maxRotation*180.0/M_PI < stopRotation()))
+				{
+					++smallMoves;
+				}
+				else
+				{
+					smallMoves = 0;
+				}
+			}
+			if(trackBest)
+			{
+				if(error < bestError)
+				{
+					bestError = error;
+					bestValues = optimizer->values();
+					haveBest = true;
+					worseCount = 0;
+				}
+				else if(error > bestError*(1.0+1e-6))
+				{
+					++worseCount;
+				}
+			}
 			// Abort only if the error is both huge and worse than where we
 			// started: with strong priors (e.g. anchor points) far from the
 			// initial guess, a healthy solve can legitimately pass through
@@ -1207,7 +1296,15 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 				}
 				const gtsam::DoglegOptimizer * doglegOpt = dynamic_cast<const gtsam::DoglegOptimizer *>(optimizer);
 				const bool fullSteps = doglegOpt && doglegOpt->getDelta() >= 0.99e6;
-				if((isam2_ || i>0) && (errorDelta < this->epsilon() || smallImprovements >= (fullSteps?1:2)))
+				if(trackBest && haveBest && worseCount >= 3)
+				{
+					UINFO("Stop optimizing, the error went up in %d iterations since its best value (%f): keeping that estimate.", worseCount, bestError);
+					lastError = error;
+					break;
+				}
+				// The movement test replaces the relative error test when it is enabled.
+				const bool convergedByImprovement = metricStop ? (smallMoves >= 2) : (smallImprovements >= (fullSteps?1:2));
+				if((isam2_ || i>0) && (errorDelta < this->epsilon() || convergedByImprovement))
 				{
 					if(errorDelta < 0)
 					{
@@ -1241,9 +1338,14 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 				break;
 			}
 		}
+		const bool useBest = trackBest && haveBest && lastError > bestError*(1.0+1e-9);
+		if(useBest)
+		{
+			UINFO("Returning the best estimate (error %f) instead of the last one (%f).", bestError, lastError);
+		}
 		if(finalError)
 		{
-			*finalError = lastError;
+			*finalError = useBest ? bestError : lastError;
 		}
 		if(iterationsDone)
 		{
@@ -1253,7 +1355,7 @@ std::map<int, Transform> OptimizerGTSAM::optimize(
 				it, initialError, lastError, timer.ticks());
 
 		float x,y,z,roll,pitch,yaw;
-		const gtsam::Values values = isam2_?isam2_->calculateEstimate():optimizer->values();
+		const gtsam::Values values = isam2_?isam2_->calculateEstimate():(useBest?bestValues:optimizer->values());
 #if GTSAM_VERSION_NUMERIC >= 40200
 		for(gtsam::Values::deref_iterator iter=values.begin(); iter!=values.end(); ++iter)
 #else

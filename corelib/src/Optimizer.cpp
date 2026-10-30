@@ -356,6 +356,8 @@ Optimizer::Optimizer(int iterations, bool slam2d, bool covarianceIgnored, double
 		slam2d_(slam2d),
 		covarianceIgnored_(covarianceIgnored),
 		epsilon_(epsilon),
+		stopTranslation_(Parameters::defaultOptimizerStopTranslation()),
+		stopRotation_(Parameters::defaultOptimizerStopRotation()),
 		robust_(robust),
 		priorsIgnored_(priorsIgnored),
 		landmarksIgnored_(landmarksIgnored),
@@ -401,6 +403,8 @@ Optimizer::Optimizer(const ParametersMap & parameters) :
 		slam2d_(Parameters::defaultRegForce3DoF()),
 		covarianceIgnored_(Parameters::defaultOptimizerVarianceIgnored()),
 		epsilon_(Parameters::defaultOptimizerEpsilon()),
+		stopTranslation_(Parameters::defaultOptimizerStopTranslation()),
+		stopRotation_(Parameters::defaultOptimizerStopRotation()),
 		robust_(Parameters::defaultOptimizerRobust()),
 		priorsIgnored_(Parameters::defaultOptimizerPriorsIgnored()),
 		landmarksIgnored_(Parameters::defaultOptimizerLandmarksIgnored()),
@@ -448,6 +452,8 @@ void Optimizer::parseParameters(const ParametersMap & parameters)
 	Parameters::parse(parameters, Parameters::kOptimizerVarianceIgnored(), covarianceIgnored_);
 	Parameters::parse(parameters, Parameters::kRegForce3DoF(), slam2d_);
 	Parameters::parse(parameters, Parameters::kOptimizerEpsilon(), epsilon_);
+	Parameters::parse(parameters, Parameters::kOptimizerStopTranslation(), stopTranslation_);
+	Parameters::parse(parameters, Parameters::kOptimizerStopRotation(), stopRotation_);
 	Parameters::parse(parameters, Parameters::kOptimizerRobust(), robust_);
 	Parameters::parse(parameters, Parameters::kOptimizerPriorsIgnored(), priorsIgnored_);
 	Parameters::parse(parameters, Parameters::kOptimizerLandmarksIgnored(), landmarksIgnored_);
